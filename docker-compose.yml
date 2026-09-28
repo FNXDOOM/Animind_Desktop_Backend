@@ -1,0 +1,53 @@
+# Local development stack: Postgres plus the API.
+#
+# The website and desktop player are not part of this file. They run from their own
+# repositories and point at this API through PUBLIC_URL.
+
+services:
+  db:
+    image: postgres:16-alpine
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: animind
+      POSTGRES_PASSWORD: animind
+      POSTGRES_DB: animind
+    volumes:
+      - db-data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U animind -d animind"]
+      interval: 5s
+      timeout: 3s
+      retries: 20
+
+  api:
+    build: .
+    restart: unless-stopped
+    depends_on:
+      db:
+        condition: service_healthy
+    ports:
+      - "3001:3001"
+    environment:
+      ENV: development
+      PORT: "3001"
+      PUBLIC_URL: http://localhost:3001
+      FRONTEND_URL: http://localhost:5173
+      DATABASE_URL: postgres://animind:animind@db:5432/animind?sslmode=disable
+      DB_AUTO_MIGRATE: "true"
+      # Replace before exposing this stack to anything real.
+      DESKTOP_TOKEN_SIGNING_KEY: local-development-key-please-replace-32-chars-min
+      WEBHOOK_SECRET: local-development-webhook-secret
+      STORAGE_MODE: local
+      LOCAL_STORAGE_PATH: /mnt/anime
+      TRUST_PROXY_HEADERS: "false"
+      LOG_LEVEL: info
+      LOG_FORMAT: text
+    volumes:
+      # Bind your library read-only for local mode; subtitles and the audio cache need a
+      # writable directory, so mount the same path read-write when you want extraction.
+      - ${ANIMIND_LIBRARY:-./library}:/mnt/anime
+      - hls-temp:/tmp
+
+volumes:
+  db-data:
+  hls-temp:
