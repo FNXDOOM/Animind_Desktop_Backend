@@ -1,0 +1,967 @@
+openapi: 3.0.3
+info:
+  title: AniMind Backend API
+  version: 1.0.0
+  description: |
+    API for the AniMind desktop player and website: library catalog, playback, user viewing
+    data, watch parties and administration. Authentication is built into this service; there
+    is no third-party identity provider. No frontend assets are served.
+
+    Error responses are always `{"error": "..."}` with optional `details` and a stable `code`.
+    Rate limits are per client IP, per route, per minute; refusals send `Retry-After`.
+servers:
+  - url: http://localhost:3001
+    description: Local development
+  - url: https://api.example.com
+    description: Deployment (replace with PUBLIC_URL)
+
+tags:
+  - name: health
+  - name: catalog
+  - name: auth
+  - name: desktop
+  - name: playback
+  - name: user
+  - name: library
+  - name: syncplay
+  - name: admin
+
+security:
+  - bearerSession: []
+  - bearerDesktop: []
+
+paths:
+  /health:
+    get:
+      tags: [health]
+      security: []
+      summary: Liveness and database reachability
+      responses:
+        '200': { description: Healthy, content: { application/json: { schema: { $ref: '#/components/schemas/Health' } } } }
+        '503': { description: Database unreachable, content: { application/json: { schema: { $ref: '#/components/schemas/Health' } } } }
+
+  /api/shows:
+    get:
+      tags: [catalog]
+      security: []
+      summary: List the indexed library
+      parameters:
+        - { name: limit, in: query, schema: { type: integer, minimum: 1, maximum: 200, default: 50 } }
+        - { name: offset, in: query, schema: { type: integer, minimum: 0, default: 0 } }
+        - { name: q, in: query, schema: { type: string }, description: Matches title, studio or synopsis }
+        - { name: genre, in: query, schema: { type: string }, description: Exact member of the genres array }
+      responses:
+        '200':
+          description: A page of shows, de-duplicated by AniList id or normalized title
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  data: { type: array, items: { $ref: '#/components/schemas/Show' } }
+                  total: { type: integer }
+                  rawTotal: { type: integer }
+                  limit: { type: integer }
+                  offset: { type: integer }
+
+  /api/shows/{id}:
+    get:
+      tags: [catalog]
+      security: []
+      summary: One show with its episodes
+      parameters: [ { name: id, in: path, required: true, schema: { type: string, format: uuid } } ]
+      responses:
+        '200':
+          description: The show object directly, with episodes attached
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - { $ref: '#/components/schemas/Show' }
+                  - type: object
+                    properties:
+                      episodes: { type: array, items: { $ref: '#/components/schemas/Episode' } }
+        '404': { $ref: '#/components/responses/NotFound' }
+
+  /api/anilist:
+    post:
+      tags: [catalog]
+      security: []
+      summary: Read-only AniList GraphQL proxy
+      description: Mutations and subscriptions are refused, including one hidden behind a comment.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [query]
+              properties:
+                query: { type: string, maxLength: 10000 }
+                variables: { type: object }
+      responses:
+        '200': { description: Upstream GraphQL response, verbatim }
+        '400': { description: Missing, oversized, or non-read-only query, or bad variables }
+        '502': { description: AniList unreachable, code anilist_unreachable }
+
+  /api/auth/signup:
+    post:
+      tags: [auth]
+      security: []
+      summary: Create a password account and sign in
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [email, password]
+              properties:
+                email: { type: string, format: email }
+                password: { type: string, minLength: 8, maxLength: 256 }
+                username: { type: string, minLength: 2, maxLength: 32 }
+      responses:
+        '201':
+          description: Session created; also sets the animind_session cookie
+          content:
+            application/json: { schema: { $ref: '#/components/schemas/Session' } }
+        '400': { description: Validation failure }
+        '403': { description: Signup disabled on this server }
+        '409': { description: An account with that email already exists }
+
+  /api/auth/login:
+    post:
+      tags: [auth]
+      security: []
+      summary: Password sign-in
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [email, password]
+              properties:
+                email: { type: string, format: email }
+                password: { type: string }
+                remember_me: { type: boolean, default: false }
+      responses:
+        '200': { description: Session created, content: { application/json: { schema: { $ref: '#/components/schemas/Session' } } } }
+        '401': { description: Same answer for unknown address and wrong password }
+        '423': { description: Too many failures; try later }
+
+  /api/auth/logout:
+    post:
+      tags: [auth]
+      summary: Revoke the calling session
+      responses: { '200': { description: Session revoked and cookie cleared } }
+
+  /api/auth/me:
+    get:
+      tags: [auth]
+      summary: The signed-in account
+      responses:
+        '200':
+          description: Current account
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  user: { $ref: '#/components/schemas/User' }
+                  session_kind: { type: string, enum: [web, desktop] }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+
+  /api/auth/google/url:
+    get:
+      tags: [auth]
+      security: []
+      summary: Build the Google authorization redirect
+      parameters:
+        - name: redirect
+          in: query
+          schema: { type: string }
+          description: Post-login target, accepted only when it names a FRONTEND_URL origin
+      responses:
+        '200':
+          description: Provider URL plus the signed single-use state
+          content:
+            application/json:
+              schema:
+                type: object
+                properties: { url: { type: string }, state: { type: string } }
+        '501': { description: Google sign-in not configured, code oauth_not_configured }
+
+  /api/auth/google/callback:
+    get:
+      tags: [auth]
+      security: []
+      summary: OAuth callback
+      parameters:
+        - { name: code, in: query, schema: { type: string } }
+        - { name: state, in: query, schema: { type: string } }
+        - { name: error, in: query, schema: { type: string } }
+      responses:
+        '302': { description: Redirect to the site with ?auth_code, ?auth=failed or ?auth=cancelled }
+        '400': { description: Missing code or state }
+        '401': { description: State did not verify }
+
+  /api/auth/consume-code:
+    post:
+      tags: [auth]
+      security: []
+      summary: Redeem a one-time OAuth code for a session
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { type: object, required: [code], properties: { code: { type: string } } }
+      responses:
+        '200': { description: Session created, content: { application/json: { schema: { $ref: '#/components/schemas/Session' } } } }
+        '401': { description: Unknown, used or expired code }
+
+  /api/auth/password/change:
+    post:
+      tags: [auth]
+      summary: Change the password and sign out every other session
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [current_password, new_password]
+              properties: { current_password: { type: string }, new_password: { type: string, minLength: 8 } }
+      responses:
+        '200': { description: Password changed }
+        '400': { description: New password rejected }
+        '401': { description: Current password incorrect }
+
+  /api/auth/password/forgot:
+    post:
+      tags: [auth]
+      security: []
+      summary: Begin password recovery
+      description: The reset token is written to the server log; no mail transport is configured.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { type: object, required: [email], properties: { email: { type: string } } }
+      responses:
+        '202': { description: Identical answer whether or not the address exists }
+
+  /api/auth/password/reset:
+    post:
+      tags: [auth]
+      security: []
+      summary: Complete password recovery
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [token, new_password]
+              properties: { token: { type: string }, new_password: { type: string, minLength: 8 } }
+      responses:
+        '200': { description: Password set and all sessions revoked }
+        '401': { description: Unknown, used or expired token }
+
+  /api/auth/sessions:
+    get:
+      tags: [auth]
+      summary: List live sessions and desktop devices
+      responses:
+        '200':
+          description: Both credential families for the account
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  web_sessions: { type: array, items: { type: object } }
+                  desktop_devices: { type: array, items: { type: object } }
+                  current_session: { type: string }
+                  current_device: { type: string }
+
+  /api/auth/sessions/{id}:
+    delete:
+      tags: [auth]
+      summary: Revoke one session or desktop device
+      parameters: [ { name: id, in: path, required: true, schema: { type: string, format: uuid } } ]
+      responses: { '200': { description: Revoked } }
+
+  /api/auth/desktop/bridge-token:
+    post:
+      tags: [desktop]
+      summary: Mint the short-lived JWT for a desktop handoff
+      description: Requires a web session. The desktop player decodes this as a JWT and reads sub, sid and exp.
+      responses:
+        '200':
+          description: Pairing token
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  token: { type: string }
+                  session_id: { type: string }
+                  user_id: { type: string }
+                  email: { type: string }
+                  expires_in: { type: integer, example: 60 }
+        '409': { description: Called with a desktop token; sign in on the website first }
+
+  /api/auth/desktop/exchange:
+    post:
+      tags: [desktop]
+      security: [ { bearerSession: [] }, { bearerDesktop: [] } ]
+      summary: Pair a desktop device
+      requestBody:
+        content:
+          application/json:
+            schema:
+              type: object
+              properties: { deviceId: { type: string, maxLength: 128 }, deviceName: { type: string, maxLength: 128 } }
+      responses:
+        '200':
+          description: Desktop credential pair
+          content:
+            application/json: { schema: { $ref: '#/components/schemas/DesktopTokens' } }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+
+  /api/auth/desktop/refresh:
+    post:
+      tags: [desktop]
+      security: []
+      summary: Rotate a desktop session
+      description: The presented refresh token stops working as part of the same write.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { type: object, required: [refresh_token], properties: { refresh_token: { type: string } } }
+      responses:
+        '200': { description: New pair, content: { application/json: { schema: { $ref: '#/components/schemas/DesktopTokens' } } } }
+        '401': { description: Invalid or expired refresh token }
+
+  /api/auth/desktop/revoke:
+    post:
+      tags: [desktop]
+      security: []
+      summary: Sign a desktop device out
+      parameters: [ { name: Authorization, in: header, schema: { type: string }, description: Optional bearer access token } ]
+      requestBody:
+        content:
+          application/json:
+            schema: { type: object, properties: { refresh_token: { type: string } } }
+      responses:
+        '200': { description: Revoked }
+        '400': { description: Neither a refresh token nor a bearer token was supplied }
+        '404': { description: No matching session }
+
+  /api/episodes/{id}/stream-ticket:
+    get:
+      tags: [playback]
+      summary: Get a signed playback URL
+      parameters:
+        - { name: id, in: path, required: true, schema: { type: string, format: uuid } }
+        - { name: clientType, in: query, schema: { type: string, enum: [desktop, native, web, browser] } }
+        - { name: at, in: query, schema: { type: integer, minimum: 0 }, description: Audio stream index, browser clients only }
+      responses:
+        '200':
+          description: Ticket URL and device negotiation
+          content:
+            application/json: { schema: { $ref: '#/components/schemas/StreamTicket' } }
+        '404': { $ref: '#/components/responses/NotFound' }
+
+  /api/episodes/{id}/stream:
+    get:
+      tags: [playback]
+      security: [ { bearerSession: [] }, { bearerDesktop: [] }, { ticket: [] } ]
+      summary: Stream the media bytes
+      description: |
+        In s3 mode this redirects to a presigned URL, or answers JSON when Accept includes
+        application/json. In local mode it serves byte ranges, capped at 8 MiB for browsers and
+        32 MiB for the native player, and hands a browser the cached audio variant when the
+        ticket bound one.
+      parameters:
+        - { name: id, in: path, required: true, schema: { type: string, format: uuid } }
+        - { name: st, in: query, schema: { type: string }, description: Playback ticket }
+        - { name: at, in: query, schema: { type: integer } }
+        - { name: Range, in: header, schema: { type: string }, example: bytes=0-8388607 }
+      responses:
+        '200': { description: Whole file or a presigned redirect }
+        '206': { description: Requested byte range, headers Content-Range and Accept-Ranges }
+        '302': { description: Redirect to a presigned URL }
+        '401': { description: Neither a valid ticket nor a valid session }
+        '404': { description: Episode or its file is unavailable }
+        '416': { description: Range outside the file, Content-Range bytes */size }
+
+  /api/episodes/{id}/subtitles:
+    get:
+      tags: [playback]
+      summary: WebVTT subtitle tracks
+      parameters: [ { name: id, in: path, required: true, schema: { type: string, format: uuid } } ]
+      responses:
+        '200':
+          description: Always a tracks array, possibly empty
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  episodeId: { type: string }
+                  tracks: { type: array, items: { $ref: '#/components/schemas/SubtitleTrack' } }
+
+  /api/episodes/{id}/audio-tracks:
+    get:
+      tags: [playback]
+      summary: Embedded audio tracks and their cache state
+      parameters: [ { name: id, in: path, required: true, schema: { type: string, format: uuid } } ]
+      responses:
+        '200':
+          description: Tracks in local mode; empty with mode presigned in s3 mode
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  episodeId: { type: string }
+                  mode: { type: string, example: presigned }
+                  tracks: { type: array, items: { $ref: '#/components/schemas/AudioTrack' } }
+
+  /api/episodes/{id}/hls-session:
+    post:
+      tags: [playback]
+      summary: Start an on-demand HLS remux (local mode)
+      parameters: [ { name: id, in: path, required: true, schema: { type: string, format: uuid } } ]
+      requestBody:
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                audioTrackIndex: { type: integer, description: Omitted means the default track }
+                startTime: { type: number, description: Offset in seconds to start at }
+      responses:
+        '200':
+          description: Session ready with a first segment
+          content:
+            application/json:
+              schema:
+                type: object
+                properties: { sessionId: { type: string }, playlistUrl: { type: string } }
+        '400': { description: Not in local storage mode }
+        '429': { description: All HLS sessions are busy, code hls_capacity }
+        '504': { description: ffmpeg produced no segment, code hls_timeout }
+
+  /api/hls/{sessionId}/playlist.m3u8:
+    get:
+      tags: [playback]
+      security: []
+      summary: Current playlist
+      parameters: [ { name: sessionId, in: path, required: true, schema: { type: string, pattern: '^[a-f0-9]{32}$' } } ]
+      responses:
+        '200': { description: MPEG playlist, segment lines relative to this URL, content: { application/vnd.apple.mpegurl: { schema: { type: string } } } }
+        '404': { description: Unknown session }
+
+  /api/hls/{sessionId}/{segment}:
+    get:
+      tags: [playback]
+      security: []
+      summary: One MPEG-TS segment
+      parameters:
+        - { name: sessionId, in: path, required: true, schema: { type: string, pattern: '^[a-f0-9]{32}$' } }
+        - { name: segment, in: path, required: true, schema: { type: string, pattern: '^seg\d{5}\.ts$' } }
+      responses:
+        '200': { description: Segment bytes, content: { video/mp2t: { schema: { type: string, format: binary } } } }
+        '404': { description: Session or segment not available yet }
+
+  /api/hls/{sessionId}/seek:
+    post:
+      tags: [playback]
+      summary: Restart the remux at an offset
+      parameters: [ { name: sessionId, in: path, required: true, schema: { type: string } } ]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { type: object, required: [time], properties: { time: { type: number, minimum: 0 } } }
+      responses:
+        '200': { description: Seeking }
+        '400': { description: Negative or non-numeric time }
+        '404': { description: Unknown session }
+
+  /api/hls/{sessionId}/heartbeat:
+    post:
+      tags: [playback]
+      summary: Keep an idle session alive
+      parameters: [ { name: sessionId, in: path, required: true, schema: { type: string } } ]
+      responses:
+        '200': { description: Session held open }
+        '404': { description: Unknown session }
+
+  /api/hls/{sessionId}:
+    delete:
+      tags: [playback]
+      summary: Destroy a session
+      description: Requires a session; the original backend allowed anonymous destruction.
+      parameters: [ { name: sessionId, in: path, required: true, schema: { type: string } } ]
+      responses: { '200': { description: Destroyed } }
+
+  /api/me:
+    patch:
+      tags: [user]
+      summary: Update the profile
+      requestBody:
+        content:
+          application/json:
+            schema:
+              type: object
+              properties: { username: { type: string }, avatar_url: { type: string, description: http(s) only } }
+      responses:
+        '200': { description: Updated, content: { application/json: { schema: { type: object, properties: { user: { $ref: '#/components/schemas/User' } } } } } }
+        '400': { description: Validation failure }
+    delete:
+      tags: [user]
+      summary: Delete the account
+      description: Cascades watchlist, progress, history, preferences, sessions, identities and owned rooms.
+      responses: { '200': { description: Deleted } }
+
+  /api/me/watchlist:
+    get:
+      tags: [user]
+      summary: Saved shows
+      responses:
+        '200':
+          description: A top-level array; the desktop client requires one
+          content:
+            application/json:
+              schema: { type: array, items: { $ref: '#/components/schemas/WatchlistItem' } }
+
+  /api/me/watchlist/{animeId}:
+    put:
+      tags: [user]
+      summary: Add or replace an entry
+      parameters: [ { name: animeId, in: path, required: true, schema: { type: string } } ]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [anime_data]
+              properties:
+                anime_data: { type: object, description: The client's own show object, stored verbatim }
+                status: { type: string, enum: [Watching, Completed, 'Plan to Watch', Dropped] }
+                anime_id: { type: string, description: Must agree with the path when present }
+      responses:
+        '200': { description: Stored row, content: { application/json: { schema: { $ref: '#/components/schemas/WatchlistItem' } } } }
+        '400': { description: Missing or invalid anime_data, or unknown status }
+        '409': { description: Body anime_id disagrees with the path }
+    patch:
+      tags: [user]
+      summary: Change the watch status
+      parameters: [ { name: animeId, in: path, required: true, schema: { type: string } } ]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [status]
+              properties: { status: { type: string, enum: [Watching, Completed, 'Plan to Watch', Dropped] } }
+      responses:
+        '200': { description: Updated }
+        '404': { description: Not on the watchlist }
+    delete:
+      tags: [user]
+      summary: Remove an entry
+      parameters: [ { name: animeId, in: path, required: true, schema: { type: string } } ]
+      responses: { '200': { description: Removed }, '404': { $ref: '#/components/responses/NotFound' } }
+
+  /api/me/progress:
+    get:
+      tags: [user]
+      summary: Resume position for one episode
+      parameters:
+        - { name: anime_id, in: query, required: true, schema: { type: string } }
+        - { name: episode_index, in: query, schema: { type: integer, default: 0 } }
+      responses:
+        '200':
+          description: A number, never 404 - the player asks before playback
+          content:
+            application/json:
+              schema:
+                type: object
+                properties: { timestamp: { type: number }, anime_id: { type: string }, episode_index: { type: integer } }
+    put:
+      tags: [user]
+      summary: Save a resume position
+      description: Written by a client timer roughly every five seconds during playback.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [anime_id, episode_index, timestamp]
+              properties:
+                anime_id: { type: string }
+                episode_index: { type: integer, minimum: 0 }
+                timestamp: { type: number, minimum: 0 }
+      responses: { '200': { description: Saved } }
+
+  /api/me/progress/recent:
+    get:
+      tags: [user]
+      summary: Recently watched shows
+      parameters: [ { name: limit, in: query, schema: { type: integer, default: 20, maximum: 100 } } ]
+      responses:
+        '200':
+          description: Resume rail data, which the site had no way to query before
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  items:
+                    type: array
+                    items:
+                      type: object
+                      properties:
+                        anime_id: { type: string }
+                        episode_index: { type: integer }
+                        timestamp: { type: number }
+                        updated_at: { type: string, format: date-time }
+
+  /api/me/history:
+    get:
+      tags: [user]
+      summary: Continue-watching rail
+      parameters: [ { name: limit, in: query, schema: { type: integer, default: 50, maximum: 200 } } ]
+      responses:
+        '200':
+          description: A top-level array
+          content:
+            application/json:
+              schema: { type: array, items: { $ref: '#/components/schemas/HistoryItem' } }
+    put:
+      tags: [user]
+      summary: Record a continue-watching entry
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/HistoryItem' }
+      responses: { '200': { description: Saved } }
+
+  /api/me/preferences:
+    get:
+      tags: [user]
+      summary: Player settings
+      responses:
+        '200': { description: The stored document, or an empty object }
+    put:
+      tags: [user]
+      summary: Replace player settings
+      requestBody:
+        required: true
+        content:
+          application/json: { schema: { type: object, maxProperties: 64 } }
+      responses:
+        '200': { description: Stored document }
+        '400': { description: Not a JSON object, or too large }
+
+  /api/rescan:
+    post:
+      tags: [library]
+      summary: Scan and return the library
+      responses:
+        '200':
+          description: The refreshed library in the site's Anime shape
+          content:
+            application/json:
+              schema: { type: array, items: { type: object } }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '409': { description: A scan is already running, code scan_in_progress }
+
+  /api/webhooks/storage:
+    post:
+      tags: [library]
+      security: []
+      summary: Object-store change notification
+      parameters: [ { name: x-webhook-secret, in: header, required: true, schema: { type: string } } ]
+      responses:
+        '200': { description: Acknowledged before scanning }
+        '401': { description: Missing or wrong secret }
+
+  /api/syncplay/rooms/{code}:
+    get:
+      tags: [syncplay]
+      summary: Validate a room code
+      parameters: [ { name: code, in: path, required: true, schema: { type: string, minLength: 4, maxLength: 8 } } ]
+      responses:
+        '200': { description: Live room state, content: { application/json: { schema: { $ref: '#/components/schemas/Room' } } } }
+        '404': { description: No such room }
+        '410': { description: The party has ended, code room_ended }
+
+  /api/admin/users:
+    get:
+      tags: [admin]
+      summary: List accounts
+      parameters:
+        - { name: limit, in: query, schema: { type: integer, default: 100, maximum: 200 } }
+        - { name: offset, in: query, schema: { type: integer, default: 0 } }
+      responses:
+        '200':
+          description: Every account, newest first
+          content:
+            application/json:
+              schema: { type: array, items: { $ref: '#/components/schemas/User' } }
+
+  /api/admin/users/{id}:
+    patch:
+      tags: [admin]
+      summary: Grant or revoke admin rights
+      parameters: [ { name: id, in: path, required: true, schema: { type: string, format: uuid } } ]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { type: object, required: [is_admin], properties: { is_admin: { type: boolean } } }
+      responses:
+        '200': { description: Updated }
+        '400': { description: Refused, because it removes the caller's own access }
+        '404': { $ref: '#/components/responses/NotFound' }
+
+  /api/admin/shows/{id}:
+    delete:
+      tags: [admin]
+      summary: Delete a show
+      parameters: [ { name: id, in: path, required: true, schema: { type: string, format: uuid } } ]
+      responses: { '200': { description: Deleted }, '404': { $ref: '#/components/responses/NotFound' } }
+
+  /api/admin/scan:
+    post:
+      tags: [admin]
+      summary: Scan and report counts
+      responses:
+        '200':
+          description: Scan result
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  scanned: { type: integer }
+                  inserted: { type: integer }
+                  updated: { type: integer }
+                  removed: { type: integer }
+                  prunedEpisodes: { type: integer }
+                  prunedShows: { type: integer }
+                  subtitleFiles: { type: integer }
+                  durationMs: { type: integer }
+                  errors: { type: array, items: { type: string } }
+        '409': { description: A scan is already running, code scan_in_progress }
+
+  /api/admin/metrics:
+    get:
+      tags: [admin]
+      summary: Operational counts
+      responses:
+        '200':
+          description: Real numbers for the dashboard
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  shows: { type: integer }
+                  episodes: { type: integer }
+                  users: { type: integer }
+                  watch_parties: { type: integer }
+                  socket_peers: { type: integer }
+                  socket_rooms: { type: integer }
+                  storage_mode: { type: string }
+                  uptime_seconds: { type: integer }
+                  server_time: { type: string, format: date-time }
+                  hls: { type: object }
+
+  /api/admin/library/cleanup:
+    post:
+      tags: [admin]
+      summary: Run the audio-variant TTL sweep
+      responses:
+        '200':
+          description: Sweep result
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  DeletedFiles: { type: integer }
+                  DeletedDirs: { type: integer }
+                  PrunedEntries: { type: integer }
+        '400': { description: Not in local storage mode }
+
+components:
+  securitySchemes:
+    bearerSession:
+      type: http
+      scheme: bearer
+      description: Site session token (as_...) or cookie
+    bearerDesktop:
+      type: http
+      scheme: bearer
+      description: Desktop access token (adk_...)
+    ticket:
+      type: apiKey
+      in: query
+      name: st
+      description: Single-episode playback ticket
+
+  schemas:
+    Health:
+      type: object
+      properties:
+        status: { type: string, enum: [ok, degraded] }
+        timestamp: { type: string, format: date-time }
+        uptime: { type: string }
+        storage: { type: string, enum: [s3, local] }
+        database: { type: string }
+        watch_parties: { type: boolean }
+    User:
+      type: object
+      properties:
+        id: { type: string, format: uuid }
+        email: { type: string, format: email }
+        username: { type: string }
+        avatar_url: { type: string, nullable: true }
+        is_admin: { type: boolean }
+        created_at: { type: string, format: date-time }
+        updated_at: { type: string, format: date-time }
+    Session:
+      type: object
+      properties:
+        access_token: { type: string, description: Opaque site session (as_...) }
+        token_type: { type: string, example: Bearer }
+        expires_at: { type: string, format: date-time }
+        user: { $ref: '#/components/schemas/User' }
+    DesktopTokens:
+      type: object
+      description: Field names and ISO-8601 expiry are a compatibility contract with the shipped player.
+      properties:
+        token_type: { type: string, example: Bearer }
+        access_token: { type: string, description: 'HMAC-signed desktop token (adk_...)' }
+        refresh_token: { type: string, description: 'Opaque rotating token (adr_...)' }
+        session_id: { type: string }
+        expires_in: { type: integer, description: Seconds }
+        access_token_expires_at: { type: string, format: date-time }
+        refresh_token_expires_at: { type: string, format: date-time }
+    Show:
+      type: object
+      properties:
+        id: { type: string, format: uuid }
+        title: { type: string }
+        synopsis: { type: string, nullable: true }
+        cover_image_url: { type: string, nullable: true }
+        genres: { type: array, items: { type: string } }
+        rating: { type: number, nullable: true, description: 0-10 }
+        episode_count: { type: integer, nullable: true }
+        studio: { type: string, nullable: true }
+        status: { type: string, nullable: true }
+        year: { type: string, nullable: true }
+        anilist_id: { type: integer, nullable: true }
+        trailer_id: { type: string, nullable: true }
+        trailer_site: { type: string, nullable: true }
+        trailer_thumbnail: { type: string, nullable: true }
+        created_at: { type: string, format: date-time }
+    Episode:
+      type: object
+      description: Storage paths are never serialized.
+      properties:
+        id: { type: string, format: uuid }
+        season_number: { type: integer }
+        content_type: { type: string, enum: [tv, ova, ona, special, movie] }
+        episode_number: { type: number, nullable: true, description: Fractional for specials, e.g. 5.5 }
+        title: { type: string, nullable: true }
+        thumbnail: { type: string, nullable: true }
+        duration: { type: integer, nullable: true, description: Seconds }
+        created_at: { type: string, format: date-time }
+    StreamTicket:
+      type: object
+      properties:
+        url: { type: string, description: Relative to the API base, carries the st ticket }
+        expiresIn: { type: integer }
+        hlsRequired: { type: boolean }
+        clientType: { type: string, enum: [native, web] }
+        message: { type: string }
+    SubtitleTrack:
+      type: object
+      properties:
+        id: { type: string }
+        label: { type: string }
+        language: { type: string }
+        content: { type: string, description: Complete WebVTT document }
+    AudioTrack:
+      type: object
+      properties:
+        id: { type: string }
+        label: { type: string }
+        language: { type: string }
+        streamIndex: { type: integer }
+        codec: { type: string }
+        browserSupported: { type: boolean }
+        cached: { type: boolean }
+        cacheMode: { type: string, enum: [copy, transcode] }
+    WatchlistItem:
+      type: object
+      properties:
+        id: { type: string, format: uuid }
+        user_id: { type: string, format: uuid }
+        anime_id: { type: string, description: AniList identifier }
+        anime_data: { type: object, description: The client's stored show object }
+        status: { type: string }
+        created_at: { type: string, format: date-time }
+        updated_at: { type: string, format: date-time }
+    HistoryItem:
+      type: object
+      properties:
+        user_id: { type: string, readOnly: true }
+        anilist_id: { type: string, nullable: true }
+        show_title: { type: string }
+        episode_label: { type: string }
+        thumbnail_url: { type: string, nullable: true }
+        progress_pct: { type: integer, minimum: 0, maximum: 100 }
+        last_watched: { type: string, format: date-time }
+    Room:
+      type: object
+      properties:
+        code: { type: string }
+        episodeId: { type: string }
+        hostUserId: { type: string }
+        hostDisplayName: { type: string }
+        status: { type: string }
+        currentTime: { type: number }
+        isPlaying: { type: boolean }
+        participantCount: { type: integer }
+
+  responses:
+    Unauthorized:
+      description: Missing, invalid or expired credential
+      content:
+        application/json:
+          schema: { type: object, properties: { error: { type: string } } }
+    Forbidden:
+      description: Authenticated but not permitted
+      content:
+        application/json:
+          schema: { type: object, properties: { error: { type: string } } }
+    NotFound:
+      description: No such row
+      content:
+        application/json:
+          schema: { type: object, properties: { error: { type: string } } }
