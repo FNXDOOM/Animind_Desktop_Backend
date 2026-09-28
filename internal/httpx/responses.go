@@ -1,0 +1,183 @@
+// Package httpx is the HTTP edge: routing, middleware, and handlers.
+//
+// It owns every status code and JSON shape the site and the desktop player parse. Error
+// bodies always use {"error": "..."} (with optional extra keys) because both clients read
+// that field, and validation failures additionally set "details" or "fields" where a
+// form can show them.
+package httpx
+
+import (
+	"encoding/json"
+	"errors"
+	"io"
+	"log/slog"
+	"net/http"
+	"strconv"
+	"strings"
+
+	"github.com/go-chi/chi/v5"
+)
+
+// ErrorPayload is the standard error body.
+type ErrorPayload struct {
+	Error string `json:"error"`
+	// Details carries a developer-facing reason when one is safe to expose.
+	Details string `json:"details,omitempty"`
+	// Code is a stable machine-readable identifier for clients that branch on failures.
+	Code string `json:"code,omitempty"`
+}
+
+// WriteError emits a JSON error body.
+func WriteError(w http.ResponseWriter, status int, message string) {
+	writeJSON(w, status, ErrorPayload{Error: message})
+}
+
+// WriteErrorCode emits a JSON error body with a stable code.
+func WriteErrorCode(w http.ResponseWriter, status int, code, message string) {
+	writeJSON(w, status, ErrorPayload{Error: message, Code: code})
+}
+
+// WriteErrorDetails emits an error plus a safe developer detail.
+func WriteErrorDetails(w http.ResponseWriter, status int, message, details string) {
+	writeJSON(w, status, ErrorPayload{Error: message, Details: details})
+}
+
+// WriteJSON serialises v with the given status.
+func WriteJSON(w http.ResponseWriter, status int, v any) { writeJSON(w, status, v) }
+
+func writeJSON(w http.ResponseWriter, status int, v any) {
+	w.Header().Set("Content-Type", "application/json; charset=utf-8")
+	w.WriteHeader(status)
+	if v == nil {
+		return
+	}
+	if err := json.NewEncoder(w).Encode(v); err != nil {
+		slog.Error("failed to encode response", slog.String("error", err.Error()))
+	}
+}
+
+// maxRequestBytes bounds every JSON body. Library payloads are small; the media itself
+// never travels through this endpoint.
+const maxRequestBytes = 1 << 20
+
+// DecodeJSON reads a request body with a hard size cap. Unknown fields are rejected so a
+// client typo such as "refesh_token" fails loudly instead of being silently ignored.
+func DecodeJSON(r *http.Request, dst any) error {
+	defer func() {
+		// Drain a small remainder so keep-alive connections stay reusable.
+		_, _ = io.Copy(io.Discard, io.LimitReader(r.Body, 1<<10))
+	}()
+	dec := json.NewDecoder(io.LimitReader(r.Body, maxRequestBytes))
+	dec.DisallowUnknownFields()
+	if err := dec.Decode(dst); err != nil {
+		if errors.Is(err, io.EOF) {
+			return errors.New("request body is required")
+		}
+		return err
+	}
+	return nil
+}
+
+// QueryInt reads an integer query parameter with clamping.
+func QueryInt(r *http.Request, key string, fallback, min, max int) int {
+	raw := r.URL.Query().Get(key)
+	if raw == "" {
+		return fallback
+	}
+	n, err := strconv.Atoi(raw)
+	if err != nil {
+		return fallback
+	}
+	if n < min {
+		return min
+	}
+	if n > max {
+		return max
+	}
+	return n
+}
+
+// Param returns a path segment, or "" when absent.
+func Param(r *http.Request, key string) string { return chi.URLParam(r, key) }
+
+// BearerToken extracts the credential from an Authorization header.
+//
+// The desktop player only ever sends "Authorization: Bearer <token>", and the site does
+// the same, so no other scheme is accepted.
+func BearerToken(r *http.Request) string {
+	header := r.Header.Get("Authorization")
+	if header == "" {
+		return ""
+	}
+	scheme, value, found := strings.Cut(header, " ")
+	if !found || !strings.EqualFold(scheme, "Bearer") {
+		return ""
+	}
+	return strings.TrimSpace(value)
+}
+
+// ClientHint reports whether the caller is the native desktop player.
+//
+// Detection prefers the explicit clientType query parameter, because the player sends its
+// media requests (and its mpv playback requests) with different user agents than its API
+// calls. Both "desktop" and "native" name the same mode, which is the spelling the site and
+// the desktop player each send today. The header sniff covers the historical values.
+func ClientHint(r *http.Request) string {
+	switch value := strings.ToLower(r.URL.Query().Get("clientType")); value {
+	case "native", "desktop":
+		return "native"
+	case "web", "browser":
+		return "web"
+	}
+	if value := strings.ToLower(r.URL.Query().Get("client_type")); value == "desktop" || value == "native" {
+		return "native"
+	}
+	ua := r.Header.Get("User-Agent")
+	switch {
+	case strings.Contains(ua, "Animind-Desktop"), strings.Contains(ua, "Animind-Qt"),
+		strings.Contains(ua, "Electron"), strings.Contains(ua, "okhttp"),
+		strings.Contains(ua, "Animind-Kotlin"):
+		return "native"
+	}
+	return "web"
+}
+
+// IsNativeClient reports whether the caller is the desktop player.
+func IsNativeClient(r *http.Request) bool { return ClientHint(r) == "native" }
+
+// ClientIP resolves the requesting address for rate limiting.
+//
+// X-Forwarded-For is trusted only when the deployment declares it sits behind a proxy
+// (TRUST_PROXY_HEADERS=true); otherwise a client could forge the header and buy itself an
+// unlimited bucket.
+func ClientIP(r *http.Request, trustProxy bool) string {
+	if trustProxy {
+		if xf := r.Header.Get("X-Forwarded-For"); xf != "" {
+			first := strings.TrimSpace(strings.Split(xf, ",")[0])
+			if first != "" {
+				return first
+			}
+		}
+		if real := strings.TrimSpace(r.Header.Get("X-Real-IP")); real != "" {
+			return real
+		}
+	}
+	host, _, found := strings.Cut(r.RemoteAddr, ":")
+	if !found {
+		return r.RemoteAddr
+	}
+	return host
+}
+
+// SecureHeaders sets the response headers a JSON API should always send. Media responses
+// override some of these in the streaming handler.
+func SecureHeaders(next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		h := w.Header()
+		h.Set("X-Content-Type-Options", "nosniff")
+		h.Set("X-Frame-Options", "DENY")
+		h.Set("Referrer-Policy", "no-referrer")
+		h.Set("Cache-Control", "no-store")
+		next.ServeHTTP(w, r)
+	})
+}
