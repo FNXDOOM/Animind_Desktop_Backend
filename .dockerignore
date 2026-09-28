@@ -1,0 +1,22 @@
+# Keep secrets and local state out of the image build context.
+.env
+.env.local
+*.key
+*.pem
+.git
+.gitignore
+
+# Build artifacts and test output are regenerated inside the image.
+build/
+dist/
+coverage.out
+
+# Documentation is not needed to run the service.
+docs/
+README.md
+*.md
+
+# Runtime data directories mounted at run time, never baked in.
+library/
+.animind-audio-cache/
+node_modules/

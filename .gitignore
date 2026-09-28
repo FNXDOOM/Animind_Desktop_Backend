@@ -1,0 +1,21 @@
+# Local environment and secrets
+.env
+.env.local
+*.key
+*.pem
+
+# Build output
+build/
+dist/
+coverage.out
+coverage.html
+
+# Runtime data written by local storage mode
+library/
+.animind-audio-cache/
+
+# Editor and OS noise
+.idea/
+.vscode/
+.DS_Store
+Thumbs.db
