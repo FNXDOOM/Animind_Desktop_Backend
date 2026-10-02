@@ -230,6 +230,32 @@ type SyncPlayConfig struct {
 	StallDetectWindow time.Duration
 	// StallGrace is how long a stalling member gets to recover before the room re-gates.
 	StallGrace time.Duration
+	// WaitDeadline is the hard cap on one gate: it closes whatever has buffered, since an
+	// unbounded wait is worse than an uneven start. Jellyfin's 30 s, same reasoning.
+	WaitDeadline time.Duration
+	// StartLeadFloor is the smallest delay between a play broadcast and the instant clients
+	// start. It buys every member time to receive the packet at all. Jellyfin: 500 ms.
+	StartLeadFloor time.Duration
+	// StartLeadCeiling caps the scheduled lead, so one slow member cannot push the whole room's
+	// start arbitrarily far into the future.
+	StartLeadCeiling time.Duration
+	// MaxReportedPing clamps a member's self-reported round trip before it influences the
+	// start schedule. Jellyfin: 10 s.
+	MaxReportedPing time.Duration
+	// ClientTuning is published to members in syncConfig. The server does not act on most of
+	// it; it exists so a threshold change is a redeploy rather than a client release.
+	SlowdownRate, SpeedupRate                                            float64
+	CorrectionEngageDrift                                                time.Duration
+	CorrectionReleaseDrift                                               time.Duration
+	FastForwardDrift                                                     time.Duration
+	MaxPlaybackOffset                                                    time.Duration
+	MaxCatchUpOffset                                                     time.Duration
+	BufferGoalFraction                                                   float64
+	ProtocolTimeout                                                      time.Duration
+	TimeSyncWindow                                                       int
+	TimeSyncDeadband                                                     time.Duration
+	TimeSyncMaxAge                                                       time.Duration
+	TimeSyncGreedyInterval, TimeSyncIdleInterval, TimeSyncPausedInterval time.Duration
 	// MaxParticipants caps a single room.
 	MaxParticipants int
 	// ReadLimitBytes caps one inbound socket message.
@@ -450,11 +476,31 @@ func (c *Config) loadSyncPlay() {
 		EscapeWait:        time.Duration(getInt("SYNCPLAY_ESCAPE_WAIT_MS", 10000)) * time.Millisecond,
 		StallDetectWindow: time.Duration(getInt("SYNCPLAY_STALL_DETECT_MS", 2000)) * time.Millisecond,
 		StallGrace:        time.Duration(getInt("SYNCPLAY_STALL_GRACE_MS", 5000)) * time.Millisecond,
-		MaxParticipants:   getInt("SYNCPLAY_MAX_PARTICIPANTS", 12),
-		ReadLimitBytes:    int64(getInt("SYNCPLAY_MAX_MESSAGE_BYTES", 65536)),
-		PingInterval:      time.Duration(getInt("SYNCPLAY_PING_INTERVAL_SECONDS", 25)) * time.Second,
-		WriteTimeout:      time.Duration(getInt("SYNCPLAY_WRITE_TIMEOUT_SECONDS", 10)) * time.Second,
-		PongTimeout:       time.Duration(getInt("SYNCPLAY_PONG_TIMEOUT_SECONDS", 40)) * time.Second,
+		WaitDeadline:      time.Duration(getInt("SYNCPLAY_WAIT_DEADLINE_MS", 30000)) * time.Millisecond,
+		StartLeadFloor:    time.Duration(getInt("SYNCPLAY_START_LEAD_MIN_MS", 500)) * time.Millisecond,
+		StartLeadCeiling:  time.Duration(getInt("SYNCPLAY_START_LEAD_MAX_MS", 4000)) * time.Millisecond,
+		MaxReportedPing:   time.Duration(getInt("SYNCPLAY_MAX_PING_MS", 10000)) * time.Millisecond,
+		// Client tunables; these defaults are the figures the improvement-plan doc cites.
+		SlowdownRate:           getFloat("SYNCPLAY_SLOWDOWN_RATE", 0.95),
+		SpeedupRate:            getFloat("SYNCPLAY_SPEEDUP_RATE", 1.05),
+		CorrectionEngageDrift:  time.Duration(getInt("SYNCPLAY_CORRECTION_ENGAGE_DRIFT_MS", 1500)) * time.Millisecond,
+		CorrectionReleaseDrift: time.Duration(getInt("SYNCPLAY_CORRECTION_RELEASE_DRIFT_MS", 100)) * time.Millisecond,
+		BufferGoalFraction:     getFloat("SYNCPLAY_BUFFER_GOAL_FRACTION", 0.10),
+		FastForwardDrift:       time.Duration(getInt("SYNCPLAY_FAST_FORWARD_DRIFT_MS", 5000)) * time.Millisecond,
+		MaxPlaybackOffset:      time.Duration(getInt("SYNCPLAY_MAX_PLAYBACK_OFFSET_MS", 500)) * time.Millisecond,
+		MaxCatchUpOffset:       time.Duration(getInt("SYNCPLAY_MAX_CATCHUP_OFFSET_MS", 20000)) * time.Millisecond,
+		TimeSyncWindow:         getInt("SYNCPLAY_TIMESYNC_WINDOW", 8),
+		TimeSyncDeadband:       time.Duration(getInt("SYNCPLAY_TIMESYNC_DEADBAND_MS", 120)) * time.Millisecond,
+		TimeSyncMaxAge:         time.Duration(getInt("SYNCPLAY_TIMESYNC_MAX_AGE_MS", 150000)) * time.Millisecond,
+		TimeSyncGreedyInterval: time.Duration(getInt("SYNCPLAY_TIMESYNC_GREEDY_MS", 1000)) * time.Millisecond,
+		TimeSyncIdleInterval:   time.Duration(getInt("SYNCPLAY_TIMESYNC_IDLE_MS", 15000)) * time.Millisecond,
+		TimeSyncPausedInterval: time.Duration(getInt("SYNCPLAY_TIMESYNC_PAUSED_MS", 60000)) * time.Millisecond,
+		ProtocolTimeout:        time.Duration(getInt("SYNCPLAY_PROTOCOL_TIMEOUT_MS", 12500)) * time.Millisecond,
+		MaxParticipants:        getInt("SYNCPLAY_MAX_PARTICIPANTS", 12),
+		ReadLimitBytes:         int64(getInt("SYNCPLAY_MAX_MESSAGE_BYTES", 65536)),
+		PingInterval:           time.Duration(getInt("SYNCPLAY_PING_INTERVAL_SECONDS", 25)) * time.Second,
+		WriteTimeout:           time.Duration(getInt("SYNCPLAY_WRITE_TIMEOUT_SECONDS", 10)) * time.Second,
+		PongTimeout:            time.Duration(getInt("SYNCPLAY_PONG_TIMEOUT_SECONDS", 40)) * time.Second,
 	}
 }
 

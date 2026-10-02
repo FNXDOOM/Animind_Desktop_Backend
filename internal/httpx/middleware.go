@@ -1,8 +1,11 @@
 package httpx
 
 import (
+	"bufio"
 	"context"
+	"fmt"
 	"log/slog"
+	"net"
 	"net/http"
 	"runtime/debug"
 	"strings"
@@ -150,6 +153,17 @@ func (r *statusRecorder) Flush() {
 	if f, ok := r.ResponseWriter.(http.Flusher); ok {
 		f.Flush()
 	}
+}
+
+// Hijack must be forwarded or the wrapper hides it: embedding an interface only promotes
+// that interface's methods, so a websocket upgrade through this middleware would find no
+// hijacker and fail with a 500 before the hub ever ran.
+func (r *statusRecorder) Hijack() (net.Conn, *bufio.ReadWriter, error) {
+	h, ok := r.ResponseWriter.(http.Hijacker)
+	if !ok {
+		return nil, nil, fmt.Errorf("httpx: underlying ResponseWriter is not a hijacker")
+	}
+	return h.Hijack()
 }
 
 // Recover turns a panic into a 500 without leaking the stack to the client. A nil request

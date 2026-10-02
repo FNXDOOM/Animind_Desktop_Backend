@@ -1,14 +1,9 @@
-// Package syncplay implements watch parties: shared playback with a server-authoritative
-// clock.
-//
-// The transport is the Socket.IO v4 wire protocol, implemented here rather than pulled in
-// as a dependency, because the site and its already-deployed socket.io-client speak
-// Engine.IO framing over both WebSocket and long-polling, and only the subset the feature
-// needs is worth maintaining.
-//
-// Room state lives in memory: live playback is meaningless to persist on every heartbeat.
-// Database rows record rooms and their participants as a best-effort audit trail, so a
-// write failure warns and the party continues.
+// Package syncplay implements watch parties: shared playback on a server-authoritative clock.
+// The Socket.IO v4 protocol is hand-rolled here because the deployed socket.io-client needs
+// Engine.IO framing over both WebSocket and long-polling, and only the subset this feature uses
+// is worth maintaining. Room state lives in memory, since live playback is pointless to persist
+// per heartbeat; the database keeps only a best-effort audit trail, so a write failure warns
+// rather than stops the party.
 package syncplay
 
 import (
@@ -186,11 +181,9 @@ func encodeAck(id int, payload any) (string, error) {
 	return fmt.Sprintf("%s%d%s", string(sioEventAck), id, string(body)), nil
 }
 
-// decodeMessage parses one socket.io packet carried in an Engine.IO message.
-//
-// A message may contain several packets concatenated; socket.io-client does that for
-// polling batches. Splitting happens on the packet-type byte, which is always a digit and
-// never appears at the start of a JSON array body.
+// decodeMessage parses one or more concatenated socket.io packets in an Engine.IO message, which
+// is how socket.io-client sends polling batches. It splits on the packet-type byte, always a
+// digit and never the start of a JSON body.
 func decodeMessage(payload string) ([]inbound, error) {
 	var out []inbound
 	remaining := payload
@@ -337,10 +330,8 @@ func truncate(s string, n int) string {
 	return s[:n] + "..."
 }
 
-// websocketHandler upgrades a connection and runs one peer.
-//
-// Both the initial WebSocket connect and an upgrade from polling arrive here; the sid
-// query parameter decides whether the peer is new or resuming.
+// websocketHandler upgrades a connection and runs one peer; both the initial connect and an
+// upgrade from polling arrive here, and the sid parameter decides whether the peer is new.
 func (h *Hub) websocketHandler(w http.ResponseWriter, r *http.Request) {
 	sid := r.URL.Query().Get("sid")
 	encoding := r.URL.Query().Get("EIO")
@@ -370,12 +361,18 @@ func (h *Hub) websocketHandler(w http.ResponseWriter, r *http.Request) {
 // attachWebSocket drives read and write loops for a peer.
 func (h *Hub) attachWebSocket(p *peer, conn *websocket.Conn, upgrade bool) {
 	writer := h.wsWriter(p, conn)
+	// finished lets the reader wait for the writer's last flush, so the socket is not closed
+	// under a queue still holding the reason the connection ended.
+	finished := make(chan struct{})
+	go func() {
+		defer close(finished)
+		writer()
+	}()
 	if upgrade {
 		p.send(string(engineNoop))
 	} else {
 		p.enqueue(string(engineOpen) + mustJSON(h.openPayload(p.sid)))
 	}
-	go writer()
 
 	conn.SetReadLimit(h.cfg.SyncPlay.ReadLimitBytes)
 	pongDeadline := time.Now().Add(h.cfg.SyncPlay.PongTimeout)
@@ -385,6 +382,11 @@ func (h *Hub) attachWebSocket(p *peer, conn *websocket.Conn, upgrade bool) {
 	})
 
 	defer func() {
+		p.Close()
+		select {
+		case <-finished:
+		case <-time.After(time.Second):
+		}
 		_ = conn.Close()
 		h.disconnect(p)
 	}()
@@ -413,8 +415,23 @@ func (h *Hub) attachWebSocket(p *peer, conn *websocket.Conn, upgrade bool) {
 	}
 }
 
-// wsWriter returns the loop that drains queued frames to the socket, sending Engine.IO
-// pings on the configured interval.
+// drainBeforeClose flushes frames still queued on a closing peer, so a refusal's reason reaches
+// the client before the socket drops. Returns false once a write fails.
+func (h *Hub) drainBeforeClose(p *peer, conn *websocket.Conn) bool {
+	for {
+		select {
+		case frame := <-p.out:
+			_ = conn.SetWriteDeadline(time.Now().Add(h.cfg.SyncPlay.WriteTimeout))
+			if err := conn.WriteMessage(websocket.TextMessage, []byte(frame)); err != nil {
+				return false
+			}
+		default:
+			return true
+		}
+	}
+}
+
+// wsWriter returns the loop that drains queued frames to the socket and sends Engine.IO pings.
 func (h *Hub) wsWriter(p *peer, conn *websocket.Conn) func() {
 	return func() {
 		ticker := time.NewTicker(h.cfg.SyncPlay.PingInterval)
@@ -422,6 +439,10 @@ func (h *Hub) wsWriter(p *peer, conn *websocket.Conn) func() {
 		for {
 			select {
 			case <-p.closed:
+				// Flush the queue first: a refusal's reason must arrive before the socket closes.
+				if !h.drainBeforeClose(p, conn) {
+					return
+				}
 				_ = conn.WriteControl(websocket.CloseMessage,
 					websocket.FormatCloseMessage(websocket.CloseNormalClosure, ""), time.Now().Add(time.Second))
 				return
@@ -482,12 +503,20 @@ func (h *Hub) handleSocketPacket(p *peer, body string) bool {
 
 	switch kind {
 	case sioConnect:
-		// The desktop and web clients put the bearer token in the CONNECT payload.
-		var auth struct {
+		// The CONNECT token is nested under "auth" by socket.io-client but sent flat by a
+		// hand-rolled client; both shapes are accepted since we control only one.
+		var conn struct {
 			Token string `json:"token"`
+			Auth  struct {
+				Token string `json:"token"`
+			} `json:"auth"`
 		}
-		_ = json.Unmarshal([]byte(orEmpty(rest)), &auth)
-		principal, err := h.authenticate(auth.Token)
+		_ = json.Unmarshal([]byte(orEmpty(rest)), &conn)
+		token := conn.Token
+		if token == "" {
+			token = conn.Auth.Token
+		}
+		principal, err := h.authenticate(token)
 		if err != nil {
 			p.send(string(sioConnectError) + mustJSON(map[string]string{"message": errorMessage(err)}))
 			return false

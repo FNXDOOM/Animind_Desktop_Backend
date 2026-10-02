@@ -21,10 +21,8 @@ import (
 	"animind-backend-go/internal/repository"
 )
 
-// Hub owns every live peer and room.
-//
-// It is the only place that mutates room state, and each room serializes its own changes,
-// so an event handler never has to reason about interleaving from another goroutine.
+// Hub owns every live peer and room. Each room serializes its own changes, so a handler never
+// has to reason about interleaving from another goroutine.
 
 // Authenticator resolves a socket's auth payload to an account. auth.Service satisfies it.
 type Authenticator interface {
@@ -206,6 +204,12 @@ func (h *Hub) dispatchEvent(p *peer, in inbound) {
 		h.handleStallRecovered(p, room)
 	case "heartbeat":
 		h.handleHeartbeat(p, in, room)
+	case "ping":
+		h.handlePingReport(p, in, room)
+	case "timesync_offset":
+		h.handleTimeSyncOffset(p, in, room)
+	case "ignoreWait":
+		h.handleIgnoreWait(p, in, room)
 	case "transferHost":
 		h.handleTransferHost(p, in, room)
 	case "changeEpisode":
@@ -260,14 +264,15 @@ func (h *Hub) PeerCount() int {
 // RoomSnapshot describes a room for the HTTP lookup endpoint, which lets a client validate
 // a code before it asks the user to open the matching episode.
 type RoomSnapshot struct {
-	Code            string  `json:"code"`
-	EpisodeID       string  `json:"episodeId"`
-	HostUserID      string  `json:"hostUserId"`
-	HostDisplayName string  `json:"hostDisplayName"`
-	Status          string  `json:"status"`
-	CurrentTime     float64 `json:"currentTime"`
-	IsPlaying       bool    `json:"isPlaying"`
-	Participants    int     `json:"participantCount"`
+	Code            string     `json:"code"`
+	EpisodeID       string     `json:"episodeId"`
+	HostUserID      string     `json:"hostUserId"`
+	HostDisplayName string     `json:"hostDisplayName"`
+	Status          string     `json:"status"`
+	GroupState      groupState `json:"groupState"`
+	CurrentTime     float64    `json:"currentTime"`
+	IsPlaying       bool       `json:"isPlaying"`
+	Participants    int        `json:"participantCount"`
 }
 
 // Snapshot returns a room's current state, or false when the code is unknown.
@@ -388,10 +393,8 @@ func firstEight(id string) string {
 	return id[:8]
 }
 
-// readLimited reads a request body up to limit bytes, so a hostile client cannot make the
-// socket layer allocate without bound.
-// errorMessage renders a handshake failure. The Socket.IO connect-error payload carries
-// only a message, so this is the entire diagnostic a client receives.
+// errorMessage renders a handshake failure; the connect-error payload carries only a message,
+// so this is the entire diagnostic a client receives.
 func errorMessage(err error) string {
 	if err == nil {
 		return "Invalid token."
@@ -399,6 +402,8 @@ func errorMessage(err error) string {
 	return err.Error()
 }
 
+// readLimited reads a request body up to limit bytes, so a hostile client cannot over-allocate
+// the socket layer.
 func readLimited(r *http.Request, limit int64) (string, error) {
 	defer r.Body.Close()
 	data, err := io.ReadAll(io.LimitReader(r.Body, limit+1))

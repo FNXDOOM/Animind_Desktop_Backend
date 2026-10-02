@@ -57,7 +57,7 @@ starts half-configured and then 500s on first use.
 | Catalog | Shows and episodes from the indexed library, public read | [API reference](docs/03-api-reference.md) |
 | Library index | S3 or filesystem scan, release-name parsing, AniList/MyAnimeList enrichment, subtitle extraction, deletion pruning | [Storage and scanner](docs/04-storage-and-scanner.md) |
 | Playback | Signed tickets, byte-range passthrough, presigned redirects, browser audio variants, on-demand HLS | [Streaming](docs/05-streaming.md) |
-| Watch parties | Socket.IO v4 rooms with a server-authoritative clock and drift correction | [Watch parties](docs/06-watch-parties.md) |
+| Watch parties | Socket.IO v4 rooms: server-authoritative clock, scheduled group starts, drift ladder, per-member latency and wait policy | [Watch parties](docs/06-watch-parties.md) |
 | Operations | Cron jobs, metrics, webhooks, Docker/VPS deployment | [Deployment](docs/07-deployment.md) |
 
 Package layout and request lifecycle are in [Architecture](docs/01-architecture.md).
@@ -129,6 +129,25 @@ client-side changes required are in
 - `GET /api/admin/metrics` reports real numbers; the site's dashboard values were hard-coded.
 - Library listing gained `q` and `genre` parameters, and episode rows carry a `thumbnail`.
 
+**Watch-party protocol, second pass** (2026-10-01, additive — every field name was chosen to match
+what the shipped web client already parses, so the site gained the behaviour without a release):
+
+- `scheduledPlayAt` on play/unpause/seek, computed from the slowest member's ping. A group no
+  longer starts when each peer happened to receive the packet.
+- `seq` and `serverTime` on every broadcast, so a stale pause that overtook the play it followed is
+  detectable instead of mysterious.
+- `serverReceiveTime` on `timesync_pong`. With two stamps, latency and clock error are one number;
+  with four, a client can tell a slow link from a wrong wall clock.
+- `allReady` and `peerBuffering`, which the web client had been listening for since it was written.
+- `syncConfig` and a `features` list in the create/join acks, so thresholds are redeployed rather
+  than released.
+- `ignoreWait` per member, a 30 s wait deadline, an explicit `groupState`, a buffer goal scaled to
+  the episode remaining, and corrections that name the clock they were measured against.
+
+Two defects surfaced only in the tests written for that work: the socket writer dropped queued
+frames when a peer closed, so a refused handshake reached the client as an unexplained drop rather
+than a reason; and three room paths read state after unlocking.
+
 ---
 
 ## Development
@@ -144,17 +163,20 @@ Test coverage is deliberate about what it proves:
 | Suite | What it pins |
 | --- | --- |
 | `internal/auth` | argon2id encode/verify, parameter upgrade, token tampering, `alg=none` refusal, ticket episode binding |
-| `internal/httpx` | every route is registered, every protected route rejects anonymous callers, CORS, security headers, rate limits, range parsing |
+| `internal/httpx` | every route is registered, every protected route rejects anonymous callers, CORS, security headers, rate limits, range parsing, and a websocket upgrade that survives the middleware chain |
 | `internal/scanner` | release-filename rules and their ordering, candidate scoring, metadata fill |
 | `internal/media` | ASS/SRT to WebVTT, ffprobe JSON decoding, codec and container capability split, subtitle directory layout |
 | `internal/metadata` | provider field mapping and title normalization |
 | `internal/config` | defaults, required-value failures, clamps, boolean parsing |
 | `internal/storage` | path containment including symlink escape, discovery skipping the derived cache, atomic writes |
-| `internal/syncplay` | Socket.IO framing and ack ids, batched packets, the drift ladder, room codes, and the room state machine over real websockets |
+| `internal/syncplay` | Socket.IO framing and ack ids, batched packets, the drift ladder, room codes, the gate machine with no database (`gate_test.go`), and the protocol over real websockets |
 | `internal/repository` | SQL against real Postgres: unique keys the upserts target, cascade deletes, ownership filters, session rotation |
 
-The repository suite is the only one that needs a database, because its subject is the SQL
-itself. It skips cleanly when `POSTGRES_TEST_DATABASE_URL` is unset:
+The repository suite and `TestWatchParty*` are the only ones that need a database. The
+watch-party gate machine is also covered without one, by building a hub whose peers own in-memory
+outbound channels — a protocol whose only test skips when a service is absent is a protocol with
+no test on the machine doing the deploy. It skips cleanly when `POSTGRES_TEST_DATABASE_URL` is
+unset:
 
 ```bash
 docker compose up -d db
@@ -187,7 +209,11 @@ The port was verified against a live stack rather than only compiled: Postgres 1
 the API built from `Dockerfile` and run with the library mounted, both harnesses executed
 (80/80 HTTP checks, 25/25 media checks), and the Go suite run with the database configured.
 
-That verification found five defects that type-checking and unit tests did not:
+The scheduled start was then measured against that stack with two peers, one holding its
+broadcasts back 400 ms: both fired on the same hub instant, **0 ms apart**, with no corrective
+seek — the impaired peer's own estimate read the delay as `pingMs=400`.
+
+That verification found seven defects that type-checking and unit tests did not:
 
 | Found by | Defect | Effect had it shipped |
 | --- | --- | --- |
@@ -196,6 +222,8 @@ That verification found five defects that type-checking and unit tests did not:
 | media suite on Linux | `nice 19 ffprobe` without `-n` | BusyBox reads `19` as the program: every probe and transcode fails in the container while working on a GNU host |
 | media suite on Linux | ffprobe reports `disposition` flags as numbers | probe JSON never decodes: audio-track lists come back empty and subtitles are never extracted |
 | media suite on Linux | a temp variant named `…mp4.partial` | ffmpeg cannot infer a muxer from it, so every audio-variant transcode fails and browsers get the unplayable original |
+| middleware socket test | queued frames dropped when a peer closed | a refused sign-in token arrived as a silent disconnect, so the player reported "connection lost" instead of "token expired" |
+| gate unit test | three room paths read state after unlocking | a heartbeat racing a gate close could publish a roster that never existed |
 
 The lesson is worth stating: a host with no database and no ffmpeg can prove the build, not the
 behaviour. [Deployment](docs/07-deployment.md) ends with the commands that reproduce this run.

@@ -43,23 +43,37 @@ Any change that could make peers disagree — play, seek, a new joiner, a drift 
 
 ```
 initiateBufferGate(playAfterReady)
-  1. clear timers, readyPeers, stallingPeers; isPlaying = false; waitingForReady = true
-  2. broadcast waitForBufferGoal {currentTime, bufferGoalSeconds, peers, totalPeers, readyCount, sentAt}
-     and waitForReady (same, minus bufferGoalSeconds) — both, for older clients
-  3. arm a per-peer force-ready timer (SYNCPLAY_READY_TIMEOUT_MS, 12 s)
-  4. arm one escape timer (SYNCPLAY_ESCAPE_WAIT_MS, 10 s)
+  1. clear timers, readyPeers, stallingPeers; isPlaying = false; waitingForReady = true;
+     bump gateEpoch
+  2. count every member with ignoreWait as ready at once — opting out is a standing preference,
+     not a one-gate favour
+  3. broadcast waitForBufferGoal {currentTime, bufferGoalSeconds, peers, totalPeers, readyCount,
+     groupState, waitDeadlineMs, sentAt} and waitForReady (same, minus bufferGoalSeconds) — both,
+     for older clients
+  4. arm a per-peer force-ready timer (SYNCPLAY_READY_TIMEOUT_MS, 12 s)
+  5. arm the escape timer (SYNCPLAY_ESCAPE_WAIT_MS, 10 s) and the hard wait deadline
+     (SYNCPLAY_WAIT_DEADLINE_MS, 30 s)
 ```
 
-A peer becomes ready by any of: sending `ready`; reporting `bufferedSeconds >= 
-SYNCPLAY_BUFFER_GOAL_SECONDS` (120 s) in `bufferingProgress`; its force-ready timer firing
-(announced with `peerReady` and `timedOut: true`, the only place that flag appears); or the escape
-hatch. When `readyPeers` reaches `participants`, the gate closes with `syncPlay` if play was
-intended, otherwise `syncPaused`.
+A peer becomes ready by any of: sending `ready`; reporting `bufferedSeconds >= goal` in
+`bufferingProgress`; its force-ready timer firing (announced with `peerReady` and
+`timedOut: true`); opting out; or the escape hatch. When `readyPeers` reaches `participants` the
+gate closes with `allReady` and then `syncPlay` if play was intended, otherwise `syncPaused`.
+
+The goal is `min(SYNCPLAY_BUFFER_GOAL_SECONDS, SYNCPLAY_BUFFER_GOAL_FRACTION * seconds remaining)`
+with a 10 s floor: a fixed 120 s asks for the entire file during the last two minutes of every
+episode, which turned the end of each episode into a permanent gate.
 
 The escape hatch is the honesty mechanism: at 10 s, if any peer has buffered the goal **or** any
 peer is already ready, everyone is readied at once. Without it a single slow connection holds the
 party hostage; the trade is that some peers resume under-buffered and may stall shortly after,
-which the stall path then handles.
+which the stall path then handles. The deadline is the same argument taken to its conclusion: at
+30 s the gate closes whatever the buffers look like, because waiting longer has already cost more
+than it can save.
+
+`gateEpoch` invalidates timers that cannot be stopped. A `time.AfterFunc` callback that has
+already begun running survives `Stop()`, so without the epoch a force-ready from a closed gate
+could grant readiness into the gate that replaced it.
 
 `pause` cancels an open gate outright — otherwise the room would resume playing after the
 stragglers finished buffering. A peer leaving mid-gate lowers the bar and re-attempts the close, so
@@ -73,16 +87,49 @@ broadcasts `participantStates` to the room and evaluates that peer's drift.
 | Drift | Correction |
 | --- | --- |
 | < 200 ms | nothing |
-| < 500 ms | `softCorrect {currentTime}` — the client seeks quietly |
-| < 10 000 ms | `speedSeek {rate, duration, targetTime}` — rate 1.5 if behind, 0.8 if ahead, for `min(drift*2, 8000)` ms |
+| < 500 ms | `softCorrect {currentTime, fromUserId, driftMs}` — the client seeks quietly |
+| < 10 000 ms | `speedSeek {rate, duration, targetTime, fromUserId, driftMs}` — rate 1.5 if behind, 0.8 if ahead, for `min(drift*2, 8000)` ms |
 | >= 10 000 ms | full re-gate of the room, with play intent forced on |
 
 Speed correction is used before seeking because a seek costs a buffer refill for everyone watching
-that peer; rate manipulation closes a few seconds of gap silently.
+that peer; rate manipulation closes a few seconds of gap silently. Both packets name the clock they
+were measured against (`fromUserId`) and how far off they found the peer (`driftMs`): a correction
+that arrives without attribution reads as a glitch, while one that says who fell behind reads as
+the group working. A member that opted out of the wait is told how far off it is and never
+steered — that is what the opt-out means.
 
-Peers also reconcile their own clocks with `timesync_ping` / `timesync_pong`, which carries
-`serverTime` so the client can schedule a start at a shared future instant rather than reacting to
-a broadcast it received late.
+Every broadcast carries `seq` (the room's monotonic sequence number, assigned at emit time) and
+`serverTime`. A client that orders by arrival alone will apply a stale pause after the play that
+overtook it; the pair makes that detectable, and the desktop client drops anything at or below the
+last sequence number it applied.
+
+### Scheduled starts
+
+A group play, unpause or seek is not an instruction to act; it is an instruction to act **at**
+something. The hub computes
+
+```
+scheduledPlayAt = now + clamp(2 x highest member pingMs, SYNCPLAY_START_LEAD_MIN_MS,
+                                                SYNCPLAY_START_LEAD_MAX_MS)
+```
+
+— the floor matters more than the ceiling: a room of locally connected peers has a near-zero ping,
+and scheduling nothing would put everyone back on "act when the packet lands". `pingMs` is
+reported by clients on `heartbeat`, `play`, `pause`, `seek` and `ping`, and clamped to
+`SYNCPLAY_MAX_PING_MS` so no client can push a room's start arbitrarily far out.
+
+The field is named `scheduledPlayAt` because that is what the deployed web client already parses
+(`msUntilServerTime` in `services/syncplay.client.ts`), which means the site gains scheduled starts
+without a release.
+
+### Clock service
+
+`timesync_ping` is answered with four stamps: `clientSendTime` echoed, `serverReceiveTime` read on
+the first line of the handler before any work, and `serverTime` at the moment of the answer. With
+only two, offset and round trip collapse into one number and every estimate inherits response
+latency as clock error; `serverReceiveTime` is what lets a client tell a slow link from a wrong
+wall clock. Clients report their own conclusion with `timesync_offset {offsetMs, pingMs}`, which
+the hub publishes per peer in `participantStates`.
 
 ## Stalls
 
@@ -108,8 +155,10 @@ timeout that demotes a silent host: a host whose heartbeats stop but whose socke
 authority and freezes the clock. That is a known limitation of this design rather than something
 this port introduced.
 
-`changeEpisode` resets the position to 0, clears buffers and readiness so a stale report from the
-previous episode cannot satisfy the next gate, and leaves the room paused until someone plays.
+`changeEpisode` (host only, and the target episode must exist in the library) resets the position
+to 0, clears buffers and readiness so a stale report from the previous episode cannot satisfy the
+next gate, re-reads the episode duration for the scaled goal, and opens a gate: every member has to
+load a different file, which is exactly the condition the gate exists for.
 
 **Leaving is disconnecting.** There is no `leaveRoom` event, because the deployed clients have
 none — `leaveSyncPlay` just calls `disconnect()`. Adding one would require a client change first.
@@ -122,20 +171,40 @@ Client → server (`createRoom` and `joinRoom` are the only two that request an 
 | --- | --- |
 | `createRoom` | `{ episodeId }` |
 | `joinRoom` | `{ roomCode }` |
-| `play` / `pause` | `{ currentTime }` |
-| `seek` | `{ time }` |
+| `play` / `pause` | `{ currentTime, pingMs? }` |
+| `seek` | `{ time, pingMs? }` |
 | `ready` / `buffering` / `stallRecovered` / `requestSync` | – |
 | `bufferingProgress` | `{ bufferedSeconds, percent }` |
-| `heartbeat` | `{ currentTime, playbackRate?, bufferedAhead? }` |
+| `heartbeat` | `{ currentTime, playbackRate?, bufferedAhead?, pingMs?, durationSeconds? }` |
+| `ping` | `{ pingMs }` — a latency report outside a heartbeat, for a paused room |
+| `timesync_offset` | `{ offsetMs?, pingMs? }` |
+| `ignoreWait` | `{ ignore }` — stop holding this member at gates (or resume) |
 | `transferHost` | `{ targetUserId }` |
 | `changeEpisode` | `{ episodeId }` |
 | `timesync_ping` | `{ clientSendTime }` |
 
-Server → client: `waitForBufferGoal`, `waitForReady`, `peerReady`, `syncPlay`, `syncPaused`,
-`pause`, `seek`, `softCorrect`, `speedSeek`, `peerStalling`, `peerStallRecovered`, `peerJoined`,
-`peerLeft`, `participantStates`, `bufferingUpdate`, `hostChanged`, `syncDenied`, `episodeChanged`,
-`timesync_pong`, `sync`. Payload shapes, and which peers receive each (all, others, or just the
-caller), are documented in `internal/syncplay/room.go` beside each emit.
+Server → client: `waitForBufferGoal`, `waitForReady`, `allReady`, `peerReady`, `syncPlay`,
+`syncPaused`, `pause`, `seek`, `softCorrect`, `speedSeek`, `peerStalling`, `peerBuffering`,
+`peerStallRecovered`, `peerJoined`, `peerLeft`, `peerIgnoreWait`, `participantStates`,
+`bufferingUpdate`, `hostChanged`, `syncDenied`, `episodeChanged`, `timesync_pong`, `sync`.
+Payload shapes, and which peers receive each (all, others, or just the caller), are documented in
+`internal/syncplay/room.go` beside each emit.
+
+`allReady` and `peerBuffering` are named for what the site already listens for
+(`services/syncplay.client.ts`); until now the hub never sent either, so that code path was dead.
+`peerBuffering` is the mid-play counterpart of a gate and is announced once per fall below the
+goal, not once per report.
+
+### Tuning published to clients
+
+The `createRoom` / `joinRoom` acks and `sync` carry `syncConfig`: `version`, `features` (a
+capability list such as `scheduledStart`, `broadcastSeq`, `timeSyncReceive`, `ignoreWait`), and
+the gate / start / correction / drift / timeSync / limits blocks. A threshold that lives there is
+changed by redeploying the server; one baked into a client needs a release, which is how a bad
+number becomes permanent. The desktop client reads it whole (`SyncPlayClient::applySyncConfig`).
+
+Each peer entry also carries `pingMs`, `clockOffsetMs`, `ignoreWait` and `driftMs` — published,
+never acted on, so a human can see what the server sees.
 
 `syncPlay` for a solo room is sent only to the caller, and a solo `seek` uses the field name `time`
 while `pause` uses `currentTime` — both asymmetric with each other, and both preserved because the
@@ -157,6 +226,19 @@ that close it, `syncPlay` carrying the host's position, `participantStates` afte
 (`drift_test.go`) so the four correction bands and the duration cap are pinned without timing.
 Framing, ack ids and batched packets are in `protocol_test.go`.
 
+`TestWatchPartyScheduledStart` and `TestWatchPartyIgnoreWait` cover the v2 surface over the same
+two real sockets: the tuning block and capability list in the join ack, `serverReceiveTime` in the
+pong, the slowest member moving the shared start instant, `allReady` preceding `syncPlay` with the
+same `scheduledPlayAt` and an increasing `seq`, and a member being released by its own opt-out
+without anyone waiting on its buffer.
+
+`gate_test.go` drives the same state machine without a database, by building a hub whose peers own
+in-memory outbound channels: the lead / clamp / scaled-goal / group-state policies, sequence
+stamping, the scheduled release, `ignoreWait`, the wait deadline, a stale `forceReady` crossing
+gates, the pause cancelling a gate, `peerBuffering` announced once per fall, and correction
+attribution. It exists because the functional suite skips without a database, and a protocol with
+no test that always runs is a protocol with no test.
+
 ## Persistence and cleanup
 
 In-memory state is authoritative; rows in `watch_parties` and `watch_party_participants` are a
@@ -170,6 +252,10 @@ transaction so participants never outlive their room.
 
 ## Known limitations
 
+- The hub can schedule a start but cannot make a client trust it: a peer whose clock estimate is
+  still warm (its first ~2 s, or ~4 probes) acts on receipt. Arming against an unmeasured wall
+  clock was tried against a live room and reverted — a peer more wrong than the room's lead never
+  reached its own start and the gate reopened around it.
 - A restart ends every party; there is no socket rejoin with retained state.
 - Only the host advances the canonical clock, so a stalled host freezes it.
 - Room capacity is `SYNCPLAY_MAX_PARTICIPANTS` (12) per room, enforced on join.

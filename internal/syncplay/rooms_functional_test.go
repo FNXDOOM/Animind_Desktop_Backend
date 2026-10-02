@@ -31,6 +31,11 @@ import (
 // They skip when POSTGRES_TEST_DATABASE_URL is unset; the pure pieces (framing, drift policy,
 // room codes) are covered without one.
 
+// roomEventWindow is how long a broadcast that waits on a database round trip is allowed to
+// take. A cold Postgres (shared buffer miss, first query plan) has pushed this past 8 s, which
+// reads as a protocol failure and is nothing of the sort.
+const roomEventWindow = 20 * time.Second
+
 // client is a minimal Socket.IO v4 client over a raw WebSocket: enough to connect with an
 // auth payload, emit events, read ACKs, and collect broadcasts.
 type client struct {
@@ -417,7 +422,7 @@ func TestWatchPartyHandshakeAndGate(t *testing.T) {
 
 	// The join opened a gate for everyone, including the host who did not join.
 	for name, peer := range map[string]*client{"host": host, "member": member} {
-		payload, ok := peer.collect("waitForBufferGoal", 5*time.Second)
+		payload, ok := peer.collect("waitForBufferGoal", roomEventWindow)
 		if !ok {
 			t.Errorf("%s never received waitForBufferGoal; frames=%v", name, peer.framesSeen())
 			continue
@@ -451,19 +456,22 @@ func TestWatchPartyHandshakeAndGate(t *testing.T) {
 	// Both peers reporting enough buffer closes the gate and resumes play, because the
 	// room's play intent was inherited from the host's play request.
 	host.emit("play", map[string]any{"currentTime": 12.5})
-	if _, ok := member.collect("waitForBufferGoal", 5*time.Second); !ok {
+	if _, ok := member.collect("waitForBufferGoal", roomEventWindow); !ok {
 		t.Fatal("a play did not open a gate for the member")
 	}
 	for _, peer := range []*client{host, member} {
 		peer.emit("bufferingProgress", map[string]any{"bufferedSeconds": 200, "percent": 40})
 	}
 
-	synced, ok := member.collect("syncPlay", 8*time.Second)
+	synced, ok := member.collect("syncPlay", roomEventWindow)
 	if !ok {
 		t.Fatalf("the gate never closed with syncPlay; frames=%v", member.framesSeen())
 	}
 	var play struct {
-		CurrentTime float64 `json:"currentTime"`
+		CurrentTime     float64 `json:"currentTime"`
+		ScheduledPlayAt int64   `json:"scheduledPlayAt"`
+		Seq             int64   `json:"seq"`
+		GroupState      string  `json:"groupState"`
 	}
 	if err := json.Unmarshal(synced, &play); err != nil {
 		t.Fatalf("decode syncPlay: %v", err)
@@ -471,11 +479,22 @@ func TestWatchPartyHandshakeAndGate(t *testing.T) {
 	if play.CurrentTime != 12.5 {
 		t.Errorf("syncPlay carried %.2f, want the host's 12.5", play.CurrentTime)
 	}
+	// The field the deployed web client already reads: without it every browser in the room
+	// starts when its packet lands, which is the disagreement this exists to remove.
+	if lead := play.ScheduledPlayAt - time.Now().UnixMilli(); lead < 300 {
+		t.Errorf("syncPlay scheduled %d ms out, want at least the lead floor", lead)
+	}
+	if play.Seq == 0 {
+		t.Error("syncPlay carries no sequence number, so a client cannot order it")
+	}
+	if play.GroupState != "playing" {
+		t.Errorf("syncPlay groupState = %q, want playing", play.GroupState)
+	}
 
 	// participantStates is carried by the heartbeat the client sends every few seconds while
 	// playing, so drive one rather than waiting for a broadcast that only follows it.
 	member.emit("heartbeat", map[string]any{"currentTime": 12.5, "playbackRate": 1.0, "bufferedAhead": 30})
-	statesPayload, ok := member.collect("participantStates", 5*time.Second)
+	statesPayload, ok := member.collect("participantStates", roomEventWindow)
 	if !ok {
 		t.Fatal("no participantStates broadcast after a heartbeat")
 	}
@@ -562,4 +581,231 @@ func (c *client) framesSeen() []string {
 func (c *client) emitRequest(event, waitFor string, timeout time.Duration) (json.RawMessage, bool) {
 	c.emit(event, map[string]any{})
 	return c.collect(waitFor, timeout)
+}
+
+// TestWatchPartyScheduledStart covers the protocol additions over two real sockets: client
+// tuning, the clock probe, the scheduled start, and broadcast seq — asserted through the wire,
+// because a state machine the shipped clients cannot parse is worth nothing.
+func TestWatchPartyScheduledStart(t *testing.T) {
+	fixture := newRoomFixture(t)
+	base := fixture.server.URL
+
+	host := dial(t, base, fixture.users[0], fixture.hub)
+	member := dial(t, base, fixture.users[1], fixture.hub)
+	t.Cleanup(func() { host.conn.Close(); member.conn.Close() })
+
+	ack := struct {
+		Success  bool   `json:"success"`
+		RoomCode string `json:"roomCode"`
+	}{}
+	if err := json.Unmarshal(host.emitWithAck("createRoom", map[string]string{"episodeId": fixture.episode}), &ack); err != nil {
+		t.Fatalf("decode createRoom ack: %v", err)
+	}
+	if !ack.Success {
+		t.Fatalf("createRoom failed: %+v", ack)
+	}
+
+	joined := struct {
+		Success           bool    `json:"success"`
+		GroupState        string  `json:"groupState"`
+		BufferGoalSeconds float64 `json:"bufferGoalSeconds"`
+		Peers             []struct {
+			UserID  string  `json:"userId"`
+			PingMs  int64   `json:"pingMs"`
+			DriftMS float64 `json:"driftMs"`
+		} `json:"peers"`
+		SyncConfig struct {
+			Version  int      `json:"version"`
+			Features []string `json:"features"`
+			Start    struct {
+				LeadMinMs int64 `json:"leadMinMs"`
+			} `json:"start"`
+			TimeSync struct {
+				Window     int   `json:"window"`
+				DeadbandMs int64 `json:"deadbandMs"`
+			} `json:"timeSync"`
+			Gate struct {
+				WaitDeadlineMs int64 `json:"waitDeadlineMs"`
+			} `json:"gate"`
+		} `json:"syncConfig"`
+	}{}
+	if err := json.Unmarshal(member.emitWithAck("joinRoom", map[string]string{"roomCode": ack.RoomCode}), &joined); err != nil {
+		t.Fatalf("decode joinRoom ack: %v", err)
+	}
+	if !joined.Success {
+		t.Fatalf("joinRoom failed: %+v", joined)
+	}
+	// The join ack must carry the tuning, or a client ships thresholds it cannot retune.
+	if joined.SyncConfig.Version == 0 || len(joined.SyncConfig.Features) == 0 {
+		t.Fatalf("joinRoom ack carried no tunable config: %+v", joined.SyncConfig)
+	}
+	if joined.SyncConfig.Gate.WaitDeadlineMs <= 0 || joined.SyncConfig.Start.LeadMinMs <= 0 {
+		t.Errorf("config is missing the gate deadline or the start floor: %+v", joined.SyncConfig)
+	}
+	if joined.SyncConfig.TimeSync.Window <= 0 {
+		t.Errorf("config is missing the clock window: %+v", joined.SyncConfig.TimeSync)
+	}
+	featured := map[string]bool{}
+	for _, name := range joined.SyncConfig.Features {
+		featured[name] = true
+	}
+	for _, want := range []string{"scheduledStart", "broadcastSeq", "timeSyncReceive", "allReady", "ignoreWait"} {
+		if !featured[want] {
+			t.Errorf("feature %q was not advertised, so a client cannot enable it", want)
+		}
+	}
+	if len(joined.Peers) != 2 {
+		t.Errorf("join ack listed %d peers, want 2", len(joined.Peers))
+	}
+
+	// The clock probe: four stamps, so a client can tell a slow link from a wrong wall clock.
+	member.emit("timesync_ping", map[string]any{"clientSendTime": time.Now().UnixMilli() - 40})
+	pong, ok := member.collect("timesync_pong", roomEventWindow)
+	if !ok {
+		t.Fatal("no timesync_pong")
+	}
+	var probe struct {
+		ClientSendTime    int64 `json:"clientSendTime"`
+		ServerTime        int64 `json:"serverTime"`
+		ServerReceiveTime int64 `json:"serverReceiveTime"`
+	}
+	if err := json.Unmarshal(pong, &probe); err != nil {
+		t.Fatalf("decode timesync_pong: %v", err)
+	}
+	if probe.ServerReceiveTime == 0 || probe.ServerReceiveTime > probe.ServerTime {
+		t.Errorf("pong receive stamp %d must sit between the send and the answer %d",
+			probe.ServerReceiveTime, probe.ServerTime)
+	}
+
+	// The slowest member sets the pace: a 1.2 s report means the start is at least 2.4 s out.
+	member.emit("heartbeat", map[string]any{"currentTime": 30.0, "pingMs": 1200.0, "bufferedAhead": 200.0})
+	host.emit("play", map[string]any{"currentTime": 30.0})
+	if _, ok := member.collect("waitForBufferGoal", roomEventWindow); !ok {
+		t.Fatalf("play did not gate the room; frames=%v", member.framesSeen())
+	}
+	for _, peer := range []*client{host, member} {
+		peer.emit("bufferingProgress", map[string]any{"bufferedSeconds": 200.0, "percent": 100.0})
+	}
+
+	allReady, ok := member.collect("allReady", roomEventWindow)
+	if !ok {
+		t.Fatalf("the gate closed without allReady; frames=%v", member.framesSeen())
+	}
+	var gate struct {
+		CurrentTime     float64 `json:"currentTime"`
+		ScheduledPlayAt int64   `json:"scheduledPlayAt"`
+		ReadyCount      int     `json:"readyCount"`
+		TotalPeers      int     `json:"totalPeers"`
+		PlayIntent      bool    `json:"playIntent"`
+		Seq             int64   `json:"seq"`
+	}
+	if err := json.Unmarshal(allReady, &gate); err != nil {
+		t.Fatalf("decode allReady: %v", err)
+	}
+	if !gate.PlayIntent || gate.ReadyCount != 2 || gate.TotalPeers != 2 {
+		t.Errorf("allReady = %+v, want both ready with a play intent", gate)
+	}
+	// Read some time after the hub computed it, so the observed lead is 2400 ms minus whatever
+	// elapsed: the band is a latency budget, not a tolerance on the policy.
+	lead := gate.ScheduledPlayAt - time.Now().UnixMilli()
+	if lead < 1800 || lead > 2600 {
+		t.Errorf("a 1200 ms member should schedule the start ~2400 ms out, got %d ms", lead)
+	}
+
+	synced, ok := member.collect("syncPlay", roomEventWindow)
+	if !ok {
+		t.Fatal("allReady was not followed by syncPlay")
+	}
+	var play struct {
+		ScheduledPlayAt int64 `json:"scheduledPlayAt"`
+		Seq             int64 `json:"seq"`
+	}
+	if err := json.Unmarshal(synced, &play); err != nil {
+		t.Fatalf("decode syncPlay: %v", err)
+	}
+	if play.ScheduledPlayAt != gate.ScheduledPlayAt {
+		t.Errorf("allReady said %d and syncPlay says %d: two instants for one start",
+			gate.ScheduledPlayAt, play.ScheduledPlayAt)
+	}
+	if play.Seq <= gate.Seq {
+		t.Errorf("syncPlay seq %d must follow allReady seq %d", play.Seq, gate.Seq)
+	}
+}
+
+// TestWatchPartyIgnoreWait starts a room while one member is still buffering, over real sockets.
+func TestWatchPartyIgnoreWait(t *testing.T) {
+	fixture := newRoomFixture(t)
+	base := fixture.server.URL
+
+	host := dial(t, base, fixture.users[0], fixture.hub)
+	member := dial(t, base, fixture.users[1], fixture.hub)
+	t.Cleanup(func() { host.conn.Close(); member.conn.Close() })
+
+	ack := struct {
+		Success  bool   `json:"success"`
+		RoomCode string `json:"roomCode"`
+	}{}
+	if err := json.Unmarshal(host.emitWithAck("createRoom", map[string]string{"episodeId": fixture.episode}), &ack); err != nil {
+		t.Fatalf("decode createRoom ack: %v", err)
+	}
+	if !ack.Success {
+		t.Fatalf("createRoom failed: %+v", ack)
+	}
+	member.emitWithAck("joinRoom", map[string]string{"roomCode": ack.RoomCode})
+
+	host.emit("play", map[string]any{"currentTime": 60.0})
+	if _, ok := member.collect("waitForBufferGoal", roomEventWindow); !ok {
+		t.Fatal("play did not gate the room")
+	}
+
+	member.emit("ignoreWait", map[string]any{"ignore": true})
+	if _, ok := member.collect("peerIgnoreWait", roomEventWindow); !ok {
+		t.Error("the room was never told who stopped being waited for")
+	}
+	// Opting out releases the member, not the room; the host still has to clear the gate.
+	host.emit("ready", map[string]any{})
+	allReady, ok := member.collect("allReady", roomEventWindow)
+	if !ok {
+		t.Fatalf("the gate never closed once the only waiting peer had been released; frames=%v",
+			member.framesSeen())
+	}
+	var gate struct {
+		ReadyCount int `json:"readyCount"`
+	}
+	if err := json.Unmarshal(allReady, &gate); err != nil {
+		t.Fatalf("decode allReady: %v", err)
+	}
+	if gate.ReadyCount != 2 {
+		t.Errorf("readyCount = %d after opting out, want 2", gate.ReadyCount)
+	}
+
+	// The released member must still read as not waiting in the roster the panel renders.
+	host.emit("heartbeat", map[string]any{"currentTime": 61.0})
+	states, ok := member.collect("participantStates", roomEventWindow)
+	if !ok {
+		t.Fatal("no participantStates after the gate closed")
+	}
+	var roster struct {
+		Peers []struct {
+			DisplayName string `json:"displayName"`
+			IgnoreWait  bool   `json:"ignoreWait"`
+			Ready       bool   `json:"ready"`
+		} `json:"peers"`
+	}
+	if err := json.Unmarshal(states, &roster); err != nil {
+		t.Fatalf("decode participantStates: %v", err)
+	}
+	seen := false
+	for _, peer := range roster.Peers {
+		if peer.DisplayName != "member" {
+			continue
+		}
+		seen = true
+		if !peer.IgnoreWait || !peer.Ready {
+			t.Errorf("the opting-out member reads as %+v, want ignoreWait and ready", peer)
+		}
+	}
+	if !seen {
+		t.Error("the member is missing from the roster it opted out of")
+	}
 }
