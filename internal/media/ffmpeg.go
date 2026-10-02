@@ -2,8 +2,8 @@
 // browser-safe audio variants, and on-demand HLS sessions.
 //
 // Every function here runs an external process, so each one takes a context with a
-// timeout, caps the output it reads, and treats a tool failure as a degraded result rather
-// than a fatal error. A library scan must still record episodes when ffmpeg is missing.
+// timeout and treats a tool failure as a degraded result rather than a fatal error. A
+// library scan must still record episodes when ffmpeg is missing.
 package media
 
 import (
@@ -165,7 +165,7 @@ func (f *FFmpeg) Run(ctx context.Context, binary string, args ...string) ([]byte
 	return stdout, string(stderr), err
 }
 
-// run executes a command, capturing bounded output. nice is applied on POSIX hosts so a
+// run executes a command, capturing its output. nice is applied on POSIX hosts so a
 // background conversion cannot starve playback of CPU.
 func (f *FFmpeg) run(ctx context.Context, binary string, args ...string) (stdout, stderr []byte, err error) {
 	timeout := f.cfg.FFmpeg.ProcessTimeout

@@ -232,8 +232,7 @@ func (s *Service) indexFile(ctx context.Context, title, path string, parsed *Par
 	return nil
 }
 
-// processed accumulates episodes touched by the current scan so the caller can prewarm
-// their audio variants afterwards.
+// ProcessedTarget records an episode the current scan touched for audio prewarm.
 func (s *Service) ProcessedTarget(id, path string) {
 	s.mu.Lock()
 	s.processed = append(s.processed, media.PrewarmTarget{ID: id, FilePath: path})

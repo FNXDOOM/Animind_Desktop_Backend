@@ -267,7 +267,6 @@ type SyncPlayConfig struct {
 }
 
 // Load reads configuration from the process environment and validates it.
-// key is only used for logging, keeping the error messages actionable.
 func Load() (*Config, error) {
 	cfg := &Config{
 		Env:             strings.ToLower(strings.TrimSpace(getString("ENV", getString("NODE_ENV", "development")))),

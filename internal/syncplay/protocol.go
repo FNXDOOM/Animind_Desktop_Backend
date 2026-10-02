@@ -74,9 +74,6 @@ type peer struct {
 	// roomCode is the room this peer joined, if any.
 	roomCode string
 
-	// acks maps a socket.io ack id to the event it answers, so inbound ACK frames can be
-	// attributed (the current protocol has no client-to-server acks; this keeps the framing
-	// honest if that changes).
 	ackMu sync.Mutex
 
 	closed   chan struct{}

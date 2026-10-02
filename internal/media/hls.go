@@ -311,11 +311,14 @@ func (m *HLSManager) Playlist(ctx context.Context, id string) (string, error) {
 		case trimmed == "":
 			out.WriteString("\n")
 		case strings.HasPrefix(trimmed, "#"):
-			out.WriteString(trimmed + "\n")
+			out.WriteString(trimmed)
+			out.WriteByte('\n')
 		case strings.HasSuffix(trimmed, ".ts"):
-			out.WriteString(filepath.Base(trimmed) + "\n")
+			out.WriteString(filepath.Base(trimmed))
+			out.WriteByte('\n')
 		default:
-			out.WriteString(filepath.Base(trimmed) + "\n")
+			out.WriteString(filepath.Base(trimmed))
+			out.WriteByte('\n')
 		}
 	}
 	return out.String(), nil

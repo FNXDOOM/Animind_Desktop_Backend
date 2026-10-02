@@ -184,7 +184,7 @@ func NewWebSessionToken() (string, error) {
 }
 
 // NewOpaqueToken returns a base64url token of n random bytes, without a prefix.
-// Used for password reset and OAuth state parameters.
+// Used for desktop session ids, password reset tokens and one-time auth codes.
 func NewOpaqueToken(n int) (string, error) {
 	buf := make([]byte, n)
 	if _, err := rand.Read(buf); err != nil {

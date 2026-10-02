@@ -21,10 +21,9 @@ import (
 	"animind-backend-go/internal/repository"
 )
 
-// Hub owns every live peer and room. Each room serializes its own changes, so a handler never
-// has to reason about interleaving from another goroutine.
-
+// Hub owns every live peer and room. Each room serializes its own changes, so a handler never has to reason about interleaving from another goroutine.
 // Authenticator resolves a socket's auth payload to an account. auth.Service satisfies it.
+
 type Authenticator interface {
 	Authenticate(ctx context.Context, token string) (*auth.Principal, error)
 }
@@ -50,8 +49,8 @@ type Hub struct {
 	rooms        map[string]*Room
 }
 
-// NewHub builds the hub. CORS is enforced at the HTTP layer, so the socket handler only
-// needs to refuse an upgrade from a disallowed origin.
+// NewHub builds the hub. CORS is enforced at the HTTP layer, so the socket handler only needs to refuse an upgrade from a disallowed origin.
+
 func NewHub(cfg *config.Config, logger *slog.Logger, repo *repository.Store, authenticator Authenticator) *Hub {
 	return &Hub{
 		cfg:          cfg,

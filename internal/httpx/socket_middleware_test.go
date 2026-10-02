@@ -21,7 +21,7 @@ import (
 // The socket has to survive the whole middleware chain, so these dial through Router(): a bare
 // handler test, as the protocol suite uses, misses a middleware that breaks the upgrade.
 
-// stubAuthenticator accepts one token; auth is the hub's concern, not what these tests.
+// stubAuthenticator accepts one token; auth is the hub's concern, not what these tests check.
 type stubAuthenticator struct{}
 
 func (stubAuthenticator) Authenticate(_ context.Context, token string) (*auth.Principal, error) {

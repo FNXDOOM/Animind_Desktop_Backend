@@ -30,20 +30,23 @@ type Participant struct {
 	BufferedAhead float64 `json:"bufferedAhead"`
 	Ready         bool    `json:"ready"`
 	Stalling      bool    `json:"stalling"`
-	// PingMs is this member's round trip; the start is scheduled off the room's highest so the
-	// peer that hears last still keeps up.
+
+	// PingMs is this member's round trip; the start is scheduled off the room's highest so the peer that hears last still keeps up.
 	PingMs int64 `json:"pingMs"`
+
 	// IgnoreWait marks a member the gate does not hold for; shown in the roster.
 	IgnoreWait bool `json:"ignoreWait"`
-	// DriftMS is position minus the canonical clock at the last heartbeat; published for humans,
-	// nothing decides from it.
+
+	// DriftMS is position minus the canonical clock at the last heartbeat; published for humans,nothing decides from it.
 	DriftMS float64 `json:"driftMs"`
-	// ClockOffsetMS is the member's own belief about its clock error, published so it is legible
-	// outside that member.
+
+	// ClockOffsetMS is the member's own belief about its clock error published so it is legible outside that member.
+
 	ClockOffsetMS   int64     `json:"clockOffsetMs"`
 	LastHeartbeatAt time.Time `json:"-"`
 	StallingSinceMs int64     `json:"-"`
-	// bufferingAnnounced latches the peerBuffering broadcast, so a member that reports its
+
+	// bufferingAnnounced latches the peerBuffering broadcast so a member that reports its
 	// buffer once a second does not notify the room once a second.
 	bufferingAnnounced bool
 	joinedAt           time.Time `json:"-"`
@@ -70,6 +73,7 @@ type Room struct {
 	escapeTimer          *time.Timer
 	waitDeadlineTimer    *time.Timer
 	gateOpenedAt         time.Time
+
 	// gateEpoch tags one gate opening: a callback already running cannot be stopped, so this is
 	// what keeps a closed gate's forceReady from granting readiness to a later gate.
 	gateEpoch int64
@@ -77,13 +81,12 @@ type Room struct {
 	stallingPeers    map[string]bool
 	stallGraceTimers map[string]*time.Timer
 
-	// seq counts broadcasts so clients can order packets that overtook each other; it only
-	// ever increases.
+	// seq counts broadcasts so clients can order packets that overtook each other; it only ever increases.
 	seq int64
 	// everActed separates "never played" from "paused", which the wire cannot tell apart.
 	everActed bool
-	// durationSeconds is the episode length, used to shrink the buffer goal near the end; zero
-	// means unknown and leaves the goal at its configured value.
+	// durationSeconds is the episode length, used to shrink the buffer goal near the end; zero means unknown and leaves the goal at its configured value.
+
 	durationSeconds float64
 
 	createdAt time.Time
@@ -114,7 +117,7 @@ func newRoom(code, episodeID, hostSocketID, hostUserID, hostName string, duratio
 }
 
 // payload shapes; field names are the wire contract with socket.io-client, and every one embeds
-// stamped so the hub stamps the sequence and its clock at emit time.
+// stamped, which the hub fills with the sequence and its clock at emit time.
 
 type gatePayload struct {
 	stamped
@@ -140,8 +143,8 @@ type syncPayload struct {
 	ScheduledPlayAt int64 `json:"scheduledPlayAt,omitempty"`
 }
 
-// allReadyPayload closes a buffer gate so the web client, which listens by name, ends it with one
-// scheduled start rather than a resume per member.
+// allReadyPayload closes a buffer gate so the web client, which listens by name, ends it with one scheduled start rather than a resume per member.
+
 type allReadyPayload struct {
 	stamped
 	CurrentTime     float64    `json:"currentTime"`
@@ -1204,7 +1207,7 @@ func (h *Hub) handleRequestSync(p *peer, room *Room) {
 	p.Emit("sync", payload)
 }
 
-// ── Gate logic ───────────────────────────────────────────────────────────────
+// ── Gate logic
 
 // initiateBufferGate opens the ready gate for every participant and holds playback until all are
 // ready, their timeouts fire, the escape hatch or the hard deadline closes it.
@@ -1261,7 +1264,7 @@ func (r *Room) initiateBufferGate(h *Hub, playAfterReady bool) {
 	escapeBuffer := h.cfg.SyncPlay.EscapeBuffer.Seconds()
 	r.mu.Unlock()
 
-	// Both events are sent: newer clients gate on buffer, older ones on readiness alone.
+	// Both events are sent newer clients gate on buffer, older ones on readiness alone.
 	r.broadcast(h, "waitForBufferGoal", gate, "")
 	r.broadcast(h, "waitForReady", legacy, "")
 

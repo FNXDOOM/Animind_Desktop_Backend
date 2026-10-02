@@ -123,7 +123,7 @@ func base64URLDecode(data string) ([]byte, error) {
 	return base64.RawURLEncoding.DecodeString(data)
 }
 
-// mustBase64URLDecode tolerates undecodable signature input by returning empty bytes,
+// mustBase64URLDecode tolerates undecodable signature input by returning a zero byte,
 // which can never match a real HMAC. The signature path has no useful error to report:
 // an invalid encoding is simply an invalid token.
 func mustBase64URLDecode(data string) []byte {
