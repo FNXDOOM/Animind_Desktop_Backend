@@ -82,6 +82,12 @@ cached per normalized title for `METADATA_CACHE_TTL_HOURS`, and concurrent looku
 share a single upstream request — a first scan of a 200-episode series would otherwise fire 200
 identical GraphQL calls.
 
+That cache is two-level: an in-process map for the scan running now, and, when `REDIS_URL` is
+set, the shared store behind it. The second level is what a restart used to throw away — an
+interrupted index of a large library would re-query every title it had already resolved, and
+AniList's throttle made that the limiting factor rather than ffmpeg. A title no provider matched
+is kept in the process only, so a shared "nothing found" cannot outlive the run that learned it.
+
 A 429 sets a process-wide cooldown from `Retry-After` (60 s default), during which AniList is not
 called at all; retries use exponential backoff. MyAnimeList is tried once per title with two
 attempts.

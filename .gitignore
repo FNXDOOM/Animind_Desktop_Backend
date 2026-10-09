@@ -19,3 +19,7 @@ library/
 .vscode/
 .DS_Store
 Thumbs.db
+
+
+# command
+.commmandcode/

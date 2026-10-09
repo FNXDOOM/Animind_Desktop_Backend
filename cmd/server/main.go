@@ -18,10 +18,12 @@ import (
 	"net/http"
 	"os"
 	"os/signal"
+	"strings"
 	"syscall"
 	"time"
 
 	"animind-backend-go/internal/auth"
+	"animind-backend-go/internal/cache"
 	"animind-backend-go/internal/config"
 	"animind-backend-go/internal/database"
 	"animind-backend-go/internal/httpx"
@@ -69,13 +71,24 @@ func main() {
 
 	store := repository.New(db)
 
+	stateCache, err := cache.Open(ctx, cfg.Cache, logger)
+	if err != nil {
+		logger.Error("shared state is not usable", slog.String("error", err.Error()))
+		os.Exit(1)
+	}
+	defer func() {
+		if err := stateCache.Close(); err != nil {
+			logger.Warn("cache shutdown did not finish cleanly", slog.String("error", err.Error()))
+		}
+	}()
+
 	signer, err := auth.NewSigner(cfg.Auth.TokenSigningKey)
 	if err != nil {
 		logger.Error("authentication is not usable", slog.String("error", err.Error()))
 		os.Exit(1)
 	}
 	google := auth.NewGoogle(cfg, logger)
-	authService := auth.NewService(store, signer, cfg, google, logger)
+	authService := auth.NewService(store, signer, cfg, google, stateCache, logger)
 
 	storageService, err := storage.New(ctx, cfg, logger)
 	if err != nil {
@@ -95,7 +108,7 @@ func main() {
 		}
 	}
 
-	metadataService := metadata.New(cfg, logger)
+	metadataService := metadata.New(cfg, stateCache, logger)
 	openRouter := scanner.NewOpenRouter(cfg, logger)
 	scannerService := scanner.New(cfg, store, storageService, metadataService, openRouter, ffmpeg, logger)
 
@@ -109,6 +122,7 @@ func main() {
 		Store:   store,
 		Auth:    authService,
 		Signer:  signer,
+		Cache:   stateCache,
 		Storage: storageService,
 		Media:   ffmpeg,
 		Audio:   audioCache,
@@ -186,10 +200,23 @@ func summarizeConfig(cfg *config.Config, logger *slog.Logger) {
 		slog.Bool("scanner_llm_fallback", cfg.Scanner.OpenRouterFallback && cfg.Metadata.OpenRouter.Enabled),
 		slog.Bool("google_signin", cfg.Auth.GoogleClientID != ""),
 		slog.Bool("watch_parties", cfg.SyncPlay.Enabled),
+		slog.String("cache", cacheBackend(cfg)),
+		slog.Duration("cache_session_ttl", cfg.Cache.SessionTTL),
+		slog.Duration("cache_metadata_ttl", cfg.Cache.MetadataTTL),
+		slog.String("metrics_addr", cfg.Metrics.Addr),
 		slog.String("scanner_cron", cfg.Scanner.Cron),
 		slog.Int("desktop_access_ttl_seconds", int(cfg.Auth.AccessTokenTTL.Seconds())),
 		slog.Bool("trust_proxy_headers", cfg.TrustProxy),
 	)
+}
+
+// cacheBackend names the store startup would use, without connecting to it: --config must
+// report a configuration, not probe a service.
+func cacheBackend(cfg *config.Config) string {
+	if strings.TrimSpace(cfg.Cache.URL) == "" {
+		return "in-process"
+	}
+	return "redis"
 }
 
 func getenv(key, fallback string) string {

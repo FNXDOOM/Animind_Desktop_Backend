@@ -1,0 +1,14 @@
+# Dashboard files are loaded from the path below, so the JSON in deploy/grafana/dashboards is
+# the dashboard and survives a recreate.
+apiVersion: 1
+
+providers:
+  - name: animind
+    folder: AniMind
+    type: file
+    disableDeletion: true
+    updateIntervalSeconds: 30
+    allowUiUpdates: false
+    options:
+      path: /var/lib/grafana/dashboards
+      foldersFromFilesStructure: false

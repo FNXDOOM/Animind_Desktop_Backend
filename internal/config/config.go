@@ -48,6 +48,8 @@ type Config struct {
 
 	DB         DatabaseConfig
 	Auth       AuthConfig
+	Cache      CacheConfig
+	Metrics    MetricsConfig
 	Storage    StorageConfig
 	Scanner    ScannerConfig
 	Metadata   MetadataConfig
@@ -90,8 +92,8 @@ type AuthConfig struct {
 	Argon2Time    uint32
 	Argon2Memory  uint32
 	Argon2Threads uint8
-	// MaxFailedLogins locks a user out for FailedLoginLockout after repeated
-	// password failures on one account.
+	// MaxFailedLogins throttles repeated password failures from one source for
+	// FailedLoginLockout. It is deliberately not an account-wide lockout.
 	MaxFailedLogins    int
 	FailedLoginLockout time.Duration
 	// GoogleClientID/Secret enable "continue with Google" on the site and desktop.
@@ -106,6 +108,36 @@ type AuthConfig struct {
 	CleanupEnabled   bool
 	CleanupCron      string
 	ExpiredRetention time.Duration
+}
+
+// CacheConfig is the shared state layer: resolved credentials, rate-limit windows and
+// upstream metadata.
+type CacheConfig struct {
+	// URL is a redis:// or rediss:// connection string. Empty keeps shared state in this
+	// process, which is correct for a single instance.
+	URL string
+	// Namespace prefixes every key so one Redis can hold several stacks.
+	Namespace string
+	// SessionTTL caps how long a resolved credential is served from cache. It is deliberately
+	// short: it bounds how long a revocation that no code path announces could survive.
+	SessionTTL time.Duration
+	// MetadataTTL is how long a proxied AniList document or a resolved title is reused.
+	MetadataTTL time.Duration
+	// DialTimeout bounds connection setup; CommandTimeout bounds every read, write and
+	// eviction. Both are short because authentication reads through this layer.
+	DialTimeout    time.Duration
+	CommandTimeout time.Duration
+	// MaxConnections caps the pool so a slow Redis cannot consume the process.
+	MaxConnections int
+}
+
+// MetricsConfig controls the Prometheus listener.
+type MetricsConfig struct {
+	Enabled bool
+	// Addr is a separate listener so metrics never travel through the public route table.
+	// Bind it to localhost or an internal network; it is unauthenticated by design.
+	Addr string
+	Path string
 }
 
 // StorageConfig covers both streaming backends plus playback tickets.
@@ -287,6 +319,8 @@ func Load() (*Config, error) {
 	if err := cfg.loadStorage(); err != nil {
 		return nil, fmt.Errorf("config: storage: %w", err)
 	}
+	cfg.loadCache()
+	cfg.loadMetrics()
 	cfg.loadScanner()
 	cfg.loadMetadata()
 	cfg.loadFFmpeg()
@@ -356,6 +390,32 @@ func (c *Config) loadAuth() error {
 	}
 	c.Auth = a
 	return nil
+}
+
+func (c *Config) loadCache() {
+	sessionTTL := time.Duration(getInt("CACHE_SESSION_TTL_SECONDS", 60)) * time.Second
+	if sessionTTL < time.Second {
+		sessionTTL = time.Second
+	}
+	c.Cache = CacheConfig{
+		URL:            getString("REDIS_URL", ""),
+		Namespace:      getString("CACHE_NAMESPACE", "animind"),
+		SessionTTL:     sessionTTL,
+		MetadataTTL:    time.Duration(getInt("CACHE_METADATA_TTL_HOURS", 12)) * time.Hour,
+		DialTimeout:    time.Duration(getInt("CACHE_DIAL_TIMEOUT_MS", 500)) * time.Millisecond,
+		CommandTimeout: time.Duration(getInt("CACHE_COMMAND_TIMEOUT_MS", 250)) * time.Millisecond,
+		MaxConnections: clampInt(getInt("CACHE_MAX_CONNECTIONS", 20), 1, 200),
+	}
+}
+
+func (c *Config) loadMetrics() {
+	c.Metrics = MetricsConfig{
+		Enabled: getBool("METRICS_ENABLED", true),
+		// Localhost by default: an unauthenticated endpoint should not open a public port
+		// just because the binary was upgraded.
+		Addr: getString("METRICS_ADDR", "127.0.0.1:3002"),
+		Path: getString("METRICS_PATH", "/metrics"),
+	}
 }
 
 func (c *Config) loadStorage() error {

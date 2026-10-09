@@ -1,4 +1,4 @@
-.PHONY: help build run test vet fmt tidy clean migrate docker-up docker-down cover
+.PHONY: help build run test vet fmt tidy clean migrate docker-up docker-down docker-logs cover test-cache
 
 BINARY ?= build/animind-server
 GO     ?= go
@@ -19,8 +19,11 @@ migrate: build ## Apply pending migrations and exit
 test: ## Run the test suite (integration tests skip without POSTGRES_TEST_DATABASE_URL)
 	$(GO) test ./...
 
-test-db: ## Run the suite including Postgres integration tests
-	POSTGRES_TEST_DATABASE_URL=$(DATABASE_URL) $(GO) test -count=1 ./...
+test-db: ## Run the suite including Postgres integration tests (-p 1: they share one database)
+	POSTGRES_TEST_DATABASE_URL=$(DATABASE_URL) $(GO) test -count=1 -p 1 ./...
+
+test-cache: ## Run the suite including Postgres and Redis integration tests
+	POSTGRES_TEST_DATABASE_URL=$(DATABASE_URL) REDIS_TEST_URL=$(REDIS_URL) $(GO) test -count=1 -p 1 ./...
 
 cover: ## Report test coverage per package
 	$(GO) test -coverprofile=coverage.out ./...
@@ -38,8 +41,11 @@ tidy: ## Sync go.mod and go.sum
 clean: ## Remove build output and coverage files
 	rm -rf build coverage.out
 
-docker-up: ## Start Postgres and the API locally (compose)
+docker-up: ## Start the full stack: nginx, API, Postgres, Redis, Prometheus, Grafana
 	docker compose up --build
 
 docker-down: ## Stop the compose stack
 	docker compose down
+
+docker-logs: ## Follow the API container
+	docker compose logs -f api

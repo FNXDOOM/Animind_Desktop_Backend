@@ -1,45 +1,79 @@
-# Local development stack: Postgres plus the API.
+# The full AniMind stack: reverse proxy, API, Postgres, Redis, Prometheus and Grafana.
 #
 # The website and desktop player are not part of this file. They run from their own
 # repositories and point at this API through PUBLIC_URL.
+#
+#   browser / player ──▶ nginx :8080 ──▶ api :3001 ──▶ db :5432
+#                                          │        └─▶ redis :6379
+#                       prometheus :9090 ◀─┤ metrics :3002
+#                       grafana :3000 ─────┘ scrapes prometheus
+#
+# Everything except nginx binds to loopback. The metrics port is deliberately not published:
+# it is unauthenticated, and Prometheus reaches it over the compose network.
+
+name: animind
 
 services:
-  db:
-    image: postgres:16-alpine
+  nginx:
+    image: nginx:1.27-alpine
+    container_name: animind-nginx
     restart: unless-stopped
-    environment:
-      POSTGRES_USER: animind
-      POSTGRES_PASSWORD: animind
-      POSTGRES_DB: animind
+    depends_on:
+      api:
+        condition: service_healthy
+    ports:
+      - "${NGINX_PORT:-8080}:80"
     volumes:
-      - db-data:/var/lib/postgresql/data
+      - ./deploy/nginx/nginx.conf:/etc/nginx/conf.d/default.conf:ro
     healthcheck:
-      test: ["CMD-SHELL", "pg_isready -U animind -d animind"]
-      interval: 5s
+      # Answers from nginx itself, so an unhealthy container means the proxy is down rather
+      # than the API behind it.
+      test: ["CMD-SHELL", "wget -q --spider http://127.0.0.1/nginx-health || exit 1"]
+      interval: 15s
       timeout: 3s
-      retries: 20
+      retries: 4
+      start_period: 10s
 
   api:
     build: .
+    container_name: animind-api
     restart: unless-stopped
     depends_on:
       db:
+        condition: service_healthy
+      redis:
         condition: service_healthy
     ports:
       - "3001:3001"
     environment:
       ENV: development
       PORT: "3001"
-      PUBLIC_URL: http://localhost:3001
+      PUBLIC_URL: http://localhost:8080
       FRONTEND_URL: http://localhost:5173
       DATABASE_URL: postgres://animind:animind@db:5432/animind?sslmode=disable
       DB_AUTO_MIGRATE: "true"
+
+      # Shared state. Sessions, rate-limit windows and AniList documents live here; without
+      # this the API still works and keeps them in its own memory.
+      REDIS_URL: redis://redis:6379/0
+      CACHE_NAMESPACE: animind
+      CACHE_SESSION_TTL_SECONDS: "60"
+      CACHE_METADATA_TTL_HOURS: "12"
+
+      # The API is only reachable through nginx in this stack, so the proxy's client address
+      # is the one that matters. nginx overwrites X-Forwarded-For; nothing appends to it.
+      TRUST_PROXY_HEADERS: "true"
+
+      # Bind to all interfaces so Prometheus can scrape over the compose network. The port is
+      # not published, and nginx does not proxy it.
+      METRICS_ENABLED: "true"
+      METRICS_ADDR: "0.0.0.0:3002"
+
       # Replace before exposing this stack to anything real.
       DESKTOP_TOKEN_SIGNING_KEY: local-development-key-please-replace-32-chars-min
       WEBHOOK_SECRET: local-development-webhook-secret
       STORAGE_MODE: local
       LOCAL_STORAGE_PATH: /mnt/anime
-      TRUST_PROXY_HEADERS: "false"
       LOG_LEVEL: info
       LOG_FORMAT: text
     volumes:
@@ -48,6 +82,101 @@ services:
       - ${ANIMIND_LIBRARY:-./library}:/mnt/anime
       - hls-temp:/tmp
 
+  db:
+    image: postgres:16-alpine
+    container_name: animind-db
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: animind
+      POSTGRES_PASSWORD: animind
+      POSTGRES_DB: animind
+    ports:
+      # Loopback only, and only so the documented Go integration suites can reach it with
+      # POSTGRES_TEST_DATABASE_URL. Remove this mapping on a host that serves traffic.
+      - "127.0.0.1:5432:5432"
+    volumes:
+      - db-data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U animind -d animind"]
+      interval: 5s
+      timeout: 3s
+      retries: 20
+
+  redis:
+    image: redis:7-alpine
+    container_name: animind-redis
+    restart: unless-stopped
+    # volatile-lru evicts entries that already carry a TTL before anything else, which is all
+    # this store writes. Nothing here is durable: persistence is switched off, because a Redis
+    # restart costs cache hits and one rate-limit window, and the API refills both from
+    # Postgres and the upstream providers.
+    command:
+      [
+        "redis-server",
+        "--save", "",
+        "--appendonly", "no",
+        "--maxmemory", "192mb",
+        "--maxmemory-policy", "volatile-lru",
+      ]
+    ports:
+      # Loopback only, for REDIS_TEST_URL in the Go suites.
+      - "127.0.0.1:6379:6379"
+    healthcheck:
+      test: ["CMD-SHELL", "redis-cli ping | grep -q PONG"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+
+  prometheus:
+    image: prom/prometheus:v2.53.0
+    container_name: animind-prometheus
+    restart: unless-stopped
+    depends_on:
+      api:
+        condition: service_healthy
+    ports:
+      - "127.0.0.1:9090:9090"
+    volumes:
+      - ./deploy/prometheus/prometheus.yml:/etc/prometheus/prometheus.yml:ro
+      - prometheus-data:/prometheus
+    command:
+      - --config.file=/etc/prometheus/prometheus.yml
+      - --storage.tsdb.path=/prometheus
+      - --storage.tsdb.retention.time=15d
+      - --web.enable-lifecycle
+    healthcheck:
+      test: ["CMD-SHELL", "wget -q --spider http://127.0.0.1:9090/-/ready || exit 1"]
+      interval: 15s
+      timeout: 5s
+      retries: 6
+
+  grafana:
+    image: grafana/grafana:11.2.0
+    container_name: animind-grafana
+    restart: unless-stopped
+    depends_on:
+      prometheus:
+        condition: service_healthy
+    ports:
+      - "127.0.0.1:3000:3000"
+    environment:
+      # Change both before this is anything but a local dashboard.
+      GF_SECURITY_ADMIN_USER: ${GRAFANA_USER:-admin}
+      GF_SECURITY_ADMIN_PASSWORD: ${GRAFANA_PASSWORD:-admin}
+      GF_USERS_ALLOW_SIGN_UP: "false"
+      GF_ANALYTICS_REPORTING_ENABLED: "false"
+    volumes:
+      - ./deploy/grafana/provisioning:/etc/grafana/provisioning:ro
+      - ./deploy/grafana/dashboards:/var/lib/grafana/dashboards:ro
+      - grafana-data:/var/lib/grafana
+    healthcheck:
+      test: ["CMD-SHELL", "wget -q --spider http://127.0.0.1:3000/api/health || exit 1"]
+      interval: 15s
+      timeout: 5s
+      retries: 6
+
 volumes:
   db-data:
   hls-temp:
+  prometheus-data:
+  grafana-data:

@@ -95,6 +95,20 @@ Sliding expiry is rate-limited: `last_used_at` and `expires_at` are rewritten at
 minute per session (`touchInterval`), otherwise authentication would become the most
 expensive part of every request.
 
+That same interval bounds the **credential cache**. A resolved token is kept in the shared
+store under the SHA-256 hash the database already stores, for
+`min(CACHE_SESSION_TTL_SECONDS, touchInterval, the row's own expiry)`, and every revoke,
+rotation, password change, profile edit and admin-flag write evicts the account's entries.
+Consequences worth knowing:
+
+- A miss costs the two SELECTs it always cost. A store that cannot be answered is a miss, not
+  a 401 — losing Redis costs latency, never access.
+- Revocation is immediate on every path that names the account. What no cache can erase is an
+  entry written by a resolution already in flight when the revocation landed, so the ceiling
+  on that race is the TTL: one minute.
+- The entry cannot outlive its row, so a session cannot be extended by not looking at the
+  database.
+
 Changing or resetting a password revokes **all** web sessions for that account, so a stolen
 cookie cannot outlive the credential. `POST /api/auth/logout` revokes just the calling
 session; `POST /api/auth/sessions` lists live sessions and desktop devices, and

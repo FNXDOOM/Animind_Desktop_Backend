@@ -10,8 +10,8 @@ server-side configuration are called out as such rather than reported as vulnera
 | --- | --- |
 | Threat surface | Unauthenticated catalog + media routes, authenticated user data, admin routes, a stateful socket protocol, and an ffmpeg/object-store backend |
 | Design stance | Authorization in SQL by session-scoped predicates; every credential hashed or signed; no third-party identity provider holding the users |
-| Findings fixed during this port | 6 |
-| Accepted, documented risks | 5 |
+| Findings fixed during this port | 7 |
+| Accepted, documented risks | 8 |
 | Verification | The `internal/storage` suite covers path containment; `internal/httpx` asserts every protected route refuses anonymous callers; `internal/auth` asserts signature and `alg=none` rejection |
 
 ## Attacks and where they are stopped
@@ -66,6 +66,11 @@ Each of these existed in the Node backend and is closed here:
    availability, not injection.
 6. **Lexical-only path containment**: a symbolic link inside the library resolved outside it after
    the check. `LocalPath` now also resolves links and re-checks.
+7. **`POST /api/auth/logout` did not revoke anything** — found by the cache harness rather than by
+   reading the handler. The route sits outside `RequireAuth` (logging out with an already-dead
+   credential must still succeed), so `PrincipalFromContext` was always nil and the revocation
+   branch never ran: the cookie was cleared and the session row stayed live until its own expiry.
+   The handler now resolves the presented credential itself and revokes when it verifies.
 
 Plus two client-facing holes that were only reachable through the old architecture: the browser held
 a database-capable key (`SUPABASE_ANON_KEY` plus an externally issued JWT), and admin rights lived
@@ -78,7 +83,10 @@ Stated plainly, because pretending they are gone would be worse than noting them
 | Risk | Why it stands | Bound on the damage |
 | --- | --- | --- |
 | Catalog and HLS routes are unauthenticated | Browsing before sign-in is a product requirement; a media element cannot send headers | Catalog exposes titles, artwork and AniList ids — nothing that identifies a user. Segment URLs carry a 128-bit session id, are served `no-store`, live in this server's temp dir, and expire after `HLS_SESSION_TIMEOUT_MINUTES` |
-| Rate limits are per-process | No shared store was worth its complexity for one VPS | Multi-instance deployment multiplies each budget; noted in [Deployment](07-deployment.md) |
+| Rate limits are per-process unless `REDIS_URL` is set | A single VPS does not need a coordinator, and the fallback keeps working when Redis is down | Without Redis, multi-instance deployment multiplies each budget; with Redis, a store that stops answering falls back to local counting and exports `animind_rate_limit_fallbacks_total` |
+| A revoked credential can stay valid for up to `CACHE_SESSION_TTL_SECONDS` | The cache is written after the row is read, so a revocation landing inside that window cannot be seen by the in-flight write | Only the account's own session is affected, for one minute, and every revocation path also deletes the entry — so the window needs a coincidence measured in milliseconds. Authorization still happens in SQL on every miss |
+| The metrics listener is unauthenticated | A Prometheus poll carries no session, and adding one would put a credential in a scrape config | It binds to `127.0.0.1:3002` by default, is not proxied by nginx, and is not published by compose. It exposes route patterns, timings and library counts — no user data, no secrets |
+| Redis holds cached identity | Anything in a store someone can read is readable | Keys carry the SHA-256 of a token, never the token; values are the user id, email, username and admin flag. Treat the Redis address as privileged: it is loopback-published here and has no password in the local stack |
 | `423` on a locked account confirms the address exists | The lockout message is needed for a usable sign-in screen | Reveals only that an address is registered *and* was recently brute-forced; the 401 path stays indistinguishable |
 | Password-reset tokens are written to the log | No mail transport exists in this service and inventing SMTP was out of scope | Tokens are single-use, expire in 60 minutes, and log access is root-only by design. Deliver them out of band and consider disabling the endpoint until a mailer is wired |
 | Watch parties live in memory | Persisting live playback state on every heartbeat would cost more than a restart costs users | A restart ends the party; startup closes the stale `active` rows so the cleanup job still converges |
@@ -114,6 +122,11 @@ image build context. The container runs as a non-root user with `ProtectSystem=s
    OAuth callback base.
 6. Bind the process to loopback or a private interface if a proxy fronts it; the app cannot tell a
    proxy from a client that simply claims to be one.
+7. Keep `METRICS_ADDR` on loopback, and do not add a `proxy_pass` for `/metrics`. Confirm it with
+   `curl -o /dev/null -sw '%{http_code}' https://api.example/metrics` — the answer must be 404.
+8. If you set `REDIS_URL`, put Redis on a private network or give it `requirepass`, and never
+   publish 6379. It holds cached identity and every rate-limit window: flush it and the limits
+   reset, read it and you can see who is signed in.
 
 ## Verification performed
 

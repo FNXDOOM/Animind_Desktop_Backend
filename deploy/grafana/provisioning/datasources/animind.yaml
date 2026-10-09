@@ -1,0 +1,15 @@
+# The data source the AniMind dashboard reads. Provisioned, so `docker compose up` gives a
+# working dashboard rather than an empty Grafana.
+apiVersion: 1
+
+datasources:
+  - name: Animind Prometheus
+    uid: animind-prometheus
+    type: prometheus
+    access: proxy
+    url: http://prometheus:9090
+    isDefault: true
+    editable: false
+    jsonData:
+      httpMethod: POST
+      timeInterval: 10s

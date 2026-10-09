@@ -88,7 +88,10 @@ paths:
       tags: [catalog]
       security: []
       summary: Read-only AniList GraphQL proxy
-      description: Mutations and subscriptions are refused, including one hidden behind a comment.
+      description: >-
+        Mutations and subscriptions are refused, including one hidden behind a comment.
+        A repeated read-only document is served from the shared store for
+        CACHE_METADATA_TTL_HOURS; X-Cache reports which path answered.
       requestBody:
         required: true
         content:
@@ -100,7 +103,12 @@ paths:
                 query: { type: string, maxLength: 10000 }
                 variables: { type: object }
       responses:
-        '200': { description: Upstream GraphQL response, verbatim }
+        '200':
+          description: Upstream GraphQL response, verbatim
+          headers:
+            X-Cache:
+              description: HIT when answered from the shared store, MISS when it reached AniList.
+              schema: { type: string, enum: [HIT, MISS] }
         '400': { description: Missing, oversized, or non-read-only query, or bad variables }
         '502': { description: AniList unreachable, code anilist_unreachable }
 

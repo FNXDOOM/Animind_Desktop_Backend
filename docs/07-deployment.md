@@ -66,11 +66,15 @@ files.
 
 ## nginx
 
-The socket and the API share one port and one prefix, so one location block covers both. Range
-requests and long media responses need buffering off.
+The stack ships a working proxy config at [`deploy/nginx/nginx.conf`](../deploy/nginx/nginx.conf).
+For a host-based deployment this is the same shape with TLS added:
 
 ```nginx
-upstream animind { server 127.0.0.1:3001; }
+map $http_upgrade $connection_upgrade {   # an empty Connection must mean close, not drop
+    default upgrade;
+    ''      close;
+}
+upstream animind { server 127.0.0.1:3001; keepalive 32; }
 
 server {
   listen 443 ssl http2;
@@ -83,40 +87,45 @@ server {
   # The API returns JSON only; there is nothing here worth framing.
   add_header X-Frame-Options "DENY" always;
 
-  # Keep the client's real address for the rate limiter, then set TRUST_PROXY_HEADERS=true.
+  # Overwrite, never append: this is the value the rate limiter keys on.
   proxy_set_header X-Forwarded-For $remote_addr;
   proxy_set_header X-Real-IP       $remote_addr;
   proxy_set_header Host            $host;
+  client_max_body_size 8m;
 
   location / {
     proxy_pass http://animind;
     proxy_http_version 1.1;
-    proxy_set_header Upgrade    $http_upgrade;
-    proxy_set_header Connection $http_connection;
-    proxy_read_timeout 3600s;
-    proxy_send_timeout 3600s;
-    proxy_buffering off;
+    proxy_set_header Connection "";
   }
 
   # Do not buffer media: a 4 GB file through nginx's temp files is a disk problem, not a
   # memory one.
-  location ~ ^/api/episodes/.+/stream {
+  location ~ ^/api/(episodes/[^/]+/stream|hls/) {
     proxy_pass http://animind;
     proxy_http_version 1.1;
+    proxy_set_header Connection "";
     proxy_buffering off;
-    client_max_body_size 1m;
+    proxy_read_timeout 300s;
   }
 
-  location /api/socket.io {
+  location = /api/socket.io {
     proxy_pass http://animind;
     proxy_http_version 1.1;
     proxy_set_header Upgrade    $http_upgrade;
-    proxy_set_header Connection "upgrade";
-    proxy_read_timeout 75s;         # longer than the 25 s ping interval
+    proxy_set_header Connection $connection_upgrade;
+    proxy_read_timeout 75s;         # longer than three 25 s pings
     proxy_buffering off;
   }
+
+  # The metrics listener is a separate port. Never proxy it here.
+  location = /metrics { return 404; }
 }
 ```
+
+`proxy_set_header` is not inherited by a location that sets any of its own, so the identity
+headers have to appear in every block: a location that adds `Upgrade` and forgets
+`X-Forwarded-For` silently hands the limiter the proxy's address for every client.
 
 Set `TRUST_PROXY_HEADERS=true` **only** when the proxy overwrites `X-Forwarded-For` the way above.
 Otherwise a client can send its own value and buy itself an unlimited rate-limit bucket. If the
@@ -129,8 +138,29 @@ callback base.
 ## Docker
 
 ```bash
-docker compose up --build              # Postgres + API on :3001
-docker compose up -d db
+docker compose up --build      # nginx, API, Postgres, Redis, Prometheus, Grafana
+docker compose up -d db redis  # just the dependencies, for the Go suites
+```
+
+| Container | Reaches | Published |
+| --- | --- | --- |
+| `animind-nginx` :80 | the API | `${NGINX_PORT:-8080}`, the only port meant for clients |
+| `animind-api` :3001 | Postgres, Redis | `:3001`, for the existing clients and the harnesses |
+| `animind-api` :3002 | scraped by Prometheus | not published |
+| `animind-db` :5432 | — | loopback only, for `POSTGRES_TEST_DATABASE_URL` |
+| `animind-redis` :6379 | — | loopback only, for `REDIS_TEST_URL` |
+| `animind-prometheus` :9090 | the API metrics port | loopback |
+| `animind-grafana` :3000 | Prometheus | loopback; `admin`/`admin` until you change it |
+
+`api` waits for `db` and `redis` to be healthy, applies migrations on boot, and refuses to
+start when `REDIS_URL` is set but does not answer. Nothing in Redis is durable: flushing or
+restarting it costs cache hits and one open rate-limit window, and the API refills both from
+Postgres and the providers.
+
+Remove the `db` and `redis` port mappings on a host that serves traffic; they exist so the
+test suites on the developer machine can reach them.
+
+```bash
 DATABASE_URL=postgres://animind:animind@localhost:5432/animind animind-server --migrate-only
 ```
 
@@ -212,12 +242,36 @@ Quick manual smoke test:
 ```bash
 curl -fsS https://api.example.com/health                 # status ok, database ok
 curl -s -XPOST https://api.example.com/api/webhooks/storage -H 'x-webhook-secret: wrong' -i | head -1
+curl -s -XPOST https://api.example.com/metrics -i | head -1   # 404: metrics must not be proxied
 ```
 
 Expected: healthy JSON, and `401`. A `200` on the webhook means `WEBHOOK_SECRET` is not what
-you think it is. Note that a host without a database and without ffmpeg can prove the build but
-not the behaviour — five defects in this port surfaced only when the real Postgres and the real
-ffmpeg were in the loop (see the table in the README).
+you think it is. A `/metrics` that answers from outside means the proxy is exposing the
+unauthenticated listener.
+
+Confirm the shared state is actually shared, from a host that can reach the metrics port:
+
+```bash
+curl -s http://localhost:3002/metrics | grep -E 'animind_cache_(shared|operations)'
+docker exec animind-redis redis-cli --scan --pattern 'animind:*' | head
+```
+
+`animind_cache_shared 1` says Redis is backing sessions and rate limits; `0` says this process
+is counting alone. The scan should show `credential:` keys a minute after someone signs in, and
+they should disappear when that session logs out.
+
+The same commands, but proving each seam from the Go side:
+
+```bash
+docker compose up -d db redis
+POSTGRES_TEST_DATABASE_URL=postgres://animind:animind@localhost:5432/animind?sslmode=disable \
+REDIS_TEST_URL=redis://localhost:6379/9 \
+  go test -count=1 -race ./internal/cache ./internal/auth ./internal/httpx
+```
+
+A host without a database and without ffmpeg can prove the build but not the behaviour — five
+defects in this port surfaced only when the real Postgres and the real ffmpeg were in the loop
+(see the table in the README).
 
 ## Operational log lines
 

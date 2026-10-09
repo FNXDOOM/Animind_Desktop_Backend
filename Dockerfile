@@ -20,6 +20,9 @@ COPY --from=build /out/animind-server /app/animind-server
 
 # 3001 is the API and the watch-party socket, both on one port.
 EXPOSE 3001
+# 3002 is the Prometheus listener. It is unauthenticated: publish it only to a network a
+# scraper can reach, never to the internet. The compose stack leaves it unmapped.
+EXPOSE 3002
 
 # The binary reads its own configuration from the environment and needs no
 # writable root filesystem beyond /mnt/anime and a temp directory for HLS.

@@ -17,6 +17,7 @@ import (
 
 	"golang.org/x/text/unicode/norm"
 
+	"animind-backend-go/internal/cache"
 	"animind-backend-go/internal/config"
 )
 
@@ -49,6 +50,10 @@ type Service struct {
 	anilist *AniListClient
 	mal     *MALClient
 	ttl     time.Duration
+	// shared is the cross-process half of the cache: nil keeps lookups inside this process,
+	// which is what a single-node scan has always done.
+	shared cache.Store
+	logger *slog.Logger
 
 	mu       sync.Mutex
 	cache    map[string]*cacheEntry
@@ -74,12 +79,14 @@ func (r *inFlightRequest) finish(meta *Metadata, err error) {
 	r.ready.Do(func() { close(r.done) })
 }
 
-// New builds the orchestrator.
-func New(cfg *config.Config, logger *slog.Logger) *Service {
+// New builds the orchestrator. stateCache may be nil.
+func New(cfg *config.Config, stateCache cache.Store, logger *slog.Logger) *Service {
 	return &Service{
 		anilist:  NewAniList(cfg, logger),
 		mal:      NewMAL(cfg, logger),
 		ttl:      cfg.Metadata.MetadataCacheTTL,
+		shared:   stateCache,
+		logger:   logger,
 		cache:    make(map[string]*cacheEntry),
 		inFlight: make(map[string]*inFlightRequest),
 	}
@@ -87,6 +94,10 @@ func New(cfg *config.Config, logger *slog.Logger) *Service {
 
 // Fetch resolves a title, returning nil when no provider recognizes it. A nil result is
 // not an error: the scanner then keeps the folder name as the title.
+//
+// Two caches sit in front of the providers. The local map makes one scan cheap; the shared
+// store makes the *next* scan cheap, which is what a restart in the middle of a hundred-
+// episode library used to throw away along with AniList's throttle budget.
 func (s *Service) Fetch(ctx context.Context, title string) (*Metadata, error) {
 	key := NormalizeTitleKey(title)
 	if key == "" {
@@ -112,7 +123,9 @@ func (s *Service) Fetch(ctx context.Context, title string) (*Metadata, error) {
 	s.inFlight[key] = request
 	s.mu.Unlock()
 
-	meta, err := s.fetchUncached(ctx, title)
+	// Only the leader consults the shared store: readers waiting on the channel receive the
+	// same answer, so one title costs one lookup per process whatever the concurrency.
+	meta, err := s.fetchThroughShared(ctx, key, title)
 	request.finish(meta, err)
 
 	s.mu.Lock()
@@ -122,6 +135,45 @@ func (s *Service) Fetch(ctx context.Context, title string) (*Metadata, error) {
 	}
 	s.mu.Unlock()
 	return meta, err
+}
+
+// fetchThroughShared answers from the cross-process cache when it can, and publishes what the
+// providers returned into it.
+func (s *Service) fetchThroughShared(ctx context.Context, key, title string) (*Metadata, error) {
+	if meta, found := s.fetchShared(ctx, key); found {
+		return meta, nil
+	}
+	meta, err := s.fetchUncached(ctx, title)
+	if err != nil || meta == nil {
+		return meta, err
+	}
+	s.storeShared(ctx, key, meta)
+	return meta, err
+}
+
+// fetchShared reads the cross-process cache. An unreachable store is a miss, never a failed
+// lookup: the providers are still there.
+func (s *Service) fetchShared(ctx context.Context, key string) (*Metadata, bool) {
+	if s.shared == nil {
+		return nil, false
+	}
+	meta, found, err := cache.GetJSON[*Metadata](ctx, s.shared, cache.MetadataKey(key))
+	if err != nil {
+		s.logger.Warn("metadata: shared cache read failed", slog.String("error", err.Error()))
+		return nil, false
+	}
+	return meta, found
+}
+
+func (s *Service) storeShared(ctx context.Context, key string, meta *Metadata) {
+	if s.shared == nil {
+		return
+	}
+	// A title nobody matched is not stored: providers can miss for a season and come back,
+	// and a shared "no" would outlast the process that learned it.
+	if err := cache.SetJSON(ctx, s.shared, cache.MetadataKey(key), meta, s.ttl); err != nil {
+		s.logger.Warn("metadata: shared cache write failed", slog.String("error", err.Error()))
+	}
 }
 
 func (s *Service) fetchUncached(ctx context.Context, title string) (*Metadata, error) {

@@ -1,80 +1,52 @@
 package httpx
 
 import (
+	"context"
+	"log/slog"
 	"net/http"
 	"strconv"
-	"sync"
 	"time"
+
+	"animind-backend-go/internal/cache"
 )
 
-// Fixed-window rate limiter keyed by client address.
+// Fixed-window rate limiting for the public API.
 //
 // The limits mirror the original backend's per-route counters so an existing client's
-// behaviour stays inside budget: 3 rescans a minute, 20 logins, 1200 HLS segments, and so
-// on. Buckets are per route, so exhausting the login budget cannot block playback.
+// behaviour stays inside budget: 3 rescans a minute, 20 logins, 1200 HLS segments. Buckets
+// are per route, so exhausting the login budget cannot block playback.
 //
-// State is process-local. With more than one instance behind a load balancer each
-// instance enforces its own budget, which multiplies the effective limit; run the single
-// instance this backend is designed for, or move counting to a shared store.
+// Counting lives behind cache.Limiter. With Redis that window is shared, which is what makes
+// the limit real once more than one process answers traffic: a per-process map multiplies the
+// effective budget by the replica count, and behind nginx the client cannot tell which
+// instance it reached. Without Redis the same interface is served in-process.
 
-// RateLimiter keeps one fixed window per key.
+// RateLimiter enforces one fixed window per key inside one named bucket.
 type RateLimiter struct {
-	mu       sync.Mutex
-	windows  map[string]*window
+	name     string
 	limit    int
 	interval time.Duration
-	now      func() time.Time
-	// lastSweep prevents the map from growing without bound as keys rotate.
-	lastSweep time.Time
+	window   cache.Limiter
 }
 
-type window struct {
-	count   int
-	resetAt time.Time
-}
-
-// NewRateLimiter returns a limiter allowing limit requests per interval.
-func NewRateLimiter(limit int, interval time.Duration) *RateLimiter {
-	return &RateLimiter{
-		windows:  make(map[string]*window),
-		limit:    limit,
-		interval: interval,
-		now:      time.Now,
-	}
+// NewRateLimiter returns a limiter allowing limit requests per interval, counted by window.
+func NewRateLimiter(name string, limit int, interval time.Duration, window cache.Limiter) *RateLimiter {
+	return &RateLimiter{name: name, limit: limit, interval: interval, window: window}
 }
 
 // Allow records a hit for key and reports whether the request may proceed. When denied it
 // returns the seconds until the window resets.
-func (l *RateLimiter) Allow(key string) (ok bool, retryAfter time.Duration) {
-	l.mu.Lock()
-	defer l.mu.Unlock()
-
-	now := l.now()
-	l.sweepLocked(now)
-
-	w, exists := l.windows[key]
-	if !exists || now.After(w.resetAt) {
-		l.windows[key] = &window{count: 1, resetAt: now.Add(l.interval)}
+//
+// A limiter that cannot count lets the request through. Rate limiting protects the service
+// from load; failing it closed would turn a cache outage into an outage of the API.
+func (l *RateLimiter) Allow(ctx context.Context, key string) (ok bool, retryAfter time.Duration) {
+	decision, err := l.window.Allow(ctx, cache.RateKey(l.name, key), l.limit, l.interval)
+	if err != nil {
+		slog.Warn("rate limit window unavailable, allowing the request",
+			slog.String("bucket", l.name), slog.String("error", err.Error()))
 		return true, 0
 	}
-	w.count++
-	if w.count > l.limit {
-		return false, time.Until(w.resetAt)
-	}
-	return true, 0
-}
-
-// sweepLocked drops expired windows periodically. Callers hold l.mu.
-func (l *RateLimiter) sweepLocked(now time.Time) {
-	if now.Sub(l.lastSweep) < 5*time.Minute {
-		return
-	}
-	l.lastSweep = now
-	for key, w := range l.windows {
-		if now.After(w.resetAt) {
-			delete(l.windows, key)
-		}
-	}
+	return decision.Allowed, decision.RetryAfter
 }
 
 // Middleware enforces the limiter using the caller-supplied key function.
@@ -85,7 +57,8 @@ func (l *RateLimiter) Middleware(key func(*http.Request) string) func(http.Handl
 				next.ServeHTTP(w, r)
 				return
 			}
-			ok, retryAfter := l.Allow(key(r))
+			client := key(r)
+			ok, retryAfter := l.Allow(r.Context(), client)
 			if !ok {
 				seconds := int(mathCeilSeconds(retryAfter))
 				w.Header().Set("Retry-After", strconv.Itoa(seconds))
@@ -129,33 +102,56 @@ type RateLimitPresets struct {
 	Account      *RateLimiter
 	Admin        *RateLimiter
 	UserData     *RateLimiter
+
+	// fallback reports local-window verdicts across every bucket, for the metrics endpoint.
+	fallback cache.FallbackCounter
 }
 
-// NewRateLimitPresets builds every limiter with the same per-IP keying.
+// NewRateLimitPresets builds every limiter on one shared counting window.
 //
-// trustProxy decides whether the forwarded header forms the key; it is passed in rather
-// than read from the environment here so the wiring stays explicit in one place.
-func NewRateLimitPresets(trustProxy bool) *RateLimitPresets {
-	newOne := func(limit int, interval time.Duration) *RateLimiter {
-		return NewRateLimiter(limit, interval)
+// The store decides whether counting crosses processes. When it does, a Redis that stops
+// answering degrades to a local window instead of either stalling or admitting everyone:
+// over-admitting during an outage is a worse outcome than a temporarily per-process budget,
+// and failing closed would turn a cache outage into an outage of the API.
+func NewRateLimitPresets(store cache.Store, logger *slog.Logger) *RateLimitPresets {
+	window := cache.Limiter(store)
+	if store != nil && store.Shared() {
+		window = cache.NewResilientLimiter(store, cache.NewWindowLimiter(nil))
 	}
-	return &RateLimitPresets{
-		PublicRead:   newOne(120, time.Minute),
-		StreamTicket: newOne(120, time.Minute),
-		MediaStream:  newOne(600, time.Minute),
-		HLSSession:   newOne(60, time.Minute),
-		HLSSegment:   newOne(1200, time.Minute),
-		Rescan:       newOne(3, time.Minute),
-		Webhook:      newOne(30, time.Minute),
-		Signup:       newOne(10, time.Minute),
-		Login:        newOne(20, time.Minute),
-		Account:      newOne(5, time.Minute),
-		Admin:        newOne(60, time.Minute),
-		UserData:     newOne(240, time.Minute),
+	if window == nil {
+		// Tests and embedders that pass no store still need counting, and the in-process
+		// window is what the single-instance deployment used before Redis existed.
+		window = cache.NewWindowLimiter(nil)
+		logger.Debug("rate limiting counts inside this process")
 	}
+
+	newOne := func(name string, limit int, interval time.Duration) *RateLimiter {
+		return NewRateLimiter(name, limit, interval, window)
+	}
+	presets := &RateLimitPresets{
+		PublicRead:   newOne("public", 120, time.Minute),
+		StreamTicket: newOne("ticket", 120, time.Minute),
+		MediaStream:  newOne("stream", 600, time.Minute),
+		HLSSession:   newOne("hls-session", 60, time.Minute),
+		HLSSegment:   newOne("hls-segment", 1200, time.Minute),
+		Rescan:       newOne("rescan", 3, time.Minute),
+		Webhook:      newOne("webhook", 30, time.Minute),
+		Signup:       newOne("signup", 10, time.Minute),
+		Login:        newOne("login", 20, time.Minute),
+		Account:      newOne("account", 5, time.Minute),
+		Admin:        newOne("admin", 60, time.Minute),
+		UserData:     newOne("user-data", 240, time.Minute),
+	}
+	if resilient, ok := window.(*cache.ResilientLimiter); ok {
+		presets.fallback = resilient
+	}
+	return presets
 }
 
-// Middleware wraps a limiter with per-IP keying.
+// Middleware wraps a limiter with per-client keying.
+//
+// trustProxy decides whether the forwarded header forms the key. It is passed in rather than
+// read from the environment here so the wiring stays explicit in one place.
 func (l *RateLimiter) MiddlewareByIP(trustProxy bool) func(http.Handler) http.Handler {
 	return l.Middleware(func(r *http.Request) string { return ClientIP(r, trustProxy) })
 }

@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"io"
 	"log/slog"
+	"net"
 	"net/http"
 	"strconv"
 	"strings"
@@ -15,6 +16,7 @@ import (
 	chimiddleware "github.com/go-chi/chi/v5/middleware"
 
 	"animind-backend-go/internal/auth"
+	"animind-backend-go/internal/cache"
 	"animind-backend-go/internal/config"
 	"animind-backend-go/internal/media"
 	"animind-backend-go/internal/repository"
@@ -34,12 +36,14 @@ const SessionCookieName = "animind_session"
 const maxJSONBody = int64(1 << 20)
 
 // Deps are the collaborators the API needs. Every one is required except the optional
-// local-mode services, which answer 400 when their mode is not active.
+// local-mode services, which answer 400 when their mode is not active, and Cache, whose
+// absence keeps credential and rate-limit state inside this process.
 type Deps struct {
 	Config  *config.Config
 	Store   *repository.Store
 	Auth    *auth.Service
 	Signer  *auth.Signer
+	Cache   cache.Store
 	Storage *storage.Service
 	Media   *media.FFmpeg
 	Audio   *media.AudioCache
@@ -55,6 +59,7 @@ type Server struct {
 	store     *repository.Store
 	auth      *auth.Service
 	signer    *auth.Signer
+	cache     cache.Store
 	storage   *storage.Service
 	media     *media.FFmpeg
 	audio     *media.AudioCache
@@ -69,27 +74,40 @@ type Server struct {
 	// complex search but short enough to release a worker.
 	aniListHTTP *http.Client
 
+	// metrics collects the counters the Prometheus listener exports. Nil when metrics are
+	// disabled, and every record call is a no-op then.
+	metrics *metrics
+
 	httpServer *http.Server
+
+	// metricsServer is the scrape listener. It is separate because it is unauthenticated:
+	// nothing may reach it from a public interface.
+	metricsServer *http.Server
 }
 
 // New builds the server and its per-route rate limiters.
 func New(deps Deps) *Server {
-	return &Server{
+	s := &Server{
 		cfg:         deps.Config,
 		store:       deps.Store,
 		auth:        deps.Auth,
 		signer:      deps.Signer,
+		cache:       deps.Cache,
 		storage:     deps.Storage,
 		media:       deps.Media,
 		audio:       deps.Audio,
 		hls:         deps.HLS,
 		scanner:     deps.Scanner,
 		hub:         deps.Hub,
-		limiter:     NewRateLimitPresets(deps.Config.TrustProxy),
+		limiter:     NewRateLimitPresets(deps.Cache, deps.Logger),
 		logger:      deps.Logger,
 		startedAt:   time.Now(),
 		aniListHTTP: &http.Client{Timeout: 15 * time.Second},
 	}
+	if deps.Config.Metrics.Enabled {
+		s.metrics = newMetrics(deps.Cache, deps.Hub, deps.Store, s.limiter.fallback)
+	}
+	return s
 }
 
 // credential extracts the bearer token, falling back to the session cookie.
@@ -123,6 +141,7 @@ func (s *Server) Router() chi.Router {
 
 	r.Use(Recover)
 	r.Use(RequestLogger)
+	r.Use(s.observeRequests)
 	r.Use(SecureHeaders)
 	r.Use(s.CORS)
 	r.Use(chimiddleware.StripSlashes)
@@ -254,6 +273,10 @@ func (s *Server) ListenAndServe() error {
 		slog.String("env", s.cfg.Env),
 		slog.String("storage_mode", string(s.cfg.Storage.Mode)))
 
+	if err := s.startMetricsListener(); err != nil {
+		return err
+	}
+
 	err := s.httpServer.ListenAndServe()
 	if errors.Is(err, http.ErrServerClosed) {
 		return nil
@@ -261,8 +284,39 @@ func (s *Server) ListenAndServe() error {
 	return err
 }
 
+// startMetricsListener opens the scrape port. A failure here is fatal: a server that cannot
+// be observed is a deployment that will be debugged by guessing.
+func (s *Server) startMetricsListener() error {
+	if s.metrics == nil {
+		return nil
+	}
+	// Bound synchronously so a port conflict is a startup failure, not a dashboard with no
+	// target three minutes later.
+	listener, err := net.Listen("tcp", s.cfg.Metrics.Addr)
+	if err != nil {
+		return fmt.Errorf("httpx: metrics listener on %s: %w", s.cfg.Metrics.Addr, err)
+	}
+	s.metricsServer = &http.Server{
+		Handler:      s.metricsHandler(),
+		ReadTimeout:  10 * time.Second,
+		WriteTimeout: 10 * time.Second,
+	}
+	s.logger.Info("metrics listening", slog.String("addr", s.cfg.Metrics.Addr),
+		slog.String("path", s.cfg.Metrics.Path))
+
+	go func() {
+		if err := s.metricsServer.Serve(listener); err != nil && !errors.Is(err, http.ErrServerClosed) {
+			s.logger.Error("metrics listener stopped", slog.String("error", err.Error()))
+		}
+	}()
+	return nil
+}
+
 // Shutdown stops accepting connections and lets in-flight media streams finish.
 func (s *Server) Shutdown(ctx context.Context) error {
+	if s.metricsServer != nil {
+		_ = s.metricsServer.Shutdown(ctx)
+	}
 	if s.httpServer == nil {
 		return nil
 	}

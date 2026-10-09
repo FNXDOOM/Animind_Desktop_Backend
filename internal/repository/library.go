@@ -419,6 +419,28 @@ func escapeLike(value string) string {
 	return strings.NewReplacer(`\`, `\\`, `%`, `\%`, `_`, `\_`).Replace(value)
 }
 
+// LibraryStats is the size of what this API can serve.
+type LibraryStats struct {
+	Shows    int64
+	Episodes int64
+	Users    int64
+}
+
+// CountLibrary answers the catalog and account totals in one round trip, which is what makes
+// it safe to call from a scrape.
+func (s *Store) CountLibrary(ctx context.Context) (LibraryStats, error) {
+	var counts LibraryStats
+	err := s.pool.QueryRow(ctx, `
+		select (select count(*) from shows),
+		       (select count(*) from episodes),
+		       (select count(*) from animind_users)`).
+		Scan(&counts.Shows, &counts.Episodes, &counts.Users)
+	if err != nil {
+		return LibraryStats{}, fmt.Errorf("repository: count library: %w", err)
+	}
+	return counts, nil
+}
+
 // LibraryCounts reports catalog size for the admin metrics screen.
 func (s *Store) LibraryCounts(ctx context.Context) (shows, episodes int64, err error) {
 	if err = s.pool.QueryRow(ctx, `select count(*) from shows`).Scan(&shows); err != nil {

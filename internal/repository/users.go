@@ -35,6 +35,28 @@ func (s *Store) Ping(ctx context.Context) error {
 	return s.pool.QueryRow(ctx, "select 1").Scan(&one)
 }
 
+// PoolStats is a snapshot of the connection pool. The metrics endpoint exports it because a
+// saturated pool looks identical to a slow query from the outside.
+type PoolStats struct {
+	Total  int32
+	Active int32
+	Idle   int32
+	Max    int32
+}
+
+func (s *Store) PoolStats() PoolStats {
+	stat := s.pool.Stat()
+	if stat == nil {
+		return PoolStats{}
+	}
+	return PoolStats{
+		Total:  stat.TotalConns(),
+		Active: stat.AcquiredConns(),
+		Idle:   stat.IdleConns(),
+		Max:    stat.MaxConns(),
+	}
+}
+
 const userColumns = `
 	id::text, email, email_normalized, username, avatar_url, password_hash,
 	is_admin, failed_login_count, locked_until, created_at, updated_at`

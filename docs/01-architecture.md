@@ -3,19 +3,25 @@
 ## Shape of the process
 
 One binary, one port, one process. It serves JSON over HTTP, a Socket.IO-compatible socket
-for watch parties, and byte ranges for media. There is no queue, no cache tier, and no
-second service: a personal streaming backend on a single VPS is the deployment this is
-designed for, and adding coordination would be the cost, not the benefit.
+for watch parties, and byte ranges for media. There is no queue and no second service: a
+personal streaming backend on a single VPS is the deployment this is designed for, and adding
+coordination would be the cost, not the benefit.
+
+Shared state is the one exception, and it is optional. `internal/cache` holds resolved
+credentials, rate-limit windows and upstream metadata; with no `REDIS_URL` all three live in
+this process and behave the same. Redis is what makes the rate-limit window one budget instead
+of one per replica. See [Caching and observability](10-caching-and-observability.md).
 
 ```
-cmd/server/main.go        wiring only: config -> db -> services -> hub -> http -> signals
+cmd/server/main.go        wiring only: config -> db -> cache -> services -> hub -> http -> signals
   |
   +-- internal/config       every setting, validated at boot
   +-- internal/logging      slog setup, request log fields
   +-- internal/database     pgx pool + embedded migrations
   +-- internal/repository   all SQL, one file per domain
+  +-- internal/cache        shared state: Redis or in-process, keys, windows, group eviction
   +-- internal/auth         accounts, hashing, tokens, sessions, OAuth, bridge JWT
-  +-- internal/httpx        router, middleware, handlers (the HTTP edge)
+  +-- internal/httpx        router, middleware, handlers, metrics (the HTTP edge)
   +-- internal/storage      S3 presign + local paths + library file listing
   +-- internal/media        ffmpeg probing, subtitles, audio variants, HLS sessions
   +-- internal/metadata     AniList + MyAnimeList, cache, rate-limit cooldown
@@ -23,21 +29,24 @@ cmd/server/main.go        wiring only: config -> db -> services -> hub -> http -
   +-- internal/syncplay     Engine.IO/Socket.IO framing, room state machine
   +-- internal/scheduler    cron jobs with overlap protection
 migrations/*.sql           schema, embedded into the binary and readable by psql
+deploy/                    nginx, prometheus and grafana configuration for the compose stack
 docs/                     this set, plus openapi.yaml
 ```
 
 Dependency direction is one-way: `httpx` and `scheduler` depend on everything else; the
 domain packages depend on `config`, `repository`, and each other only downward. No package
 imports `httpx`. `repository` imports nothing from the app except `database`, so SQL cannot
-reach into HTTP concerns.
+reach into HTTP concerns. `cache` imports only `config`: it knows about keys, windows and
+eviction, and nothing about sessions, routes or AniList.
 
 ## Request lifecycle
 
 ```
-Recover -> RequestLogger -> SecureHeaders -> CORS -> StripSlashes
+Recover -> RequestLogger -> observeRequests -> SecureHeaders -> CORS -> StripSlashes
    -> route match (chi)
-   -> per-route rate limiter (keyed by client IP)
+   -> per-route rate limiter (keyed by client IP, counted in the shared store)
    -> RequireAuth / RequireAdmin where the route declares them
+      -> credential cache, then Postgres on a miss
    -> handler: decode -> authorize by session -> repository -> respond
 ```
 
@@ -108,10 +117,11 @@ its segments. Reversed, orphaned ffmpeg processes would keep temp files open.
 
 Stated so they are not mistaken for oversights:
 
-- **Rate limits are per-process.** Multi-instance deployment multiplies each budget. Move
-  counting to a shared store before scaling out.
+- **Rate limits are shared only when Redis is configured.** With no `REDIS_URL` each process
+  counts its own window, so multi-instance deployment multiplies each budget.
 - **Watch rooms live in memory.** A restart ends every party; the database rows exist for
-  lookup and cleanup, and startup closes the stale ones.
+  lookup and cleanup, and startup closes the stale ones. This is deliberate: party state is
+  synchronised to sub-100 ms, and a network hop per gate decision is the wrong tool for it.
 - **`GET /api/hls/*` is unauthenticated** by necessity: a player fetches segments without
   headers. Unguessability of the 128-bit session id plus the strict `seg\d{5}\.ts` name
   pattern is the control, and segments live only in this server's temp directory.

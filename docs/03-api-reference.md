@@ -331,6 +331,11 @@ including one behind a `#` comment — is refused with 400, and `query` is cappe
 characters. Upstream status and body are passed through; an unreachable AniList is 502
 `anilist_unreachable`.
 
+A repeated read-only document is answered from the shared store for
+`CACHE_METADATA_TTL_HOURS`, and `X-Cache: HIT|MISS` says which happened. Only a `200` carrying
+`data` and no `errors` is stored, so a rejection or a truncated body is retried rather than
+remembered. Clients that ignore the header are unaffected.
+
 ---
 
 ## Watch parties
