@@ -14,6 +14,7 @@ import (
 	"net/http"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/gorilla/websocket"
@@ -68,6 +69,10 @@ type peer struct {
 	hub    *Hub
 	userID string
 	name   string
+
+	// authenticated is set only after the Socket.IO CONNECT token has been verified. It is
+	// atomic because polling POSTs can overlap while a long-polling GET is being held open.
+	authenticated atomic.Bool
 
 	// out carries fully framed Engine.IO strings to the writer.
 	out chan string
@@ -520,12 +525,21 @@ func (h *Hub) handleSocketPacket(p *peer, body string) bool {
 		}
 		p.userID = principal.UserID
 		p.name = principal.DisplayName
+		p.authenticated.Store(true)
 		p.send(string(sioConnect) + mustJSON(map[string]string{"sid": p.sid}))
 		h.onReady(p)
 		return true
 	case sioDisconnect:
 		return false
 	case sioEvent:
+		// Socket.IO application events are valid only after the CONNECT packet has been
+		// authenticated. Ignore pre-auth events rather than changing the deployed wire
+		// protocol with an extra application response; the client can still authenticate
+		// the session normally afterward.
+		if !p.authenticated.Load() {
+			h.logger.Debug("ignoring socket event before authentication", slog.String("sid", p.sid))
+			return true
+		}
 		packet, _, err := splitPacket(string(sioEvent) + rest)
 		if err != nil {
 			h.logger.Debug("bad event packet", slog.String("sid", p.sid), slog.String("error", err.Error()))

@@ -169,6 +169,11 @@ func (h *Hub) onReady(p *peer) {
 
 // dispatchEvent routes one application event to its handler.
 func (h *Hub) dispatchEvent(p *peer, in inbound) {
+	if !p.authenticated.Load() {
+		h.logger.Debug("ignoring socket event before authentication", slog.String("sid", p.sid))
+		return
+	}
+
 	// ACK-only frames (an event the client asked us to answer) carry their id; the room
 	// handlers reply with the same id when they produce a result.
 	switch in.Event {
