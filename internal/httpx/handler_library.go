@@ -12,6 +12,7 @@ import (
 	"strings"
 	"time"
 
+	"animind-backend-go/internal/cache"
 	"animind-backend-go/internal/metadata"
 	"animind-backend-go/internal/repository"
 	"animind-backend-go/internal/scanner"
@@ -316,6 +317,18 @@ func (s *Server) handleAniListProxy(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// AniList answers the same document identically for everybody, and the site re-requests
+	// the same search and detail queries as a user browses. Relaying every one of them cost an
+	// outbound call per click and left AniList's rate limit as the site's capacity limit.
+	cacheKey := cache.AniListKey(string(encoded))
+	if document, ok := s.cachedAniList(r.Context(), cacheKey); ok {
+		w.Header().Set("Content-Type", "application/json; charset=utf-8")
+		w.Header().Set("X-Cache", "HIT")
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write(document)
+		return
+	}
+
 	requestCtx, cancel := context.WithTimeout(r.Context(), 15*time.Second)
 	defer cancel()
 
@@ -343,10 +356,53 @@ func (s *Server) handleAniListProxy(w http.ResponseWriter, r *http.Request) {
 	}
 	if response.StatusCode != http.StatusOK {
 		s.logger.Warn("AniList upstream responded badly", slog.Int("status", response.StatusCode))
+	} else if isUsableGraphQLDocument(upstream) {
+		// Only a good document is stored: caching an empty match would hide the title from
+		// every later search for half a day.
+		s.rememberAniList(r.Context(), cacheKey, upstream)
 	}
+	w.Header().Set("X-Cache", "MISS")
 	w.Header().Set("Content-Type", "application/json; charset=utf-8")
 	w.WriteHeader(response.StatusCode)
 	_, _ = w.Write(upstream)
+}
+
+// cachedAniList reads one proxied document. A store that cannot be reached is a miss.
+func (s *Server) cachedAniList(ctx context.Context, key string) ([]byte, bool) {
+	if s.cache == nil {
+		return nil, false
+	}
+	document, found, err := s.cache.Get(ctx, key)
+	if err != nil {
+		return nil, false
+	}
+	return document, found
+}
+
+func (s *Server) rememberAniList(ctx context.Context, key string, document []byte) {
+	if s.cache == nil {
+		return
+	}
+	if err := s.cache.Set(ctx, key, document, s.cfg.Cache.MetadataTTL); err != nil {
+		s.logger.Warn("could not store the AniList response", slog.String("error", err.Error()))
+	}
+}
+
+// isUsableGraphQLDocument reports a response worth remembering: JSON carrying data and no
+// top-level errors. AniList answers some failures with 200 and an errors array, which must
+// not become a half-day of silence.
+func isUsableGraphQLDocument(body []byte) bool {
+	var envelope struct {
+		Data   json.RawMessage `json:"data"`
+		Errors json.RawMessage `json:"errors"`
+	}
+	if err := json.Unmarshal(body, &envelope); err != nil {
+		return false
+	}
+	if len(envelope.Errors) > 0 {
+		return false
+	}
+	return len(envelope.Data) > 0 && string(envelope.Data) != "null"
 }
 
 // isReadOnlyGraphQL rejects documents that mutate, including one hidden inside a comment
@@ -530,6 +586,9 @@ func (s *Server) handleAdminSetUserAdmin(w http.ResponseWriter, r *http.Request)
 		s.serverError(w, "Failed to update user.", err)
 		return
 	}
+	// IsAdmin is part of the cached identity, so a promotion or demotion must evict it or
+	// the change lands a minute late.
+	s.auth.InvalidateUser(r.Context(), target)
 	WriteJSON(w, http.StatusOK, map[string]bool{"success": true})
 }
 
