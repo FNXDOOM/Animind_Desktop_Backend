@@ -12,6 +12,8 @@ import (
 	"animind-backend-go/internal/repository"
 )
 
+const googleStateCookieName = "animind_google_state"
+
 // Authentication endpoints.
 //
 // The site authenticates with a session cookie or a bearer session token; the desktop
@@ -72,7 +74,7 @@ func (s *Server) handleLogin(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	result, err := s.auth.Login(r.Context(), req.Email, req.Password)
+	result, err := s.auth.Login(auth.WithLoginSource(r.Context(), ClientIP(r, s.cfg.TrustProxy)), req.Email, req.Password)
 	if err != nil {
 		s.writeAuthError(w, err, "Login failed.")
 		return
@@ -86,8 +88,20 @@ func (s *Server) handleLogin(w http.ResponseWriter, r *http.Request) {
 	})
 }
 
+// handleLogout revokes the caller's session, then clears the cookie.
+//
+// The route sits outside RequireAuth on purpose — logging out with an expired or missing
+// credential must still succeed — so the credential is resolved here. Before that was not the
+// case, and a bearer session survived logout with its row still live until it expired.
 func (s *Server) handleLogout(w http.ResponseWriter, r *http.Request) {
 	principal := PrincipalFromContext(r.Context())
+	if principal == nil {
+		if token := credential(r); token != "" {
+			if resolved, err := s.auth.Authenticate(r.Context(), token); err == nil {
+				principal = resolved
+			}
+		}
+	}
 	if principal != nil && principal.IsWeb() {
 		if err := s.auth.Logout(r.Context(), principal); err != nil {
 			s.logger.Warn("logout could not revoke the session", slog.String("error", err.Error()))
@@ -146,8 +160,8 @@ type forgotPasswordRequest struct {
 // handleForgotPassword answers identically whether or not the address exists, so the
 // endpoint cannot be used to enumerate accounts.
 //
-// The reset token is written to the server log rather than emailed: no mail transport is
-// configured for this backend, and an operator delivers it.
+// No reset credential is written to logs. Delivery belongs to the mail or account-recovery
+// integration, and a log sink must never become a password-reset credential store.
 func (s *Server) handleForgotPassword(w http.ResponseWriter, r *http.Request) {
 	var req forgotPasswordRequest
 	if err := DecodeJSON(r, &req); err != nil {
@@ -162,8 +176,8 @@ func (s *Server) handleForgotPassword(w http.ResponseWriter, r *http.Request) {
 	if found {
 		s.logger.Warn("password reset token issued",
 			slog.String("email", auth.NormalizeEmail(req.Email)),
-			slog.String("token", token),
-			slog.String("note", "deliver this to the account owner; it expires in one hour"))
+			slog.String("token_hash", auth.HashToken(token)),
+			slog.String("note", "deliver through the configured recovery channel; it expires in one hour"))
 	}
 	WriteJSON(w, http.StatusAccepted, map[string]any{
 		"success": true,
@@ -203,11 +217,21 @@ func (s *Server) handleGoogleURL(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	redirectAfter := sanitizeReturnTarget(r.URL.Query().Get("redirect"), s.cfg.FrontendOrigins)
-	state, err := s.auth.GoogleRedirectState(redirectAfter)
+	browserNonce, err := auth.NewOpaqueToken(32)
 	if err != nil {
 		s.serverError(w, "Could not start Google sign-in.", err)
 		return
 	}
+	state, err := s.auth.GoogleRedirectStateForBrowser(redirectAfter, browserNonce)
+	if err != nil {
+		s.serverError(w, "Could not start Google sign-in.", err)
+		return
+	}
+	http.SetCookie(w, &http.Cookie{
+		Name: googleStateCookieName, Value: browserNonce, Path: "/api/auth/google",
+		MaxAge: 10 * 60, HttpOnly: true, Secure: s.cfg.Auth.SecureCookies,
+		SameSite: http.SameSiteLaxMode,
+	})
 	WriteJSON(w, http.StatusOK, map[string]string{"url": s.auth.GoogleAuthURL(state), "state": state})
 }
 
@@ -216,6 +240,11 @@ func (s *Server) handleGoogleCallback(w http.ResponseWriter, r *http.Request) {
 		WriteError(w, http.StatusNotImplemented, "Google sign-in is not configured on this server.")
 		return
 	}
+	browserNonce := ""
+	if cookie, err := r.Cookie(googleStateCookieName); err == nil {
+		browserNonce = strings.TrimSpace(cookie.Value)
+	}
+	http.SetCookie(w, &http.Cookie{Name: googleStateCookieName, Path: "/api/auth/google", MaxAge: -1, HttpOnly: true, Secure: s.cfg.Auth.SecureCookies, SameSite: http.SameSiteLaxMode})
 	if providerError := r.URL.Query().Get("error"); providerError != "" {
 		s.logger.Info("Google sign-in declined by the user", slog.String("error", providerError))
 		http.Redirect(w, r, s.frontendReturn("")+"?auth=cancelled", http.StatusFound)
@@ -228,7 +257,7 @@ func (s *Server) handleGoogleCallback(w http.ResponseWriter, r *http.Request) {
 		WriteError(w, http.StatusBadRequest, "Missing code or state.")
 		return
 	}
-	redirectAfter, err := s.auth.VerifyGoogleRedirectState(state)
+	redirectAfter, err := s.auth.VerifyGoogleRedirectStateForBrowser(state, browserNonce)
 	if err != nil {
 		WriteError(w, http.StatusUnauthorized, "The sign-in attempt could not be verified. Start again.")
 		return

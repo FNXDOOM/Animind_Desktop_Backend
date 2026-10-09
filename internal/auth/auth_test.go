@@ -1,11 +1,17 @@
 package auth
 
 import (
+	"context"
 	"encoding/base64"
 	"errors"
+	"io"
+	"log/slog"
 	"strings"
 	"testing"
 	"time"
+
+	"animind-backend-go/internal/cache"
+	"animind-backend-go/internal/config"
 )
 
 func testParams() Argon2Params {
@@ -204,6 +210,75 @@ func TestBridgeTokenRequiresHS256AndAudience(t *testing.T) {
 	}
 	if _, err := signer.VerifyBridgeToken(expiredToken); err != ErrJWTExpired {
 		t.Errorf("expired: got %v, want ErrJWTExpired", err)
+	}
+}
+
+func TestBridgeTokenIssuerMustMatchDeployment(t *testing.T) {
+	signer, _ := NewSigner("0123456789012345678901234567890123456789")
+	token, err := signer.SignBridgeToken(BridgeClaims{
+		Issuer: "https://api.example.test", Subject: "user-1", Audience: BridgeAudience,
+		ExpiresAt: time.Now().Add(time.Minute).Unix(),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := signer.VerifyBridgeTokenForIssuer(token, "https://api.example.test"); err != nil {
+		t.Fatalf("matching issuer rejected: %v", err)
+	}
+	if _, err := signer.VerifyBridgeTokenForIssuer(token, "https://other.example.test"); err != ErrJWTIssuer {
+		t.Errorf("wrong issuer: got %v, want ErrJWTIssuer", err)
+	}
+}
+
+func TestGoogleStateIsBrowserBoundAndSingleUse(t *testing.T) {
+	store, err := cache.Open(context.Background(), config.CacheConfig{}, slog.New(slog.NewTextHandler(io.Discard, nil)))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer store.Close()
+	signer, _ := NewSigner("0123456789012345678901234567890123456789")
+	service := &Service{
+		signer: signer, cfg: &config.Config{PublicURL: "https://api.example.test"},
+		stateCache: store, localState: make(map[string]time.Time),
+	}
+	state, err := service.GoogleRedirectStateForBrowser("/library", "browser-nonce")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := service.VerifyGoogleRedirectStateForBrowser(state, "another-browser"); err != ErrTokenInvalid {
+		t.Fatalf("state accepted for another browser: %v", err)
+	}
+	redirect, err := service.VerifyGoogleRedirectStateForBrowser(state, "browser-nonce")
+	if err != nil || redirect != "/library" {
+		t.Fatalf("valid state: redirect=%q err=%v", redirect, err)
+	}
+	if _, err := service.VerifyGoogleRedirectStateForBrowser(state, "browser-nonce"); err != ErrTokenInvalid {
+		t.Errorf("state replay: got %v, want ErrTokenInvalid", err)
+	}
+}
+
+func TestLoginFailureThrottleIsScopedToSource(t *testing.T) {
+	store, err := cache.Open(context.Background(), config.CacheConfig{}, slog.New(slog.NewTextHandler(io.Discard, nil)))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer store.Close()
+	signer, _ := NewSigner("0123456789012345678901234567890123456789")
+	service := &Service{
+		signer:     signer,
+		cfg:        &config.Config{Auth: config.AuthConfig{MaxFailedLogins: 2, FailedLoginLockout: time.Minute}},
+		stateCache: store, loginLimiter: store,
+	}
+	first := WithLoginSource(context.Background(), "198.51.100.10")
+	if service.recordLoginFailure(first, "person@example.test") {
+		t.Fatal("first failure unexpectedly locked the source")
+	}
+	if !service.recordLoginFailure(first, "person@example.test") {
+		t.Fatal("second failure should throttle this source")
+	}
+	other := WithLoginSource(context.Background(), "198.51.100.11")
+	if service.recordLoginFailure(other, "person@example.test") {
+		t.Fatal("one source must not lock another source out")
 	}
 }
 

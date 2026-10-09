@@ -2,13 +2,16 @@ package auth
 
 import (
 	"context"
+	"crypto/subtle"
 	"errors"
 	"fmt"
 	"log/slog"
 	"net/url"
 	"strings"
+	"sync"
 	"time"
 
+	"animind-backend-go/internal/cache"
 	"animind-backend-go/internal/config"
 	"animind-backend-go/internal/repository"
 )
@@ -24,11 +27,66 @@ type Service struct {
 	cfg    *config.Config
 	google *Google
 	logger *slog.Logger
+	// credentials is nil when no shared store is configured.
+	credentials *credentialCache
+	// stateCache is used for atomic, single-use OAuth state consumption.
+	stateCache cache.Store
+	stateMu    sync.Mutex
+	localState map[string]time.Time
+	// loginLimiter scopes failed-password lockouts to the initiating source and
+	// never mutates the account row. That prevents one unauthenticated client from
+	// locking every client out of an account.
+	loginLimiter cache.Limiter
 }
 
-// NewService wires the service to its dependencies.
-func NewService(store *repository.Store, signer *Signer, cfg *config.Config, google *Google, logger *slog.Logger) *Service {
-	return &Service{store: store, signer: signer, cfg: cfg, google: google, logger: logger}
+// NewService wires the service to its dependencies. stateCache may be nil, in which case
+// every credential resolution goes to the database as it did before.
+func NewService(store *repository.Store, signer *Signer, cfg *config.Config, google *Google, stateCache cache.Store, logger *slog.Logger) *Service {
+	return &Service{
+		store: store, signer: signer, cfg: cfg, google: google, logger: logger,
+		credentials: newCredentialCache(stateCache, cfg, logger),
+		stateCache:  stateCache, localState: make(map[string]time.Time), loginLimiter: stateCache,
+	}
+}
+
+type loginSourceContextKey struct{}
+
+// WithLoginSource attaches the server-observed client identity to a login
+// attempt. HTTP callers use the peer address; direct service callers retain the
+// existing Login API and simply do not receive source-scoped throttling.
+func WithLoginSource(ctx context.Context, source string) context.Context {
+	return context.WithValue(ctx, loginSourceContextKey{}, strings.TrimSpace(source))
+}
+
+func loginSource(ctx context.Context) string {
+	source, _ := ctx.Value(loginSourceContextKey{}).(string)
+	return source
+}
+
+// cachedCredential reads one resolved token from shared state.
+func (s *Service) cachedCredential(ctx context.Context, key string) (*Principal, bool) {
+	if s.credentials == nil {
+		return nil, false
+	}
+	return s.credentials.lookup(ctx, key)
+}
+
+// rememberCredential publishes a resolution until the row behind it stops being valid.
+func (s *Service) rememberCredential(ctx context.Context, key string, p *Principal, expiresAt time.Time) {
+	if s.credentials == nil {
+		return
+	}
+	s.credentials.remember(ctx, key, p, expiresAt)
+}
+
+// InvalidateUser drops cached identity for one account. Callers that write user rows without
+// going through this service — the admin flag being the one — must call it, or the change
+// stays invisible until the entry expires.
+func (s *Service) InvalidateUser(ctx context.Context, userID string) {
+	if s.credentials == nil {
+		return
+	}
+	s.credentials.invalidateUser(ctx, userID)
 }
 
 // Principal is an authenticated caller.
@@ -149,9 +207,6 @@ func (s *Service) Login(ctx context.Context, rawEmail, password string) (*LoginR
 		return nil, err
 	}
 
-	if user.LockedUntil != nil && user.LockedUntil.After(time.Now()) {
-		return nil, ErrAccountLocked
-	}
 	if user.PasswordHash == nil || *user.PasswordHash == "" {
 		// Identity-only account: it must sign in through its provider.
 		return nil, ErrInvalidCredentials
@@ -160,8 +215,8 @@ func (s *Service) Login(ctx context.Context, rawEmail, password string) (*LoginR
 	needsRehash, err := VerifyPasswordAgainstCurrent(password, *user.PasswordHash, s.argon2Params())
 	if err != nil {
 		if errors.Is(err, ErrHashMismatch) {
-			if _, lockErr := s.store.RegisterFailedLogin(ctx, user.ID, s.cfg.Auth.MaxFailedLogins, s.cfg.Auth.FailedLoginLockout); lockErr != nil {
-				s.logger.Error("failed to record login failure", slog.String("error", lockErr.Error()))
+			if s.recordLoginFailure(ctx, email) {
+				return nil, ErrAccountLocked
 			}
 			return nil, ErrInvalidCredentials
 		}
@@ -173,6 +228,7 @@ func (s *Service) Login(ctx context.Context, rawEmail, password string) (*LoginR
 	if err := s.store.ClearFailedLogins(ctx, user.ID); err != nil {
 		s.logger.Warn("could not clear login failures", slog.String("error", err.Error()))
 	}
+	s.clearLoginFailures(ctx, email)
 	if needsRehash {
 		// Parameters were raised since the hash was written; upgrade it now that the
 		// plaintext is available.
@@ -184,6 +240,44 @@ func (s *Service) Login(ctx context.Context, rawEmail, password string) (*LoginR
 	}
 
 	return s.SignInUser(ctx, user.ID, "web", false)
+}
+
+// loginFailureKey is intentionally based on the normalized account and the
+// server-observed source, not on an account-wide database row. A failed login
+// can therefore slow one attacker without creating an unauthenticated account
+// lockout denial of service for every other browser.
+func (s *Service) loginFailureKey(ctx context.Context, email string) string {
+	source := loginSource(ctx)
+	if source == "" || s.loginLimiter == nil {
+		return ""
+	}
+	return cache.RateKey("login-failure", HashToken(email+"\x00"+source))
+}
+
+func (s *Service) recordLoginFailure(ctx context.Context, email string) bool {
+	key := s.loginFailureKey(ctx, email)
+	if key == "" || s.cfg.Auth.MaxFailedLogins <= 0 || s.cfg.Auth.FailedLoginLockout <= 0 {
+		return false
+	}
+	decision, err := s.loginLimiter.Allow(ctx, key, s.cfg.Auth.MaxFailedLogins, s.cfg.Auth.FailedLoginLockout)
+	if err != nil {
+		// A limiter outage must not turn a login outage into an account outage.
+		if s.logger != nil {
+			s.logger.Warn("login failure limiter unavailable", slog.String("error", err.Error()))
+		}
+		return false
+	}
+	return !decision.Allowed || decision.Remaining == 0
+}
+
+func (s *Service) clearLoginFailures(ctx context.Context, email string) {
+	key := s.loginFailureKey(ctx, email)
+	if key == "" || s.stateCache == nil {
+		return
+	}
+	if err := s.stateCache.Delete(ctx, key); err != nil && s.logger != nil {
+		s.logger.Warn("could not clear login failures", slog.String("error", err.Error()))
+	}
 }
 
 // SignInUser opens a web session for an existing account and returns its token.
@@ -236,9 +330,15 @@ func (s *Service) Authenticate(ctx context.Context, token string) (*Principal, e
 }
 
 func (s *Service) authenticateDesktop(ctx context.Context, token string) (*Principal, error) {
+	// Signature first: it is stateless, so a forged token is rejected without touching the
+	// database or the cache at all.
 	claims, err := s.signer.VerifyDesktopAccessToken(token)
 	if err != nil {
 		return nil, ErrTokenInvalid
+	}
+	key := credentialKey("desktop", token)
+	if principal, ok := s.cachedCredential(ctx, key); ok {
+		return principal, nil
 	}
 	session, err := s.store.DesktopSessionByAccessHash(ctx, HashToken(token))
 	if err != nil {
@@ -259,13 +359,19 @@ func (s *Service) authenticateDesktop(ctx context.Context, token string) (*Princ
 		}
 		return nil, err
 	}
-	return &Principal{
+	principal := &Principal{
 		UserID: user.ID, Email: user.Email, Username: user.Username, IsAdmin: user.IsAdmin,
 		Kind: "desktop", DesktopSessionID: session.SessionID,
-	}, nil
+	}
+	s.rememberCredential(ctx, key, principal, session.AccessTokenExpires)
+	return principal, nil
 }
 
 func (s *Service) authenticateWeb(ctx context.Context, token string) (*Principal, error) {
+	key := credentialKey("web", token)
+	if principal, ok := s.cachedCredential(ctx, key); ok {
+		return principal, nil
+	}
 	session, err := s.store.ActiveWebSession(ctx, HashToken(token))
 	if err != nil {
 		if errors.Is(err, repository.ErrNotFound) {
@@ -289,18 +395,30 @@ func (s *Service) authenticateWeb(ctx context.Context, token string) (*Principal
 		}
 		return nil, err
 	}
-	return &Principal{
+	principal := &Principal{
 		UserID: user.ID, Email: user.Email, Username: user.Username, IsAdmin: user.IsAdmin,
 		Kind: "web", WebSessionRowID: session.ID,
-	}, nil
+	}
+	// The row's own expiry, not the touch interval, is what bounds how long this entry may
+	// speak for the session.
+	s.rememberCredential(ctx, key, principal, session.ExpiresAt)
+	return principal, nil
 }
 
 // Logout revokes the calling session. Desktop callers use the revoke endpoint instead.
+//
+// Eviction covers the whole account rather than one session: the revoke is keyed by row id,
+// which says nothing about the token hash the cache entry was named for. Cost is a few extra
+// database reads on the user's other devices, never a stale credential.
 func (s *Service) Logout(ctx context.Context, p *Principal) error {
 	if !p.IsWeb() || p.WebSessionRowID == "" {
 		return nil
 	}
-	return s.store.RevokeWebSession(ctx, p.UserID, p.WebSessionRowID)
+	if err := s.store.RevokeWebSession(ctx, p.UserID, p.WebSessionRowID); err != nil {
+		return err
+	}
+	s.InvalidateUser(ctx, p.UserID)
+	return nil
 }
 
 // RevokeSession revokes one credential by id, whichever family it belongs to.
@@ -313,6 +431,7 @@ func (s *Service) RevokeSession(ctx context.Context, userID, id string) (bool, e
 		return false, err
 	}
 	if desktop {
+		s.InvalidateUser(ctx, userID)
 		return true, nil
 	}
 	if err := s.store.RevokeWebSession(ctx, userID, id); err != nil {
@@ -321,12 +440,17 @@ func (s *Service) RevokeSession(ctx context.Context, userID, id string) (bool, e
 		}
 		return false, err
 	}
+	s.InvalidateUser(ctx, userID)
 	return true, nil
 }
 
 // LogoutEverywhere revokes all other web sessions for the account.
 func (s *Service) LogoutEverywhere(ctx context.Context, userID, exceptRowID string) error {
-	return s.store.RevokeAllWebSessions(ctx, userID, exceptRowID)
+	if err := s.store.RevokeAllWebSessions(ctx, userID, exceptRowID); err != nil {
+		return err
+	}
+	s.InvalidateUser(ctx, userID)
+	return nil
 }
 
 // ── Desktop sessions ─────────────────────────────────────────────────────────
@@ -340,7 +464,7 @@ func (s *Service) DesktopExchange(ctx context.Context, bearer, deviceID, deviceN
 	principal, err := s.Authenticate(ctx, bearer)
 	if err != nil {
 		// Fall back to a bridge JWT, which is what the browser handoff delivers.
-		claims, jwtErr := s.signer.VerifyBridgeToken(strings.TrimSpace(bearer))
+		claims, jwtErr := s.signer.VerifyBridgeTokenForIssuer(strings.TrimSpace(bearer), s.cfg.PublicIssuer())
 		if jwtErr != nil {
 			return nil, ErrNotAuthenticated
 		}
@@ -414,6 +538,9 @@ func (s *Service) DesktopRefresh(ctx context.Context, refreshToken string) (*Des
 		}
 		return nil, fmt.Errorf("auth: rotate desktop session: %w", err)
 	}
+	// The session's previous access token may still be cached under its own hash; rotation
+	// replaces the row, so the cache has to forget the identity it pinned.
+	s.InvalidateUser(ctx, session.UserID)
 
 	return &DesktopTokens{
 		UserID: session.UserID, SessionID: session.SessionID,
@@ -426,21 +553,43 @@ func (s *Service) DesktopRefresh(ctx context.Context, refreshToken string) (*Des
 
 // DesktopRevoke signs a device out using either half of its credential pair. It reports
 // whether any row matched, so the handler can answer 404 rather than pretending.
+//
+// Each branch learns the account it is revoking before it revokes: an access token carries
+// its owner in its own signature, and a refresh token's owner is on the row. Without that
+// identity the cached resolution would stay usable until its TTL expired.
 func (s *Service) DesktopRevoke(ctx context.Context, refreshToken, accessToken string) (bool, error) {
 	revoked := false
 	if refreshToken = strings.TrimSpace(refreshToken); refreshToken != "" {
+		owner := ""
+		if session, err := s.store.DesktopSessionByRefreshHash(ctx, HashToken(refreshToken)); err == nil {
+			owner = session.UserID
+		} else if !errors.Is(err, repository.ErrNotFound) {
+			return false, err
+		}
 		ok, err := s.store.RevokeDesktopSessionByRefreshHash(ctx, HashToken(refreshToken))
 		if err != nil {
 			return false, err
 		}
 		revoked = revoked || ok
+		if revoked && owner != "" {
+			s.InvalidateUser(ctx, owner)
+		}
 	}
 	if accessToken = strings.TrimSpace(accessToken); accessToken != "" && IsDesktopAccessToken(accessToken) {
+		owner := ""
+		// A token this backend did not sign cannot have a cache entry: authenticateDesktop
+		// verifies before it looks anything up.
+		if claims, err := s.signer.VerifyDesktopAccessToken(accessToken); err == nil {
+			owner = claims.UserID
+		}
 		ok, err := s.store.RevokeDesktopSessionByAccessToken(ctx, HashToken(accessToken))
 		if err != nil {
 			return false, err
 		}
 		revoked = revoked || ok
+		if revoked && owner != "" {
+			s.InvalidateUser(ctx, owner)
+		}
 	}
 	return revoked, nil
 }
@@ -491,6 +640,8 @@ func (s *Service) UpdateProfile(ctx context.Context, userID string, username *st
 	if err != nil {
 		return nil, err
 	}
+	// The cached principal carries username, so a rename must not be invisible for a minute.
+	s.InvalidateUser(ctx, userID)
 	return user.Public(), nil
 }
 
@@ -526,7 +677,11 @@ func (s *Service) ChangePassword(ctx context.Context, userID, currentPassword, n
 	if err := s.store.UpdatePassword(ctx, userID, hash); err != nil {
 		return err
 	}
-	return s.store.RevokeAllWebSessions(ctx, userID, "")
+	if err := s.store.RevokeAllWebSessions(ctx, userID, ""); err != nil {
+		return err
+	}
+	s.InvalidateUser(ctx, userID)
+	return nil
 }
 
 // RequestPasswordReset pins a single-use token for an existing account.
@@ -567,12 +722,21 @@ func (s *Service) ResetPassword(ctx context.Context, token, newPassword string) 
 	if err := s.store.UpdatePassword(ctx, userID, hash); err != nil {
 		return err
 	}
-	return s.store.RevokeAllWebSessions(ctx, userID, "")
+	if err := s.store.RevokeAllWebSessions(ctx, userID, ""); err != nil {
+		return err
+	}
+	s.InvalidateUser(ctx, userID)
+	return nil
 }
 
 // DeleteAccount removes the user and cascades every owned row and session.
 func (s *Service) DeleteAccount(ctx context.Context, userID string) error {
-	return s.store.DeleteUser(ctx, userID)
+	if err := s.store.DeleteUser(ctx, userID); err != nil {
+		return err
+	}
+	// The cascade revokes sessions this process may still be answering for.
+	s.InvalidateUser(ctx, userID)
+	return nil
 }
 
 // ── Provider sign-in ─────────────────────────────────────────────────────────
@@ -592,29 +756,105 @@ func (s *Service) GoogleExchange(ctx context.Context, code string) (*GoogleProfi
 	return s.google.Exchange(ctx, code)
 }
 
-// GoogleRedirectState is the signed, single-use value carried through the provider round
-// trip. It binds the callback to the browser that started it and records where to return.
+// GoogleRedirectState is the compatibility helper for callers that do not have an HTTP
+// browser cookie. The HTTP flow uses GoogleRedirectStateForBrowser so its callback is bound
+// to the initiating browser as well as being single-use.
 func (s *Service) GoogleRedirectState(redirectAfter string) (string, error) {
-	return s.signer.SignBridgeToken(BridgeClaims{
+	return s.GoogleRedirectStateForBrowser(redirectAfter, "")
+}
+
+// GoogleRedirectStateForBrowser creates a short-lived state tied to the
+// browser nonce set by the HTTP start endpoint. The signed token is also
+// registered in shared state so the callback can consume it only once.
+func (s *Service) GoogleRedirectStateForBrowser(redirectAfter, browserNonce string) (string, error) {
+	redirectAfter = TruncateLabel(redirectAfter, 512)
+	browserNonce = strings.TrimSpace(browserNonce)
+	state, err := s.signer.SignBridgeToken(BridgeClaims{
 		Issuer:    s.cfg.PublicIssuer(),
 		Subject:   "oauth-state",
-		SessionID: TruncateLabel(redirectAfter, 512),
-		Audience:  "animind-oauth-state",
+		SessionID: redirectAfter,
+		Nonce:     browserNonce,
+		Audience:  OAuthStateAudience,
 		ExpiresAt: time.Now().Add(10 * time.Minute).Unix(),
 	})
+	if err != nil {
+		return "", err
+	}
+	if err := s.registerOAuthState(state, 10*time.Minute); err != nil {
+		return "", err
+	}
+	return state, nil
+}
+
+func (s *Service) registerOAuthState(state string, ttl time.Duration) error {
+	key := oauthStateCacheKey(state)
+	if s.stateCache != nil {
+		return s.stateCache.Set(context.Background(), key, []byte{1}, ttl)
+	}
+	s.stateMu.Lock()
+	if s.localState == nil {
+		s.localState = make(map[string]time.Time)
+	}
+	s.localState[key] = time.Now().Add(ttl)
+	s.stateMu.Unlock()
+	return nil
 }
 
 // VerifyGoogleRedirectState validates the state parameter and returns the requested
 // post-login redirect target.
 func (s *Service) VerifyGoogleRedirectState(state string) (redirectAfter string, err error) {
-	claims, err := s.signer.VerifyBridgeToken(state)
+	return s.verifyGoogleRedirectState(state, "")
+}
+
+// VerifyGoogleRedirectStateForBrowser validates and atomically consumes a
+// callback state for the browser that initiated it.
+func (s *Service) VerifyGoogleRedirectStateForBrowser(state, browserNonce string) (redirectAfter string, err error) {
+	return s.verifyGoogleRedirectState(state, strings.TrimSpace(browserNonce))
+}
+
+func (s *Service) verifyGoogleRedirectState(state, browserNonce string) (redirectAfter string, err error) {
+	state = strings.TrimSpace(state)
+	claims, err := s.signer.VerifyOAuthStateToken(state, s.cfg.PublicIssuer())
 	if err != nil {
 		return "", ErrTokenInvalid
 	}
-	if claims.Audience != "animind-oauth-state" || claims.Subject != "oauth-state" {
+	if claims.Subject != "oauth-state" || subtle.ConstantTimeCompare([]byte(claims.Nonce), []byte(browserNonce)) != 1 {
+		return "", ErrTokenInvalid
+	}
+	if state == "" || !s.consumeOAuthState(state) {
 		return "", ErrTokenInvalid
 	}
 	return claims.SessionID, nil
+}
+
+func oauthStateCacheKey(state string) string {
+	return "oauth-state:" + HashToken(state)
+}
+
+func (s *Service) consumeOAuthState(state string) bool {
+	if s.stateCache != nil {
+		_, found, err := cache.Take(context.Background(), s.stateCache, oauthStateCacheKey(state))
+		return err == nil && found
+	}
+
+	now := time.Now()
+	s.stateMu.Lock()
+	defer s.stateMu.Unlock()
+	if s.localState == nil {
+		return false
+	}
+	for key, expiresAt := range s.localState {
+		if !expiresAt.After(now) {
+			delete(s.localState, key)
+		}
+	}
+	key := oauthStateCacheKey(state)
+	expiresAt, found := s.localState[key]
+	if !found || !expiresAt.After(now) {
+		return false
+	}
+	delete(s.localState, key)
+	return true
 }
 
 // SignInWithGoogle finds or creates the account behind a verified Google profile and

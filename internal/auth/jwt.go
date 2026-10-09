@@ -26,6 +26,9 @@ import (
 // BridgeAudience is the aud claim identifying a desktop handoff token.
 const BridgeAudience = "animind-desktop-bridge"
 
+// OAuthStateAudience is the aud claim identifying a browser OAuth state token.
+const OAuthStateAudience = "animind-oauth-state"
+
 // BridgeClaims is the payload of a desktop handoff token.
 //
 // JSON keys match what the desktop client reads: sub for the user id, sid for the
@@ -34,6 +37,7 @@ type BridgeClaims struct {
 	Issuer    string `json:"iss"`
 	Subject   string `json:"sub"`
 	SessionID string `json:"sid"`
+	Nonce     string `json:"nonce,omitempty"`
 	Email     string `json:"email,omitempty"`
 	Audience  string `json:"aud"`
 	IssuedAt  int64  `json:"iat"`
@@ -68,6 +72,22 @@ func (s *Signer) SignBridgeToken(claims BridgeClaims) (string, error) {
 // required to be HS256: an attacker-supplied alg of "none" would otherwise present an
 // unsigned token as valid.
 func (s *Signer) VerifyBridgeToken(token string) (*BridgeClaims, error) {
+	return s.verifyBridgeToken(token, BridgeAudience, "")
+}
+
+// VerifyBridgeTokenForIssuer validates a desktop handoff and its issuer. The
+// issuer is deliberately supplied by the caller because Signer is also used by
+// deployments with different public origins.
+func (s *Signer) VerifyBridgeTokenForIssuer(token, issuer string) (*BridgeClaims, error) {
+	return s.verifyBridgeToken(token, BridgeAudience, issuer)
+}
+
+// VerifyOAuthStateToken validates a signed OAuth state token for one issuer.
+func (s *Signer) VerifyOAuthStateToken(token, issuer string) (*BridgeClaims, error) {
+	return s.verifyBridgeToken(token, OAuthStateAudience, issuer)
+}
+
+func (s *Signer) verifyBridgeToken(token, expectedAudience, expectedIssuer string) (*BridgeClaims, error) {
 	parts := strings.Split(token, ".")
 	if len(parts) != 3 {
 		return nil, ErrJWTFormat
@@ -102,7 +122,10 @@ func (s *Signer) VerifyBridgeToken(token string) (*BridgeClaims, error) {
 	if err := json.Unmarshal(payloadRaw, &claims); err != nil {
 		return nil, ErrJWTFormat
 	}
-	if claims.Audience != BridgeAudience || claims.Subject == "" {
+	if claims.Audience != expectedAudience || claims.Subject == "" {
+		return nil, ErrJWTIssuer
+	}
+	if expectedIssuer != "" && claims.Issuer != expectedIssuer {
 		return nil, ErrJWTIssuer
 	}
 	if claims.ExpiresAt <= time.Now().Unix() {
