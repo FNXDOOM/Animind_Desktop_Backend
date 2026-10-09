@@ -88,7 +88,7 @@ Stated plainly, because pretending they are gone would be worse than noting them
 | The metrics listener is unauthenticated | A Prometheus poll carries no session, and adding one would put a credential in a scrape config | It binds to `127.0.0.1:3002` by default, is not proxied by nginx, and is not published by compose. It exposes route patterns, timings and library counts — no user data, no secrets |
 | Redis holds cached identity | Anything in a store someone can read is readable | Keys carry the SHA-256 of a token, never the token; values are the user id, email, username and admin flag. Treat the Redis address as privileged: it is loopback-published here and has no password in the local stack |
 | `423` on a locked account confirms the address exists | The lockout message is needed for a usable sign-in screen | Reveals only that an address is registered *and* was recently brute-forced; the 401 path stays indistinguishable |
-| Password-reset tokens are written to the log | No mail transport exists in this service and inventing SMTP was out of scope | Tokens are single-use, expire in 60 minutes, and log access is root-only by design. Deliver them out of band and consider disabling the endpoint until a mailer is wired |
+| Password-reset delivery is deployment-dependent | No mail transport exists in this service and inventing SMTP was out of scope | The API stores only a hash and never logs the live reset credential. Configure an external recovery integration before enabling the endpoint for users |
 | Watch parties live in memory | Persisting live playback state on every heartbeat would cost more than a restart costs users | A restart ends the party; startup closes the stale `active` rows so the cleanup job still converges |
 
 Also worth knowing: `anime_data` (watchlist) is stored and returned verbatim as JSON. This service
@@ -113,8 +113,7 @@ image build context. The container runs as a non-root user with `ProtectSystem=s
 
 1. Generate a fresh `DESKTOP_TOKEN_SIGNING_KEY` (`openssl rand -base64 48`) — the example value is
    public.
-2. Change `WEBHOOK_SECRET` from `dev-secret`; startup does not enforce this, so it is a checklist
-   item, not a guardrail.
+2. Set a unique `WEBHOOK_SECRET`. Production startup rejects the documented development default.
 3. Keep `TRUST_PROXY_HEADERS=false` unless nginx genuinely overwrites `X-Forwarded-For`; a forged
    header is otherwise a free rate-limit bypass.
 4. Set `ENV=production` so `SECURE_COOKIES` defaults on and error `details` stay suppressed.

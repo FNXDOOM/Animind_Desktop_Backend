@@ -44,7 +44,10 @@ services:
       redis:
         condition: service_healthy
     ports:
-      - "3001:3001"
+      # Keep the direct API port available for local clients and harnesses, but never expose
+      # the proxy-trusting listener on the host's public interfaces. nginx reaches the API over
+      # the compose network and remains the only public entry point.
+      - "127.0.0.1:3001:3001"
     environment:
       ENV: development
       PORT: "3001"
@@ -60,8 +63,8 @@ services:
       CACHE_SESSION_TTL_SECONDS: "60"
       CACHE_METADATA_TTL_HOURS: "12"
 
-      # The API is only reachable through nginx in this stack, so the proxy's client address
-      # is the one that matters. nginx overwrites X-Forwarded-For; nothing appends to it.
+      # External traffic reaches the API through nginx, which overwrites X-Forwarded-For;
+      # the direct host mapping above is loopback-only so an untrusted client cannot spoof it.
       TRUST_PROXY_HEADERS: "true"
 
       # Bind to all interfaces so Prometheus can scrape over the compose network. The port is

@@ -145,7 +145,7 @@ docker compose up -d db redis  # just the dependencies, for the Go suites
 | Container | Reaches | Published |
 | --- | --- | --- |
 | `animind-nginx` :80 | the API | `${NGINX_PORT:-8080}`, the only port meant for clients |
-| `animind-api` :3001 | Postgres, Redis | `:3001`, for the existing clients and the harnesses |
+| `animind-api` :3001 | Postgres, Redis | `127.0.0.1:3001` only, for local clients and harnesses |
 | `animind-api` :3002 | scraped by Prometheus | not published |
 | `animind-db` :5432 | — | loopback only, for `POSTGRES_TEST_DATABASE_URL` |
 | `animind-redis` :6379 | — | loopback only, for `REDIS_TEST_URL` |
@@ -157,8 +157,10 @@ start when `REDIS_URL` is set but does not answer. Nothing in Redis is durable: 
 restarting it costs cache hits and one open rate-limit window, and the API refills both from
 Postgres and the providers.
 
-Remove the `db` and `redis` port mappings on a host that serves traffic; they exist so the
-test suites on the developer machine can reach them.
+The API's direct port is loopback-only in the compose stack. Remove the `db` and `redis` port
+mappings on a host that serves traffic; they exist so the test suites on the developer machine
+can reach them. Do not make the API's proxy-trusting port public: nginx is the only public entry
+point and overwrites `X-Forwarded-For` before forwarding requests.
 
 ```bash
 DATABASE_URL=postgres://animind:animind@localhost:5432/animind animind-server --migrate-only

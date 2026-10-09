@@ -102,6 +102,7 @@ func TestLoadValidatesStorageMode(t *testing.T) {
 func TestLoadNormalisesEnumsAndLists(t *testing.T) {
 	baseEnv(t)
 	t.Setenv("ENV", "PRODUCTION")
+	t.Setenv("WEBHOOK_SECRET", "production-webhook-secret")
 	t.Setenv("VIDEO_EXTENSIONS", " MKV , mp4 ,,avi ")
 	t.Setenv("FRONTEND_URL", "https://a.example, https://b.example/")
 
@@ -120,6 +121,15 @@ func TestLoadNormalisesEnumsAndLists(t *testing.T) {
 	}
 	if !cfg.Auth.SecureCookies {
 		t.Error("cookies must default to Secure in production")
+	}
+}
+
+func TestProductionRejectsDevelopmentWebhookSecret(t *testing.T) {
+	baseEnv(t)
+	t.Setenv("ENV", "production")
+	t.Setenv("WEBHOOK_SECRET", "dev-secret")
+	if _, err := Load(); err == nil || !strings.Contains(err.Error(), "WEBHOOK_SECRET") {
+		t.Fatalf("production must reject the development webhook secret, got %v", err)
 	}
 }
 

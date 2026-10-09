@@ -331,6 +331,9 @@ func Load() (*Config, error) {
 	if cfg.WebhookSecret == "" {
 		return nil, errors.New("config: WEBHOOK_SECRET must not be empty")
 	}
+	if cfg.IsProduction && cfg.WebhookSecret == "dev-secret" {
+		return nil, errors.New("config: WEBHOOK_SECRET must be changed from the development default in production")
+	}
 	return cfg, nil
 }
 
