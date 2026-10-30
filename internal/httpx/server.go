@@ -165,6 +165,7 @@ func (s *Server) Router() chi.Router {
 			authz.With(s.rate(s.limiter.Login)).Post("/login", s.handleLogin)
 			authz.With(s.rate(s.limiter.Login)).Post("/logout", s.handleLogout)
 			authz.With(s.rate(s.limiter.Login)).Get("/google/url", s.handleGoogleURL)
+			authz.With(s.rate(s.limiter.Login)).Get("/google/start", s.handleGoogleStart)
 			authz.With(s.rate(s.limiter.Login)).Get("/google/callback", s.handleGoogleCallback)
 			authz.With(s.rate(s.limiter.Login)).Post("/consume-code", s.handleConsumeCode)
 			authz.With(s.rate(s.limiter.Login)).Post("/password/forgot", s.handleForgotPassword)

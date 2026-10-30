@@ -189,7 +189,7 @@ paths:
         - name: redirect
           in: query
           schema: { type: string }
-          description: Post-login target, accepted only when it names a FRONTEND_URL origin
+          description: Post-login target, accepted only when it names a FRONTEND_URL or APP_LINK_ORIGINS origin
       responses:
         '200':
           description: Provider URL plus the signed single-use state
@@ -198,6 +198,24 @@ paths:
               schema:
                 type: object
                 properties: { url: { type: string }, state: { type: string } }
+        '501': { description: Google sign-in not configured, code oauth_not_configured }
+
+  /api/auth/google/start:
+    get:
+      tags: [auth]
+      security: []
+      summary: Start Google sign-in from inside a browser
+      description: |
+        Sets the browser-nonce cookie and answers 302 to the provider, so a native Custom Tab
+        performs the same flow a web page does. `/google/url` cannot be used from an app: the cookie
+        would land in the app's cookie jar, not the browser that receives the callback.
+      parameters:
+        - name: redirect
+          in: query
+          schema: { type: string }
+          description: Post-login target, accepted only when it names a FRONTEND_URL or APP_LINK_ORIGINS origin
+      responses:
+        '302': { description: Redirect to the Google authorization page, with the nonce cookie set }
         '501': { description: Google sign-in not configured, code oauth_not_configured }
 
   /api/auth/google/callback:

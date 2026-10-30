@@ -124,7 +124,13 @@ Revokes the calling session and clears the cookie. Safe to call anonymously.
 
 503/501 `oauth_not_configured` when the provider is not configured; otherwise
 `{ "url": "https://accounts.google.com/o/oauth2/v2/auth?...", "state": "<signed state>" }`.
-`redirect` is honoured only if it names a `FRONTEND_URL` origin.
+`redirect` is honoured only if it names a `FRONTEND_URL` or `APP_LINK_ORIGINS` origin.
+
+### `GET /api/auth/google/start?redirect=<app-link-url>`
+
+Sets the same browser-nonce cookie and answers `302` to the provider. This is the entry point a
+native client opens in a Custom Tab: `/google/url` sets the cookie in the caller's jar, which is not
+the browser that later receives the callback.
 
 ### `GET /api/auth/google/callback?code&state`
 

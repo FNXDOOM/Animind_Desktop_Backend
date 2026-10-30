@@ -12,6 +12,7 @@ package config
 import (
 	"errors"
 	"fmt"
+	"net/url"
 	"os"
 	"strconv"
 	"strings"
@@ -39,6 +40,10 @@ type Config struct {
 	PublicURL string
 	// FrontendOrigins are allowed CORS origins for the site and desktop app.
 	FrontendOrigins []string
+	// AppLinkOrigins are HTTPS origins the OAuth callback may return to, so a native client can
+	// receive the one-time code through a verified app link. They are merged with FrontendOrigins
+	// only inside sanitizeReturnTarget.
+	AppLinkOrigins []string
 	// WebhookSecret guards POST /api/webhooks/storage.
 	WebhookSecret string
 	// TrustProxy enables X-Forwarded-For based client identity. Turn it on only when a
@@ -305,6 +310,7 @@ func Load() (*Config, error) {
 		Port:            mustInt(getInt("PORT", 3001)),
 		PublicURL:       strings.TrimSuffix(getString("PUBLIC_URL", ""), "/"),
 		FrontendOrigins: splitList(getString("FRONTEND_URL", "http://localhost:5173,http://localhost:3000")),
+		AppLinkOrigins:  parseAppLinkOrigins(getString("APP_LINK_ORIGINS", "")),
 		WebhookSecret:   getString("WEBHOOK_SECRET", "dev-secret"),
 		TrustProxy:      getBool("TRUST_PROXY_HEADERS", false),
 	}
@@ -656,6 +662,27 @@ func splitList(raw string) []string {
 		if trimmed := strings.TrimSpace(p); trimmed != "" {
 			out = append(out, trimmed)
 		}
+	}
+	return out
+}
+
+// parseAppLinkOrigins keeps only absolute HTTPS origins with no path, query, fragment, userinfo or
+// wildcard. Unlike FRONTEND_URL it never accepts http, because an app link is always https, and it
+// stores the bare origin so a return target can only ever differ by path.
+func parseAppLinkOrigins(raw string) []string {
+	var out []string
+	for _, part := range splitList(raw) {
+		parsed, err := url.Parse(part)
+		if err != nil || parsed.Scheme != "https" || parsed.Host == "" || parsed.User != nil {
+			continue
+		}
+		if parsed.RawQuery != "" || parsed.Fragment != "" || strings.Contains(parsed.Host, "*") {
+			continue
+		}
+		if parsed.Path != "" && parsed.Path != "/" {
+			continue
+		}
+		out = append(out, "https://"+parsed.Host)
 	}
 	return out
 }

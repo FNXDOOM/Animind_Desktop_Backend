@@ -155,8 +155,15 @@ refused with the same generic message rather than a hint about the provider.
 After the callback the browser is redirected to a configured origin with `?auth_code=...`,
 which the site redeems via `POST /api/auth/consume-code`. A one-time code is used rather than
 the session token itself so no credential ever lands in history, a log, or a `Referer`. The
-`redirect` parameter is only honoured when it names an origin from `FRONTEND_URL`, which is
-what stops this being an open redirect.
+`redirect` parameter is only honoured when it names an origin from `FRONTEND_URL` or
+`APP_LINK_ORIGINS`, which is what stops this being an open redirect.
+
+A native client cannot use `GET /api/auth/google/url`: it sets the browser-nonce cookie in the
+caller's cookie jar, which is the app, not the Custom Tab that later receives the callback.
+`GET /api/auth/google/start` exists for that case — it sets the cookie and answers 302 to the
+provider from inside the browser. `APP_LINK_ORIGINS` lists the HTTPS origins the callback may
+return to; entries with a path, query, fragment, userinfo, wildcard or `http` scheme are dropped at
+boot.
 
 `GOOGLE_CLIENT_ID`/`SECRET` unset means `GoogleEnabled()` is false: the URL endpoint answers
 501 with a `oauth_not_configured` code instead of redirecting to a broken flow.

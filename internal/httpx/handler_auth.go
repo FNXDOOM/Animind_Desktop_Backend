@@ -216,7 +216,7 @@ func (s *Server) handleGoogleURL(w http.ResponseWriter, r *http.Request) {
 			"Google sign-in is not configured on this server.")
 		return
 	}
-	redirectAfter := sanitizeReturnTarget(r.URL.Query().Get("redirect"), s.cfg.FrontendOrigins)
+	redirectAfter := sanitizeReturnTarget(r.URL.Query().Get("redirect"), s.returnTargets())
 	browserNonce, err := auth.NewOpaqueToken(32)
 	if err != nil {
 		s.serverError(w, "Could not start Google sign-in.", err)
@@ -233,6 +233,44 @@ func (s *Server) handleGoogleURL(w http.ResponseWriter, r *http.Request) {
 		SameSite: http.SameSiteLaxMode,
 	})
 	WriteJSON(w, http.StatusOK, map[string]string{"url": s.auth.GoogleAuthURL(state), "state": state})
+}
+
+// handleGoogleStart is the browser-facing entry point: it sets the nonce cookie and redirects
+// straight to the provider, so a native client's Custom Tab completes the same flow a web page
+// does. Calling google/url from inside an app cannot work, because the cookie would be written to
+// the app's cookie jar rather than the browser that later receives the callback.
+func (s *Server) handleGoogleStart(w http.ResponseWriter, r *http.Request) {
+	if !s.auth.GoogleEnabled() {
+		WriteErrorCode(w, http.StatusNotImplemented, "oauth_not_configured",
+			"Google sign-in is not configured on this server.")
+		return
+	}
+	redirectAfter := sanitizeReturnTarget(r.URL.Query().Get("redirect"), s.returnTargets())
+	browserNonce, err := auth.NewOpaqueToken(32)
+	if err != nil {
+		s.serverError(w, "Could not start Google sign-in.", err)
+		return
+	}
+	state, err := s.auth.GoogleRedirectStateForBrowser(redirectAfter, browserNonce)
+	if err != nil {
+		s.serverError(w, "Could not start Google sign-in.", err)
+		return
+	}
+	http.SetCookie(w, &http.Cookie{
+		Name: googleStateCookieName, Value: browserNonce, Path: "/api/auth/google",
+		MaxAge: 10 * 60, HttpOnly: true, Secure: s.cfg.Auth.SecureCookies,
+		SameSite: http.SameSiteLaxMode,
+	})
+	http.Redirect(w, r, s.auth.GoogleAuthURL(state), http.StatusFound)
+}
+
+// returnTargets is the only place AppLinkOrigins joins FrontendOrigins. Keeping the merge here means
+// CORS and every other origin check stay limited to the site's own origins.
+func (s *Server) returnTargets() []string {
+	merged := make([]string, 0, len(s.cfg.FrontendOrigins)+len(s.cfg.AppLinkOrigins))
+	merged = append(merged, s.cfg.FrontendOrigins...)
+	merged = append(merged, s.cfg.AppLinkOrigins...)
+	return merged
 }
 
 func (s *Server) handleGoogleCallback(w http.ResponseWriter, r *http.Request) {

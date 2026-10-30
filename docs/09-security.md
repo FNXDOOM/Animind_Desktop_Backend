@@ -34,7 +34,7 @@ server-side configuration are called out as such rather than reported as vulnera
 | Path traversal | One choke point resolves and re-checks containment, including symlink resolution | `storage/storage.go:LocalPath` |
 | Arbitrary file read via HLS | Session id must match `^[a-f0-9]{32}$`, segment name `^seg\d{5}\.ts$`, and both are resolved under the session directory | `media/hls.go` |
 | Command injection | `exec.Command` with argument arrays, never a shell; binary paths come from configuration only | `media/ffmpeg.go`, `media/hls.go` |
-| Open redirect after OAuth | `redirect` accepted only when its origin matches `FRONTEND_URL`; scheme must be http(s) | `httpx/handler_auth.go:sanitizeReturnTarget` |
+| Open redirect after OAuth | `redirect` accepted only when its origin matches `FRONTEND_URL`, or an `APP_LINK_ORIGINS` entry merged in only for this check; app-link entries must be https with no path, query, fragment, userinfo or wildcard | `httpx/handler_auth.go:sanitizeReturnTarget`, `config/config.go:parseAppLinkOrigins` |
 | CSRF | Session cookie is `HttpOnly` + `SameSite=Lax`; state-changing routes additionally accept the bearer header, which a cross-site form cannot set | `httpx/server.go:setSessionCookie` |
 | SSRF | Every outbound request targets a constant or operator-configured URL (AniList, MyAnimeList, OpenRouter, Google). No client-supplied URL is ever fetched | `metadata/*`, `auth/google.go` |
 | GraphQL abuse | Proxy strips comment lines then refuses any document containing `mutation` or `subscription`, capped at 10,000 characters | `httpx/handler_library.go` |

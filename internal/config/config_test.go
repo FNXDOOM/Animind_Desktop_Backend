@@ -222,6 +222,39 @@ func TestHLSSegmentDurationIsClamped(t *testing.T) {
 	}
 }
 
+func TestParseAppLinkOrigins(t *testing.T) {
+	got := parseAppLinkOrigins("https://app.example.com, https://www.example.com:8443/")
+	if len(got) != 2 || got[0] != "https://app.example.com" || got[1] != "https://www.example.com:8443" {
+		t.Fatalf("parseAppLinkOrigins = %v", got)
+	}
+	for _, bad := range []string{
+		"http://app.example.com",            // app links are https only
+		"https://app.example.com/auth",      // a path
+		"https://app.example.com?x=1",       // a query
+		"https://app.example.com#frag",      // a fragment
+		"https://user:pass@app.example.com", // userinfo
+		"https://*.example.com",             // wildcard
+		"*",
+		"app.example.com",
+	} {
+		if got := parseAppLinkOrigins(bad); len(got) != 0 {
+			t.Errorf("parseAppLinkOrigins(%q) = %v, want none", bad, got)
+		}
+	}
+}
+
+func TestAppLinkOriginsComeFromTheEnvironment(t *testing.T) {
+	baseEnv(t)
+	t.Setenv("APP_LINK_ORIGINS", "https://app.example.com,not-an-origin")
+	cfg, err := Load()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(cfg.AppLinkOrigins) != 1 || cfg.AppLinkOrigins[0] != "https://app.example.com" {
+		t.Fatalf("AppLinkOrigins = %v", cfg.AppLinkOrigins)
+	}
+}
+
 func TestStreamTicketTTLHasAFloor(t *testing.T) {
 	baseEnv(t)
 	t.Setenv("STREAM_TICKET_TTL_SECONDS", "5")

@@ -18,6 +18,18 @@ import (
 // before touching any dependency.
 func testServer(t *testing.T) *Server {
 	t.Helper()
+	cfg := testConfig(t)
+	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
+
+	server := New(Deps{Config: cfg, Logger: logger})
+	server.httpServer = &http.Server{}
+	return server
+}
+
+// testConfig loads the smallest configuration every HTTP test needs. Callers that want a service
+// (auth, storage) still construct only what their routes touch.
+func testConfig(t *testing.T) *config.Config {
+	t.Helper()
 	t.Setenv("DATABASE_URL", "postgres://user:pass@localhost:5432/db")
 	t.Setenv("DESKTOP_TOKEN_SIGNING_KEY", "0123456789012345678901234567890123456789")
 	t.Setenv("STORAGE_MODE", "local")
@@ -31,10 +43,7 @@ func testServer(t *testing.T) *Server {
 	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
 	// Request logging goes through the default logger; silencing it keeps test output readable.
 	slog.SetDefault(logger)
-
-	server := New(Deps{Config: cfg, Logger: logger})
-	server.httpServer = &http.Server{}
-	return server
+	return cfg
 }
 
 func do(server *Server, method, path string, headers map[string]string) *httptest.ResponseRecorder {
