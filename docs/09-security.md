@@ -28,6 +28,7 @@ server-side configuration are called out as such rather than reported as vulnera
 | Refresh-token theft | Rotation replaces both hashes in one statement, so a presented refresh token works once | `auth/service.go:DesktopRefresh` |
 | Session fixation | Opaque 256-bit session tokens generated server-side; nothing user-chosen becomes a credential | `auth/tokens.go:NewWebSessionToken` |
 | IDOR on user data | Every statement filters `user_id` from the session; no endpoint accepts a client-supplied user id | `repository/userdata.go` |
+| Account takeover through an email change | `PATCH /api/me` with `email` re-verifies the current password, refuses a Google-only account with `password_not_set`, and revokes every **other** web session so a stolen cookie cannot outlive the change | `auth/service.go:ChangeEmail` |
 | Privilege escalation | `RequireAdmin` reads `is_admin` from the account row per request; self-demotion refused | `httpx/middleware.go`, `handler_auth.go` |
 | SQL injection | All values are parameters; the only string-built SQL is placeholder numbering (`$1`, `$2`) and constant predicates | `repository/*.go` |
 | Path traversal | One choke point resolves and re-checks containment, including symlink resolution | `storage/storage.go:LocalPath` |

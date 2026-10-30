@@ -261,7 +261,7 @@ id — no endpoint accepts a `user_id` from the client.
 
 | Endpoint | Body / Result |
 | --- | --- |
-| `PATCH /api/me` | `{ username?, avatar_url? }` → `{ user }`. Avatar must be an http(s) URL. |
+| `PATCH /api/me` | `{ username?, avatar_url? }` → `{ user }`. Avatar must be an http(s) URL. Adding `email` requires `current_password`, lowercases and validates the address, answers `409` when another account owns it and `400 {code:"password_not_set"}` for a Google-only account, then revokes every **other** web session. No verification mail is sent. |
 | `DELETE /api/me` | Deletes the account and cascades every owned row and session. |
 
 ### Watchlist

@@ -104,6 +104,26 @@ func (s *Store) EmailTaken(ctx context.Context, emailNormalized string) (bool, e
 	return exists, err
 }
 
+// EmailTakenExcept ignores the caller's own row, so re-submitting the same address is not a
+// conflict for an account changing its email.
+func (s *Store) EmailTakenExcept(ctx context.Context, emailNormalized, exceptUserID string) (bool, error) {
+	var exists bool
+	err := s.pool.QueryRow(ctx, `
+		select exists(select 1 from animind_users where email_normalized = $1 and id <> $2::uuid)`,
+		emailNormalized, exceptUserID).Scan(&exists)
+	return exists, err
+}
+
+// UpdateEmail writes both the display address and its normalized form so lookups stay exact.
+func (s *Store) UpdateEmail(ctx context.Context, userID, email, emailNormalized string) (*User, error) {
+	return scanUser(s.pool.QueryRow(ctx, `
+		update animind_users
+		set email = $2, email_normalized = $3, updated_at = now()
+		where id = $1::uuid
+		returning `+userColumns,
+		userID, email, emailNormalized))
+}
+
 // UpdatePassword stores a new argon2id hash and clears any login lockout.
 func (s *Store) UpdatePassword(ctx context.Context, userID string, passwordHash string) error {
 	tag, err := s.pool.Exec(ctx, `

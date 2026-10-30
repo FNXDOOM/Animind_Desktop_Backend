@@ -522,15 +522,24 @@ paths:
     patch:
       tags: [user]
       summary: Update the profile
+      description: |
+        `username` and `avatar_url` are optional. Changing `email` additionally requires
+        `current_password`, revokes every other web session and answers `password_not_set` for a
+        Google-only account. No verification mail is sent.
       requestBody:
         content:
           application/json:
             schema:
               type: object
-              properties: { username: { type: string }, avatar_url: { type: string, description: http(s) only } }
+              properties:
+                username: { type: string }
+                avatar_url: { type: string, description: http(s) only }
+                email: { type: string, description: Trimmed, lowercased and validated like signup }
+                current_password: { type: string, description: Required when email is present }
       responses:
         '200': { description: Updated, content: { application/json: { schema: { type: object, properties: { user: { $ref: '#/components/schemas/User' } } } } } }
-        '400': { description: Validation failure }
+        '400': { description: Validation failure, a wrong current password, or code password_not_set }
+        '409': { description: Another account already owns that email }
     delete:
       tags: [user]
       summary: Delete the account

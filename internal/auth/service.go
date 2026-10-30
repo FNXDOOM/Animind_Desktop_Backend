@@ -132,6 +132,7 @@ var (
 	ErrSignupDisabled     = errors.New("account creation is disabled on this server")
 	ErrNotAuthenticated   = errors.New("authentication required")
 	ErrPasswordIncorrect  = errors.New("current password is incorrect")
+	ErrPasswordNotSet     = errors.New("this account signs in with Google")
 	ErrTokenInvalid       = errors.New("token is not valid")
 	// ErrInvalidAvatarURL is returned when a profile update carries a URL that could execute
 	// in a browser, such as a javascript: link.
@@ -652,6 +653,51 @@ func IsSafeImageURL(raw string) bool {
 		return false
 	}
 	return parsed.Scheme == "http" || parsed.Scheme == "https"
+}
+
+// ChangeEmail moves an account to a new address after re-authenticating with the current
+// password. Every other web session is revoked, because changing the address of record is the
+// first step of taking an account over; keepSessionID is the caller's own row. No verification
+// mail is sent; the operator decides how recovery mail is delivered.
+func (s *Service) ChangeEmail(ctx context.Context, userID, keepSessionID, newEmail, currentPassword string) (*repository.PublicUser, error) {
+	user, err := s.store.UserByID(ctx, userID)
+	if err != nil {
+		return nil, err
+	}
+	if user.PasswordHash == nil {
+		return nil, ErrPasswordNotSet
+	}
+	if _, err := VerifyPasswordAgainstCurrent(currentPassword, *user.PasswordHash, s.argon2Params()); err != nil {
+		if errors.Is(err, ErrHashMismatch) {
+			return nil, ErrPasswordIncorrect
+		}
+		return nil, err
+	}
+	// Signup stores the normalized address in both columns, so the display value and the lookup
+	// key stay identical here too.
+	normalized := NormalizeEmail(newEmail)
+	if err := ValidateEmail(normalized); err != nil {
+		return nil, err
+	}
+	taken, err := s.store.EmailTakenExcept(ctx, normalized, userID)
+	if err != nil {
+		return nil, err
+	}
+	if taken {
+		return nil, ErrEmailTaken
+	}
+	if _, err := s.store.UpdateEmail(ctx, userID, normalized, normalized); err != nil {
+		return nil, err
+	}
+	if err := s.store.RevokeAllWebSessions(ctx, userID, keepSessionID); err != nil {
+		return nil, err
+	}
+	s.InvalidateUser(ctx, userID)
+	updated, err := s.store.UserByID(ctx, userID)
+	if err != nil {
+		return nil, err
+	}
+	return updated.Public(), nil
 }
 
 // ChangePassword replaces a password after confirming the current one. Every other web

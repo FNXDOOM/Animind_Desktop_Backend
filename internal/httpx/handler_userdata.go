@@ -85,8 +85,10 @@ func (s *Server) handleDeleteAccount(w http.ResponseWriter, r *http.Request) {
 }
 
 type updateProfileRequest struct {
-	Username  *string `json:"username"`
-	AvatarURL *string `json:"avatar_url"`
+	Username        *string `json:"username"`
+	AvatarURL       *string `json:"avatar_url"`
+	Email           *string `json:"email"`
+	CurrentPassword string  `json:"current_password"`
 }
 
 func (s *Server) handleUpdateProfile(w http.ResponseWriter, r *http.Request) {
@@ -96,11 +98,36 @@ func (s *Server) handleUpdateProfile(w http.ResponseWriter, r *http.Request) {
 	}
 	var req updateProfileRequest
 	if err := DecodeJSON(r, &req); err != nil {
-		WriteError(w, http.StatusBadRequest, "username and avatar_url must be strings.")
+		WriteError(w, http.StatusBadRequest, "username, avatar_url and email must be strings.")
+		return
+	}
+	if req.Email != nil {
+		if strings.TrimSpace(req.CurrentPassword) == "" {
+			WriteError(w, http.StatusBadRequest, "current_password is required to change your email.")
+			return
+		}
+		user, err := s.auth.ChangeEmail(r.Context(), principal.UserID, principal.WebSessionRowID, *req.Email, req.CurrentPassword)
+		if err != nil {
+			switch {
+			case errors.Is(err, auth.ErrPasswordNotSet):
+				// A Google-only account has no password to re-authenticate with.
+				WriteErrorCode(w, http.StatusBadRequest, "password_not_set", "This account signs in with Google.")
+			case errors.Is(err, auth.ErrEmailTaken):
+				WriteError(w, http.StatusConflict, "An account with that email already exists.")
+			case errors.Is(err, auth.ErrPasswordIncorrect):
+				WriteError(w, http.StatusBadRequest, "The current password is incorrect.")
+			case errors.Is(err, auth.ErrInvalidEmail):
+				WriteError(w, http.StatusBadRequest, "Enter a valid email address.")
+			default:
+				s.serverError(w, "Could not update your profile.", err)
+			}
+			return
+		}
+		WriteJSON(w, http.StatusOK, map[string]any{"user": user})
 		return
 	}
 	if req.Username == nil && req.AvatarURL == nil {
-		WriteError(w, http.StatusBadRequest, "Provide username or avatar_url.")
+		WriteError(w, http.StatusBadRequest, "Provide username, avatar_url or email.")
 		return
 	}
 	user, err := s.auth.UpdateProfile(r.Context(), principal.UserID, req.Username, req.AvatarURL)
