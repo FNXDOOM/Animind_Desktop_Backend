@@ -213,26 +213,43 @@ func newAnacrolixHandle(e *AnacrolixEngine, jobID uuid.UUID, dir string, t *torr
 		files: t.Files(),
 	}
 	// SliceStable: a malformed metainfo could contain duplicate paths, and ties
-	// must not reshuffle indexes.
-	sort.SliceStable(h.files, func(i, j int) bool {
-		return h.files[i].Path() < h.files[j].Path()
-	})
+	// must not reshuffle indexes. (Contract pinned in anacrolix_paths_test.go.)
+	sortFilesByPath(h.files)
 	return h
 }
 
-// Files reports every file in the torrent, indexed in the handle's stable
-// sorted-by-path order. Path is the job-directory-relative path: upstream's
-// storage layout puts every file under the torrent's own name directory, which
-// is what File.Path() carries ("path components including the directory name").
-// DisplayPath() would omit that name for directory torrents, and nothing built
-// from it — import source paths, containment checks — would ever find a real
-// file on disk.
-func (h *anacrolixHandle) Files() ([]EngineFile, error) {
-	if h.t.Info() == nil {
-		return nil, errors.New("downloads: torrent metadata not available")
-	}
-	out := make([]EngineFile, 0, len(h.files))
-	for i, f := range h.files {
+// engineFileElement is the minimal view of an upstream file that the EngineFile
+// mapping needs. Upstream's *torrent.File satisfies it; the indirection exists
+// because File has only unexported fields and no constructor (and its
+// BytesCompleted requires a live client), so tests exercise the sort and the
+// mapping with synthetic files through this seam instead of building File
+// values directly.
+type engineFileElement interface {
+	Path() string
+	Length() int64
+	BytesCompleted() int64
+}
+
+// sortFilesByPath orders the file list by path with SliceStable so Index means
+// the same thing across Files/Select/manager restarts, and a malformed
+// metainfo's duplicate paths cannot reshuffle indexes.
+func sortFilesByPath[T engineFileElement](files []T) {
+	sort.SliceStable(files, func(i, j int) bool {
+		return files[i].Path() < files[j].Path()
+	})
+}
+
+// engineFiles maps upstream files (in the handle's sorted order) to EngineFiles.
+// Path is the job-directory-relative path: upstream's storage layout puts every
+// file under the torrent's own name directory, which is what File.Path()
+// carries ("path components including the directory name"). DisplayPath() would
+// omit that name for directory torrents, and nothing built from it — import
+// source paths, containment checks — would ever find a real file on disk.
+// filepath.Clean normalizes upstream's '/'-joined components to the platform
+// separator and defends against malformed metainfo paths.
+func engineFiles[T engineFileElement](files []T) []EngineFile {
+	out := make([]EngineFile, 0, len(files))
+	for i, f := range files {
 		out = append(out, EngineFile{
 			Index:     i,
 			Path:      filepath.Clean(f.Path()),
@@ -240,7 +257,16 @@ func (h *anacrolixHandle) Files() ([]EngineFile, error) {
 			Progress:  f.BytesCompleted(),
 		})
 	}
-	return out, nil
+	return out
+}
+
+// Files reports every file in the torrent, indexed in the handle's stable
+// sorted-by-path order; see engineFiles for the Path contract.
+func (h *anacrolixHandle) Files() ([]EngineFile, error) {
+	if h.t.Info() == nil {
+		return nil, errors.New("downloads: torrent metadata not available")
+	}
+	return engineFiles(h.files), nil
 }
 
 // Select downloads only the given indexes: selected files are raised to normal
