@@ -29,7 +29,7 @@ var ErrMetadataTimeout = errors.New("downloads: metadata timeout")
 // EngineFile is one file inside a torrent, in the engine's stable index order.
 type EngineFile struct {
 	Index     int
-	Path      string // relative to the torrent root, cleaned
+	Path      string // relative to the job directory, cleaned
 	SizeBytes int64
 	Progress  int64
 }

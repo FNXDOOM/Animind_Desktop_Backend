@@ -127,6 +127,15 @@ func (s *Server) handleDownloadCreate(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 	}
+	// Entitlement first (it must not leak indexer configuration to rejected
+	// callers), then the nil-service guard: without TORZNAB_URL there is no
+	// result index to resolve against, and an entitled create must answer 501
+	// rather than panic on the nil seam.
+	if s.torrent == nil {
+		WriteErrorCode(w, http.StatusNotImplemented, "indexer_not_configured",
+			"No Torznab indexer is configured on this server.")
+		return
+	}
 
 	var req createDownloadRequest
 	if err := DecodeJSON(r, &req); err != nil || req.ResultID == "" {

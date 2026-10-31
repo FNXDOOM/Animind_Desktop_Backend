@@ -12,6 +12,7 @@ import (
 	"testing"
 	"time"
 
+	"animind-backend-go/internal/auth"
 	"animind-backend-go/internal/downloads"
 	"animind-backend-go/internal/repository"
 	"animind-backend-go/internal/torrent"
@@ -666,6 +667,20 @@ func (s *syncRecorder) header() http.Header {
 
 // ── Admin PATCH (persistence is DB-gated) ────────────────────────────────────
 
+// promoteAdmin does the raw store write and then evicts the cached identity.
+// IsAdmin is part of the cached principal, so any writer outside the admin
+// PATCH handler — including this test's direct repository write, exactly like
+// the e2e harness's SQL promotion — must reproduce the eviction the HTTP
+// handler performs (see handleAdminSetUserAdmin), or RequireAdmin keeps
+// answering the pre-promotion identity until the TTL.
+func promoteAdmin(t *testing.T, store *repository.Store, service *auth.Service, userID string) {
+	t.Helper()
+	if err := store.SetAdmin(context.Background(), userID, true); err != nil {
+		t.Fatalf("promote admin: %v", err)
+	}
+	service.InvalidateUser(context.Background(), userID)
+}
+
 // TestAdminPatchCanDownloadPersists runs the admin entitlement toggle through
 // the real store, mirroring the M4 auth-flow harness. It skips without
 // POSTGRES_TEST_DATABASE_URL, like every other database suite.
@@ -673,9 +688,7 @@ func TestAdminPatchCanDownloadPersists(t *testing.T) {
 	srv, store, service := sharedHarness(t)
 	admin := signUpAccount(t, service)
 	adminID := meUserID(t, srv, admin)
-	if err := store.SetAdmin(context.Background(), adminID, true); err != nil {
-		t.Fatalf("promote admin: %v", err)
-	}
+	promoteAdmin(t, store, service, adminID)
 	target := signUpAccount(t, service)
 	targetID := meUserID(t, srv, target)
 
@@ -786,20 +799,15 @@ func TestSetAdminRequestShape(t *testing.T) {
 // DB-gated like every suite that writes through the repository.
 func TestAdminPatchIsAdminOptional(t *testing.T) {
 	srv, store, service := sharedHarness(t)
-	ctx := context.Background()
 
 	admin := signUpAccount(t, service)
 	adminID := meUserID(t, srv, admin)
-	if err := store.SetAdmin(ctx, adminID, true); err != nil {
-		t.Fatalf("promote admin: %v", err)
-	}
+	promoteAdmin(t, store, service, adminID)
 
 	t.Run("can_download-only patch leaves is_admin untouched", func(t *testing.T) {
 		target := signUpAccount(t, service)
 		targetID := meUserID(t, srv, target)
-		if err := store.SetAdmin(ctx, targetID, true); err != nil {
-			t.Fatalf("promote target: %v", err)
-		}
+		promoteAdmin(t, store, service, targetID)
 
 		rec := admin.do(t, srv, http.MethodPatch, "/api/admin/users/"+targetID, map[string]any{"can_download": true})
 		if rec.Code != http.StatusOK {

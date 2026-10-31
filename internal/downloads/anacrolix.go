@@ -186,7 +186,7 @@ type anacrolixHandle struct {
 	dir   string
 	t     *torrent.Torrent
 
-	// files is sorted by display path so Index means the same thing across
+	// files is sorted by path so Index means the same thing across
 	// Files/Select/manager restarts. Read-only after construction.
 	files []*torrent.File
 
@@ -215,13 +215,18 @@ func newAnacrolixHandle(e *AnacrolixEngine, jobID uuid.UUID, dir string, t *torr
 	// SliceStable: a malformed metainfo could contain duplicate paths, and ties
 	// must not reshuffle indexes.
 	sort.SliceStable(h.files, func(i, j int) bool {
-		return h.files[i].DisplayPath() < h.files[j].DisplayPath()
+		return h.files[i].Path() < h.files[j].Path()
 	})
 	return h
 }
 
 // Files reports every file in the torrent, indexed in the handle's stable
-// sorted-by-path order.
+// sorted-by-path order. Path is the job-directory-relative path: upstream's
+// storage layout puts every file under the torrent's own name directory, which
+// is what File.Path() carries ("path components including the directory name").
+// DisplayPath() would omit that name for directory torrents, and nothing built
+// from it — import source paths, containment checks — would ever find a real
+// file on disk.
 func (h *anacrolixHandle) Files() ([]EngineFile, error) {
 	if h.t.Info() == nil {
 		return nil, errors.New("downloads: torrent metadata not available")
@@ -230,7 +235,7 @@ func (h *anacrolixHandle) Files() ([]EngineFile, error) {
 	for i, f := range h.files {
 		out = append(out, EngineFile{
 			Index:     i,
-			Path:      filepath.Clean(f.DisplayPath()),
+			Path:      filepath.Clean(f.Path()),
 			SizeBytes: f.Length(),
 			Progress:  f.BytesCompleted(),
 		})

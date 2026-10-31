@@ -29,12 +29,14 @@ Exit status is 0 when every check passes, 1 otherwise.
 
 import argparse
 import base64
+import http.client
 import json
 import os
 import shlex
 import subprocess
 import sys
 import urllib.error
+import urllib.parse
 import urllib.request
 
 CHECKS = []
@@ -83,6 +85,33 @@ class Api:
 def decode_claims(jwt):
     payload = jwt.split(".")[1]
     return json.loads(base64.urlsafe_b64decode(payload + "==="))
+
+
+def response_headers(base, path, token):
+    """Return the response headers of a GET, without reading the body.
+
+    The SSE endpoint streams forever, so the generic Api.call would block on
+    response.read(); the header verdict is all this check needs. Returns
+    (status, headers) or (0, {}) when the connection fails.
+    """
+    parsed = urllib.parse.urlparse(base)
+    try:
+        conn = http.client.HTTPConnection(parsed.hostname, parsed.port, timeout=10)
+        conn.request("GET", path, headers={"Authorization": "Bearer " + token})
+        response = conn.getresponse()
+        headers = dict(response.getheaders())
+        response.close()
+        conn.close()
+        return response.status, headers
+    except Exception:
+        return 0, {}
+
+
+def error_code(payload):
+    """The machine-readable code of an error body, if it carries one."""
+    if isinstance(payload, dict):
+        return payload.get("code", "")
+    return ""
 
 
 def psql(dsn, query):
@@ -356,6 +385,66 @@ def run(api, dsn):
 
     _, _, hdr = api.call("OPTIONS", "/api/me/watchlist", headers={"Origin": "http://not-allowed.invalid"})
     record("a disallowed origin gets no CORS grant", "Access-Control-Allow-Origin" not in {k.lower() for k in hdr}, hdr)
+
+    print("== torrents and downloads ==")
+    # A deployment without TORZNAB_URL answers 501 indexer_not_configured; one
+    # with a dead indexer answers a clean 5xx JSON error. Both are acceptable
+    # outcomes of "the route errors cleanly"; a 200 means the target has a live
+    # indexer and neither branch is reachable from here.
+    status, search, _ = api.json("GET", "/api/torrents/search?q=rieren", token=token)
+    if status == 501:
+        record("torrent search without TORZNAB_URL answers 501 indexer_not_configured",
+               error_code(search) == "indexer_not_configured", f"{status} {search}")
+    elif status >= 500 and error_code(search) == "":
+        record("torrent search with an unreachable indexer errors cleanly", False, f"{status} {search}")
+    else:
+        print("  SKIP  torrents/search answered "
+              f"{status}; the target has a configured indexer, so the 501 branch is not exercisable here")
+
+    # The download surface honours can_download: admins are exempt, everyone
+    # else without the entitlement gets 403 download_forbidden.
+    status, refused, _ = api.json("POST", "/api/downloads", {"resultId": "e2e"}, token=other_token)
+    if status == 501:
+        print("  SKIP  downloads are disabled on this deployment (s3 mode); entitlement checks need local storage")
+    else:
+        record("download create by a non-entitled account is 403 download_forbidden",
+               status == 403 and error_code(refused) == "download_forbidden", f"{status} {refused}")
+
+    # The entitlement itself is admin-managed: PATCH /api/admin/users/{id} with
+    # a can_download-only body must flip the flag without touching is_admin.
+    status, other_me, _ = api.json("GET", "/api/auth/me", token=other_token)
+    other_id = other_me.get("user", {}).get("id", "")
+    if not other_id:
+        record("admin PATCH flips can_download", False, "no user id from /api/auth/me for the second account")
+    else:
+        status, patched, _ = api.json("PATCH", f"/api/admin/users/{other_id}", {"can_download": True}, token=token)
+        if status != 200:
+            record("admin PATCH flips can_download", False, f"PATCH {status} {patched}")
+        else:
+            status, users, _ = api.json("GET", "/api/admin/users", token=token)
+            row = next((u for u in users or [] if u.get("id") == other_id), None) if isinstance(users, list) else None
+            record("admin PATCH flips can_download",
+                   row is not None and row.get("can_download") is True and row.get("is_admin") is False,
+                   f"{status} {str(row)[:80]}")
+            # With the entitlement granted the route moves past 403; without an
+            # indexer the create answers 501 indexer_not_configured instead of
+            # crashing on the nil service.
+            status, allowed, _ = api.json("POST", "/api/downloads", {"resultId": "e2e"}, token=other_token)
+            if status == 410:
+                record("entitled create reaches the result lookup (cleanly expired)", True, "410 result_expired")
+            else:
+                record("entitled create without an indexer errors cleanly (501, not a crash)",
+                       status == 501 and error_code(allowed) == "indexer_not_configured", f"{status} {allowed}")
+
+    # The event stream is SSE: the header must say so before any frame, which is
+    # what EventSource requires. Headers only; the stream itself never ends.
+    status, hdr = response_headers(api.base, "/api/downloads/events", other_token)
+    if status == 501:
+        print("  SKIP  downloads are disabled on this deployment; no SSE to inspect")
+    else:
+        record("SSE endpoint returns text/event-stream",
+               status == 200 and hdr.get("Content-Type", "").startswith("text/event-stream"),
+               f"{status} {hdr.get('Content-Type')}")
 
     print("== account deletion cascade ==")
     _, temp = sign_in(api, "e2e-temp@example.com", "temp password 12", "e2etemp")

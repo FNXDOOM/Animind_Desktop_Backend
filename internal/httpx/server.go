@@ -139,7 +139,9 @@ func New(deps Deps) *Server {
 		s.entitlements = storeEntitlements{store: deps.Store}
 	}
 	if deps.Config.Metrics.Enabled {
-		s.metrics = newMetrics(deps.Cache, deps.Hub, deps.Store, s.limiter.fallback)
+		// The download manager joins the same registry: newMetrics registers the
+		// downloads collectors and hands itself over as the manager's observer.
+		s.metrics = newMetrics(deps.Cache, deps.Hub, deps.Store, s.limiter.fallback, deps.Downloads)
 	}
 	return s
 }

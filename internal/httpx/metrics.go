@@ -13,6 +13,7 @@ import (
 	"github.com/prometheus/client_golang/prometheus/promhttp"
 
 	"animind-backend-go/internal/cache"
+	"animind-backend-go/internal/downloads"
 	"animind-backend-go/internal/repository"
 	"animind-backend-go/internal/syncplay"
 )
@@ -38,9 +39,16 @@ type metrics struct {
 	// inflight counts handlers currently running, which is how a stuck media stream shows up
 	// before it shows up as latency.
 	inflight *prometheus.GaugeVec
+	// downloads collectors (spec §7.10). The gauge is set by the manager's progress
+	// ticker, the counters by its progress and failure paths; the histogram is
+	// observed by the search handler around each indexer call.
+	downloadsActive prometheus.Gauge
+	downloadsBytes  prometheus.Counter
+	downloadsFailed prometheus.Counter
+	searchSeconds   prometheus.Histogram
 }
 
-func newMetrics(store cache.Store, hub *syncplay.Hub, db *repository.Store, fallback cache.FallbackCounter) *metrics {
+func newMetrics(store cache.Store, hub *syncplay.Hub, db *repository.Store, fallback cache.FallbackCounter, jobs *downloads.Manager) *metrics {
 	m := &metrics{
 		registry: prometheus.NewRegistry(),
 		requests: prometheus.NewCounterVec(prometheus.CounterOpts{
@@ -56,13 +64,39 @@ func newMetrics(store cache.Store, hub *syncplay.Hub, db *repository.Store, fall
 			Namespace: metricsNamespace, Subsystem: "http", Name: "requests_in_flight",
 			Help: "Handlers currently running, by method.",
 		}, []string{"method"}),
+		downloadsActive: prometheus.NewGauge(prometheus.GaugeOpts{
+			Namespace: metricsNamespace, Subsystem: "downloads", Name: "active",
+			Help: "Download jobs not in a terminal state, across every account.",
+		}),
+		downloadsBytes: prometheus.NewCounter(prometheus.CounterOpts{
+			Namespace: metricsNamespace, Subsystem: "downloads", Name: "bytes_total",
+			Help: "Bytes downloaded into completed pieces, across all jobs since process start.",
+		}),
+		downloadsFailed: prometheus.NewCounter(prometheus.CounterOpts{
+			Namespace: metricsNamespace, Subsystem: "downloads", Name: "failed_total",
+			Help: "Jobs that transitioned to failed, by any failure code.",
+		}),
+		searchSeconds: prometheus.NewHistogram(prometheus.HistogramOpts{
+			Name: "torrent_search_seconds",
+			Help: "End-to-end duration of one /api/torrents/search call, including indexer fan-out.",
+			// A cache hit answers in microseconds, a cold indexer fan-out in
+			// seconds; the buckets must hold both ends without flattening them.
+			Buckets: []float64{.001, .005, .01, .025, .05, .1, .25, .5, 1, 2.5, 5, 10},
+		}),
 	}
 
 	m.registry.MustRegister(
-		m.requests, m.duration, m.inflight,
+		m.requests, m.duration, m.inflight, m.searchSeconds,
 		collectors.NewGoCollector(),
 		collectors.NewProcessCollector(collectors.ProcessCollectorOpts{}),
 	)
+	if jobs != nil {
+		// The manager publishes into the same registry: active is set from
+		// CountActiveDownloadJobs(nil) on each progress tick, bytes_total and
+		// failed_total increment on the manager's own transitions.
+		m.registry.MustRegister(m.downloadsActive, m.downloadsBytes, m.downloadsFailed)
+		jobs.SetObserver(m)
+	}
 	if store != nil {
 		m.registry.MustRegister(&cacheCollector{store: store, fallback: fallback})
 		m.registry.MustRegister(prometheus.NewGaugeFunc(prometheus.GaugeOpts{
@@ -106,6 +140,20 @@ func newMetrics(store cache.Store, hub *syncplay.Hub, db *repository.Store, fall
 	}
 	return m
 }
+
+// The downloads.Observer half of metrics: the manager calls these from its drive
+// loops, so they must stay allocation-free and never block on the store.
+
+// ActiveJobs records the manager's CountActiveDownloadJobs(nil) snapshot.
+func (m *metrics) ActiveJobs(n int) { m.downloadsActive.Set(float64(n)) }
+
+// BytesDownloaded accounts the bytes completed since the previous progress tick.
+func (m *metrics) BytesDownloaded(delta int64) { m.downloadsBytes.Add(float64(delta)) }
+
+// JobFailed accounts one transition into failed.
+func (m *metrics) JobFailed() { m.downloadsFailed.Inc() }
+
+var _ downloads.Observer = (*metrics)(nil)
 
 // cacheCollector exports the store's outcome counters as proper monotonic counters, which is
 // what lets a dashboard graph a hit ratio with rate() instead of guessing from gauges.

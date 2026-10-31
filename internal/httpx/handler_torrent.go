@@ -8,6 +8,7 @@ import (
 	"net/url"
 	"strconv"
 	"strings"
+	"time"
 	"unicode/utf8"
 
 	"animind-backend-go/internal/torrent"
@@ -68,7 +69,14 @@ func (s *Server) handleTorrentSearch(w http.ResponseWriter, r *http.Request) {
 		WriteError(w, http.StatusBadRequest, err.Error())
 		return
 	}
+	// The observation wraps the whole call — fan-out, merge and ranking — because
+	// that is the latency a client experiences. Errors are observed too: a slow
+	// failing indexer is exactly what the dashboard needs to see.
+	start := time.Now()
 	resp, err := s.torrent.Search(r.Context(), query)
+	if s.metrics != nil {
+		s.metrics.searchSeconds.Observe(time.Since(start).Seconds())
+	}
 	if err != nil {
 		if errors.Is(err, torrent.ErrNotConfigured) {
 			WriteErrorCode(w, http.StatusNotImplemented, "indexer_not_configured",

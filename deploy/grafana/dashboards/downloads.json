@@ -1,0 +1,113 @@
+{
+  "uid": "animind-downloads",
+  "title": "AniMind Downloads & Search",
+  "tags": ["animind", "downloads", "torrent"],
+  "timezone": "browser",
+  "schemaVersion": 39,
+  "version": 1,
+  "refresh": "15s",
+  "time": { "from": "now-6h", "to": "now" },
+  "editable": true,
+  "graphTooltip": 1,
+  "annotations": {
+    "list": [
+      {
+        "name": "Deploys",
+        "datasource": { "type": "grafana", "uid": "grafana" },
+        "enable": true,
+        "iconColor": "blue",
+        "builtIn": 1
+      }
+    ]
+  },
+  "panels": [
+    {
+      "id": 100,
+      "type": "row",
+      "title": "Downloads & search",
+      "collapsed": false,
+      "gridPos": { "h": 1, "w": 24, "x": 0, "y": 0 },
+      "panels": []
+    },
+    {
+      "id": 1,
+      "type": "stat",
+      "title": "Active jobs",
+      "description": "sum(animind_downloads_active): download jobs not in a terminal state, across every account. Updated from the manager's progress ticker and every create.",
+      "datasource": { "type": "prometheus", "uid": "animind-prometheus" },
+      "gridPos": { "h": 4, "w": 6, "x": 0, "y": 1 },
+      "targets": [
+        {
+          "refId": "A",
+          "expr": "sum(animind_downloads_active)",
+          "legendFormat": "active"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "short",
+          "min": 0,
+          "thresholds": { "mode": "absolute", "steps": [ { "color": "green", "value": null }, { "color": "yellow", "value": 3 } ] }
+        },
+        "overrides": []
+      },
+      "options": { "colorMode": "value", "graphMode": "area", "textMode": "value", "reduceOptions": { "calcs": ["lastNotNull"] } }
+    },
+    {
+      "id": 2,
+      "type": "timeseries",
+      "title": "Download throughput",
+      "description": "rate(animind_downloads_bytes_total[5m]): bytes landing in completed pieces across all jobs.",
+      "datasource": { "type": "prometheus", "uid": "animind-prometheus" },
+      "gridPos": { "h": 8, "w": 12, "x": 0, "y": 5 },
+      "targets": [
+        {
+          "refId": "A",
+          "expr": "rate(animind_downloads_bytes_total[5m])",
+          "legendFormat": "bytes/s"
+        }
+      ],
+      "fieldConfig": { "defaults": { "unit": "Bps", "min": 0, "custom": { "lineWidth": 1, "fillOpacity": 10, "showPoints": "never" } }, "overrides": [] },
+      "options": { "legend": { "displayMode": "list", "placement": "bottom" }, "tooltip": { "mode": "multi" } }
+    },
+    {
+      "id": 3,
+      "type": "timeseries",
+      "title": "Job failures per hour",
+      "description": "rate(animind_downloads_failed_total[1h]): jobs that reached failed, by any failure code. Any nonzero rate on a personal deployment is worth a look.",
+      "datasource": { "type": "prometheus", "uid": "animind-prometheus" },
+      "gridPos": { "h": 4, "w": 6, "x": 6, "y": 1 },
+      "targets": [
+        {
+          "refId": "A",
+          "expr": "rate(animind_downloads_failed_total[1h])",
+          "legendFormat": "failures/s"
+        }
+      ],
+      "fieldConfig": { "defaults": { "unit": "ops", "min": 0, "custom": { "lineWidth": 1, "fillOpacity": 10, "showPoints": "never" } }, "overrides": [] },
+      "options": { "legend": { "displayMode": "list", "placement": "bottom" }, "tooltip": { "mode": "multi" } }
+    },
+    {
+      "id": 4,
+      "type": "timeseries",
+      "title": "Search latency (p95)",
+      "description": "histogram_quantile(0.95, rate(torrent_search_seconds_bucket[5m])): end-to-end /api/torrents/search duration, indexer fan-out included. Cache hits answer in the first bucket.",
+      "datasource": { "type": "prometheus", "uid": "animind-prometheus" },
+      "gridPos": { "h": 8, "w": 12, "x": 12, "y": 5 },
+      "targets": [
+        {
+          "refId": "A",
+          "expr": "histogram_quantile(0.95, rate(torrent_search_seconds_bucket[5m]))",
+          "legendFormat": "p95"
+        },
+        {
+          "refId": "B",
+          "expr": "histogram_quantile(0.5, rate(torrent_search_seconds_bucket[5m]))",
+          "legendFormat": "p50"
+        }
+      ],
+      "fieldConfig": { "defaults": { "unit": "s", "min": 0, "custom": { "lineWidth": 1, "fillOpacity": 0, "showPoints": "never" } }, "overrides": [] },
+      "options": { "legend": { "displayMode": "table", "placement": "right", "calcs": ["mean", "max"] }, "tooltip": { "mode": "multi", "sort": "desc" } }
+    }
+  ]
+}

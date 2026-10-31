@@ -9,6 +9,7 @@ import (
 	"path/filepath"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/google/uuid"
@@ -103,6 +104,27 @@ type scanRunner interface {
 // build here instead of at wiring time.
 var _ scanRunner = (*scanner.Service)(nil)
 
+// Observer is the metric seam between the manager and the process's Prometheus
+// registry (spec §7.10). The HTTP wiring hands over the httpx metrics set, which
+// owns the animind_downloads_* collectors; a missing observer disables every
+// hook. All methods are called from drive goroutines, so implementations must
+// be cheap and non-blocking.
+type Observer interface {
+	// ActiveJobs records the CountActiveDownloadJobs(nil) snapshot taken each
+	// progress ticker pass (and for free from Create's own quota check).
+	ActiveJobs(n int)
+	// BytesDownloaded accounts the bytes completed since the previous progress
+	// tick; the delta is computed here so the counter stays monotonic without
+	// double counting across restarts.
+	BytesDownloaded(delta int64)
+	// JobFailed accounts one transition into failed.
+	JobFailed()
+}
+
+// observerBox exists because atomic.Value panics on the first nil or a changing
+// concrete type; a pointer to a struct holding the interface sidesteps both.
+type observerBox struct{ o Observer }
+
 // Manager owns the download_jobs state machine: quotas and dedupe on Create, one
 // drive goroutine per live job, startup resume, and hub publications. It never
 // writes download_jobs outside the repository methods on the store seam.
@@ -121,6 +143,8 @@ type Manager struct {
 	diskFree    func(path string, min int64) (bool, error)
 	tick        time.Duration // progress poll interval; tests shorten it
 	scanSettle  time.Duration // ErrAlreadyRunning wait before the one scan retry
+
+	observer atomic.Pointer[observerBox] // metric hooks; nil until SetObserver
 
 	base    context.Context
 	stopAll context.CancelFunc
@@ -161,6 +185,24 @@ func newManager(st store, engine Engine, cfg config.DownloadsConfig, libraryRoot
 // ResumeFromStore on the next start.
 func (m *Manager) Close() { m.stopAll() }
 
+// SetObserver installs the metric hooks. Called by the HTTP wiring after the
+// process's registry exists, which may be after ResumeFromStore already started
+// drive loops — hence the atomic.
+func (m *Manager) SetObserver(o Observer) {
+	if o == nil {
+		return
+	}
+	m.observer.Store(&observerBox{o: o})
+}
+
+// obs returns the metric hooks, or nil before the wiring installed them.
+func (m *Manager) obs() Observer {
+	if box := m.observer.Load(); box != nil {
+		return box.o
+	}
+	return nil
+}
+
 // jobRun is the live side of one job: the engine handle plus the drive
 // generation. Guarded fields are touched by HTTP goroutines while the drive
 // goroutine runs.
@@ -168,6 +210,14 @@ type jobRun struct {
 	id     uuid.UUID
 	userID string
 	magnet string
+
+	// metricLast is the previous reading's BytesDone, used to keep the downloads
+	// bytes counter a delta rather than a cumulative re-add. metricInit marks
+	// the baseline as taken: true from construction for fresh jobs (count from
+	// zero), false for adopted runs so the first reading seeds instead. Both
+	// are guarded by mu: two drive generations can overlap briefly.
+	metricLast int64
+	metricInit bool
 
 	mu     sync.Mutex
 	handle TorrentHandle
@@ -281,12 +331,27 @@ func (m *Manager) Create(ctx context.Context, req Request) (repository.DownloadJ
 	if err != nil {
 		return repository.DownloadJob{}, fmt.Errorf("downloads: create job: %w", err)
 	}
+	// The row now counts toward the active set: publish the gauge without
+	// waiting for a progress ticker to discover it. One extra count per create
+	// is nothing against how rare creates are.
+	if o := m.obs(); o != nil {
+		if n, err := m.store.CountActiveDownloadJobs(ctx, nil); err == nil {
+			o.ActiveJobs(n)
+		}
+	}
 	m.publish(job)
 	id, err := uuid.Parse(job.ID)
 	if err != nil {
 		return job, fmt.Errorf("downloads: job id %q: %w", job.ID, err)
 	}
-	m.launch(m.register(&jobRun{id: id, userID: job.UserID, magnet: magnetFor(req.Magnet, job)}))
+	// A job created in this process counts from zero: every byte the engine
+	// reports from here on was downloaded here, however fast the swarm fills
+	// the selection. Only adopted (post-restart) runs seed their baseline at
+	// the first reading instead — their pre-existing data predates us.
+	m.launch(m.register(&jobRun{
+		id: id, userID: job.UserID, magnet: magnetFor(req.Magnet, job),
+		metricInit: true, metricLast: 0,
+	}))
 	return job, nil
 }
 
@@ -587,6 +652,13 @@ func (m *Manager) drive(ctx context.Context, j *jobRun) {
 			if !m.watch(ctx, j, job) {
 				return
 			}
+			// Final accounting: the last progress tick may predate the torrent's
+			// final bytes, and a job that finishes inside one tick interval never
+			// ticks at all. Read the engine once more so bytes_total ends at the
+			// job's full size.
+			if h := j.currentHandle(); h != nil {
+				m.observeProgress(j, h.Stats())
+			}
 			next, ok := m.hop(ctx, j, StateDownloading, StateVerifying)
 			if !ok {
 				return
@@ -660,6 +732,11 @@ func (m *Manager) watch(ctx context.Context, j *jobRun, job repository.DownloadJ
 	if !ok {
 		return false
 	}
+	// Seed the bytes counter's baseline for an adopted (post-restart) run at
+	// the start of the downloading phase: bytes the engine already had on disk
+	// were not downloaded by this process and must not enter bytes_total. Fresh
+	// jobs construct their baseline at zero and count from their first reading.
+	m.observeProgress(j, h.Stats())
 	ticker := time.NewTicker(m.tick)
 	defer ticker.Stop()
 	for {
@@ -682,6 +759,8 @@ func (m *Manager) watch(ctx context.Context, j *jobRun, job repository.DownloadJ
 				}
 				continue // transient store hiccup: keep the loop alive
 			}
+			m.observeProgress(j, st)
+			m.observeActive(ctx)
 			m.publishProgress(job, st)
 		}
 	}
@@ -721,6 +800,9 @@ func (m *Manager) failJob(ctx context.Context, j *jobRun, from, code string) {
 	if err != nil {
 		return
 	}
+	if o := m.obs(); o != nil {
+		o.JobFailed() // the row won the CAS, so the failure is real
+	}
 	m.publish(job)
 }
 
@@ -736,6 +818,43 @@ func codeFor(err error) string {
 		return codeNoFiles
 	default:
 		return codeDownloadFailed
+	}
+}
+
+// ── metrics hooks ────────────────────────────────────────────────────────────
+
+// observeProgress turns one engine reading into the bytes_total delta. The
+// first reading of a drive generation seeds the baseline instead of counting:
+// it is taken at downloading-phase entry, so a resumed job's pre-existing data
+// is never re-counted, while every byte this phase completes is.
+func (m *Manager) observeProgress(j *jobRun, st Stats) {
+	o := m.obs()
+	if o == nil {
+		return
+	}
+	j.mu.Lock()
+	last, init := j.metricLast, j.metricInit
+	j.metricLast, j.metricInit = st.BytesDone, true
+	j.mu.Unlock()
+	if !init {
+		return
+	}
+	if delta := st.BytesDone - last; delta > 0 {
+		o.BytesDownloaded(delta)
+	}
+}
+
+// observeActive publishes the active-job gauge from the same count the quota
+// checks use. One query per active job per tick is the price of reading the
+// truth from the store rather than guessing from memory; at the configured
+// scale (a couple of jobs, a 500 ms tick) that is noise.
+func (m *Manager) observeActive(ctx context.Context) {
+	o := m.obs()
+	if o == nil {
+		return
+	}
+	if n, err := m.store.CountActiveDownloadJobs(ctx, nil); err == nil {
+		o.ActiveJobs(n)
 	}
 }
 
