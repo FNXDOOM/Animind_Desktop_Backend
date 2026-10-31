@@ -35,7 +35,7 @@ expire with the cache — a `POST /api/downloads` that references an expired id 
 | `DOWNLOADS_MAX_BYTES_PER_JOB` | 25 GiB | one torrent's total size cap |
 | `DOWNLOADS_MIN_FREE_GB` | 20 | headroom the download root must keep |
 | `DOWNLOADS_DOWN_KBPS` / `UP_KBPS` | 0 / 500 | throttles; 0 = unlimited |
-| `DOWNLOADS_SEED_RATIO` / `SEED_MINUTES` | 0 / 0 | seeding stops at completion when both are 0 |
+| `DOWNLOADS_SEED_RATIO` / `SEED_MINUTES` | 0 / 0 | reserved: ratio/minutes seeding is not implemented; a job stops uploading and downloading when it reaches a terminal state (`ready`, `failed`, `cancelled`) |
 | `DOWNLOADS_DHT` / `PEX` / `UTP` | true | transport toggles |
 | `DOWNLOADS_MAX_FILES` | 500 | entries extracted from one torrent |
 

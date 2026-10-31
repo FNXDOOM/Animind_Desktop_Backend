@@ -697,6 +697,10 @@ func (m *Manager) drive(ctx context.Context, j *jobRun) {
 			if _, ok := m.hop(ctx, j, StateImporting, StateReady); !ok {
 				return
 			}
+			// Terminal: the row's work is done, but the engine's torrent is
+			// still live and — the client being built with Seed=true and a
+			// default UpKbps — would seed it for the life of the process.
+			m.stopTransfers(j)
 			return // terminal: the drive loop's work is done
 
 		default:
@@ -800,10 +804,29 @@ func (m *Manager) failJob(ctx context.Context, j *jobRun, from, code string) {
 	if err != nil {
 		return
 	}
+	// Failed is terminal too: a torrent that already holds metadata must not
+	// keep downloading its selected pieces until the process restarts.
+	m.stopTransfers(j)
 	if o := m.obs(); o != nil {
 		o.JobFailed() // the row won the CAS, so the failure is real
 	}
 	m.publish(job)
+}
+
+// stopTransfers stops a terminal row's torrent from moving data in either
+// direction. The engine's Pause routes through upstream's DisallowDataUpload
+// and DisallowDataDownload — exactly the "stops uploading and downloading at
+// terminal states" the docs promise — and it keeps the torrent registered so
+// the row's one remaining action, Cancel, still owns the single Drop. Drop here
+// instead would close the per-job storage twice and lean on upstream's
+// idempotency. A row without a handle (a metadata timeout, or anything resumed
+// after a restart) holds no live torrent in this process and needs no action.
+func (m *Manager) stopTransfers(j *jobRun) {
+	h := j.currentHandle()
+	if h == nil {
+		return
+	}
+	_ = h.Pause() // best effort: the row is terminal either way
 }
 
 func codeFor(err error) string {

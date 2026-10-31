@@ -307,6 +307,30 @@ func TestTorrentAndDownloadsValidation(t *testing.T) {
 			t.Fatal("local storage must enable downloads")
 		}
 	})
+	t.Run("downloads negative knobs are floored at zero", func(t *testing.T) {
+		// A negative MIN_FREE_GB would void the disk check (free >= negative is
+		// always true), and negative seed knobs are meaningless while seeding
+		// beyond completion is reserved: all three floor at zero.
+		baseEnv(t)
+		t.Setenv("STORAGE_MODE", "local")
+		t.Setenv("LOCAL_STORAGE_PATH", t.TempDir())
+		t.Setenv("DOWNLOADS_MIN_FREE_GB", "-5")
+		t.Setenv("DOWNLOADS_SEED_RATIO", "-1.5")
+		t.Setenv("DOWNLOADS_SEED_MINUTES", "-30")
+		cfg, err := Load()
+		if err != nil {
+			t.Fatal(err)
+		}
+		if cfg.Downloads.MinFreeBytes != 0 {
+			t.Errorf("MinFreeBytes = %d, want 0", cfg.Downloads.MinFreeBytes)
+		}
+		if cfg.Downloads.SeedRatio != 0 {
+			t.Errorf("SeedRatio = %v, want 0", cfg.Downloads.SeedRatio)
+		}
+		if cfg.Downloads.SeedMinutes != 0 {
+			t.Errorf("SeedMinutes = %d, want 0", cfg.Downloads.SeedMinutes)
+		}
+	})
 	t.Run("s3 mode disables downloads", func(t *testing.T) {
 		baseEnv(t)
 		t.Setenv("STORAGE_MODE", "s3")

@@ -1169,6 +1169,75 @@ func TestMetadataTimeoutFailsTheJob(t *testing.T) {
 	}
 }
 
+func TestTerminalRowsStopTheTorrent(t *testing.T) {
+	// A terminal row must leave the torrent moving no data: the client is built
+	// with Seed=true and a default UpKbps, so a ready torrent would otherwise
+	// upload until the process restarts, and a failed one would keep pulling
+	// its selected pieces. Rows without a handle (metadata timeout, or anything
+	// resumed after a restart) hold no live torrent and need no action.
+	user := uuid.New()
+	ctx := context.Background()
+
+	t.Run("ready stops the torrent", func(t *testing.T) {
+		lib := t.TempDir()
+		dir := filepath.Join(lib, ".incoming")
+		id := uuid.New()
+		f := newFakeEngine(map[string][]EngineFile{
+			id.String(): {{Index: 0, Path: "Show - 01.mkv", SizeBytes: 500}},
+		})
+		seedSource(t, dir, id.String(), "Show - 01.mkv", "ep1")
+		st := newFakeStore()
+		st.queueID(id.String())
+		m := newTestManager(t, f, st, testConfig(dir), lib, diskOK, nil)
+
+		if _, err := m.Create(ctx, reqFor(user, "abc123", 500)); err != nil {
+			t.Fatal(err)
+		}
+		waitFor(t, "downloading", func() bool { return st.get(id.String()).State == StateDownloading })
+		close(f.handle(id.String()).done)
+		waitFor(t, "ready", func() bool { return st.get(id.String()).State == StateReady })
+		waitFor(t, "torrent stopped at ready", func() bool { return f.pauseOps[id.String()] == 1 })
+	})
+
+	t.Run("failure after metadata stops the torrent", func(t *testing.T) {
+		// The engine holds metadata but reports no files: the drive loop walks
+		// a live handle straight into the no_files failure, and the handle must
+		// be stopped with it.
+		id := uuid.New()
+		f := newFakeEngine(map[string][]EngineFile{id.String(): {}})
+		st := newFakeStore()
+		st.queueID(id.String())
+		dir := t.TempDir()
+		m := newTestManager(t, f, st, testConfig(dir), dir, diskOK, nil)
+
+		if _, err := m.Create(ctx, reqFor(user, "abc123", 100)); err != nil {
+			t.Fatal(err)
+		}
+		waitFor(t, "failed", func() bool { return st.get(id.String()).State == StateFailed })
+		waitFor(t, "torrent stopped at failed", func() bool { return f.pauseOps[id.String()] == 1 })
+	})
+
+	t.Run("metadata timeout has nothing to stop", func(t *testing.T) {
+		// Add never produced a handle, so the failure path must get by without
+		// one rather than needing a nil-tolerant dance at every call site.
+		id := uuid.New()
+		f := newFakeEngine(nil)
+		f.addErr[id.String()] = ErrMetadataTimeout
+		st := newFakeStore()
+		st.queueID(id.String())
+		dir := t.TempDir()
+		m := newTestManager(t, f, st, testConfig(dir), dir, diskOK, nil)
+
+		if _, err := m.Create(ctx, reqFor(user, "abc123", 100)); err != nil {
+			t.Fatal(err)
+		}
+		waitFor(t, "failed", func() bool { return st.get(id.String()).State == StateFailed })
+		if got := f.pauseOps[id.String()]; got != 0 {
+			t.Fatalf("pauseOps = %d, want 0 (no handle exists after a metadata timeout)", got)
+		}
+	})
+}
+
 func TestSynchronousAddFailureFailsTheJob(t *testing.T) {
 	// Task 6 ruling: a duplicate infohash at Add fails synchronously and becomes a
 	// job failure, not a 409 — the 409 dedupe lives in Create's database check.

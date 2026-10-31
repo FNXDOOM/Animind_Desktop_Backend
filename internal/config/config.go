@@ -549,16 +549,25 @@ func (c *Config) loadDownloads() error {
 	if maxJob < 1<<30 {
 		maxJob = 1 << 30
 	}
+	// Negative values floor at zero: a negative headroom would void the disk
+	// check (free >= negative is always true), and negative seed knobs are
+	// meaningless while seeding beyond completion stays reserved.
+	minFreeGB := maxInt(getInt("DOWNLOADS_MIN_FREE_GB", 20), 0)
+	seedRatio := getFloat("DOWNLOADS_SEED_RATIO", 0)
+	if seedRatio < 0 {
+		seedRatio = 0
+	}
+	seedMinutes := maxInt(getInt("DOWNLOADS_SEED_MINUTES", 0), 0)
 	c.Downloads = DownloadsConfig{
 		Dir:              dir,
 		MaxActive:        maxInt(getInt("DOWNLOADS_MAX_ACTIVE", 2), 1),
 		MaxActivePerUser: maxInt(getInt("DOWNLOADS_MAX_ACTIVE_PER_USER", 3), 1),
 		MaxBytesPerJob:   maxJob,
-		MinFreeBytes:     int64(getInt("DOWNLOADS_MIN_FREE_GB", 20)) << 30,
+		MinFreeBytes:     int64(minFreeGB) << 30,
 		DownKbps:         int64(getInt("DOWNLOADS_DOWN_KBPS", 0)),
 		UpKbps:           int64(getInt("DOWNLOADS_UP_KBPS", 500)),
-		SeedRatio:        getFloat("DOWNLOADS_SEED_RATIO", 0),
-		SeedMinutes:      getInt("DOWNLOADS_SEED_MINUTES", 0),
+		SeedRatio:        seedRatio,
+		SeedMinutes:      seedMinutes,
 		DHT:              getBool("DOWNLOADS_DHT", true),
 		PEX:              getBool("DOWNLOADS_PEX", true),
 		UTP:              getBool("DOWNLOADS_UTP", true),
