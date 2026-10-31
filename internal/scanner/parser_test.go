@@ -198,12 +198,12 @@ func TestParseRelease(t *testing.T) {
 		{"Show S01 WEB-DL AAC No Subs-Grp", ReleaseSpec{
 			Source: ptr("WEB-DL"), AudioCodecs: []string{"AAC"}, Subs: ptr("none"),
 			ReleaseGroup: ptr("Grp")}},
+		// Audio tags say nothing about subtitles: DualAudio is set, Subs stays nil unless a
+		// Multi-/Soft/Hard/No-Subs tag is present too.
 		{"Show [1080p][Multi-Audio][AAC 2.0][FLAC 5.1]", ReleaseSpec{
-			Resolution: ptr(1080), AudioCodecs: []string{"AAC", "FLAC"}, DualAudio: true,
-			Subs: ptr("multi")}},
+			Resolution: ptr(1080), AudioCodecs: []string{"AAC", "FLAC"}, DualAudio: true}},
 		{"Show - 01 (BD 1080p) [Dual Audio][AAC 2.0]", ReleaseSpec{
-			Resolution: ptr(1080), AudioCodecs: []string{"AAC"}, DualAudio: true,
-			Subs: ptr("multi")}},
+			Resolution: ptr(1080), AudioCodecs: []string{"AAC"}, DualAudio: true}},
 		{"[SubsPlease] Show (Batch) (1080p)", ReleaseSpec{
 			Resolution: ptr(1080), ReleaseGroup: ptr("SubsPlease"), IsBatch: true}},
 		{"[Group] Show Complete Batch [1080p][x265]", ReleaseSpec{
@@ -242,7 +242,7 @@ func TestParseRelease(t *testing.T) {
 			BitDepth: ptr(8), AudioCodecs: []string{"AAC"}, ReleaseGroup: ptr("Grp")}},
 		{"Show OVA [1080p][x264][Vorbis][Multi-Audio]", ReleaseSpec{
 			Resolution: ptr(1080), VideoCodec: ptr("AVC"), AudioCodecs: []string{"Vorbis"},
-			DualAudio: true, Subs: ptr("multi")}},
+			DualAudio: true}},
 		{"Show - 01 [1080p][ALAC][x265]", ReleaseSpec{
 			Resolution: ptr(1080), VideoCodec: ptr("HEVC"), AudioCodecs: []string{"ALAC"}}},
 		{"Show [480p][MP3][x264]", ReleaseSpec{
@@ -273,7 +273,6 @@ func TestParseRelease(t *testing.T) {
 			Resolution: ptr(1080), Source: ptr("BluRay"), AudioCodecs: []string{"FLAC"},
 			IsBatch: true}},
 	}
-	t.Logf("rows=%d", len(cases))
 	if len(cases) < 40 {
 		t.Fatalf("release table has %d rows; keep at least 40 so every tag family stays covered", len(cases))
 	}
@@ -313,8 +312,9 @@ func TestParseTorrentTitleBatches(t *testing.T) {
 }
 
 // TestParseTorrentTitle pins how show, season and episode flow out of a torrent name.
-// ParseAnimeFilename stays the only source of content fields, so rows also document where
-// it currently yields nothing (v2-suffixed episodes).
+// ParseAnimeFilename stays the only source of content fields — a batch range's trailing
+// "- NN" is trimmed from the delegated show — and rows also document where it currently
+// yields nothing (v2-suffixed episodes).
 func TestParseTorrentTitle(t *testing.T) {
 	cases := []struct {
 		name        string
@@ -329,8 +329,11 @@ func TestParseTorrentTitle(t *testing.T) {
 			ReleaseSpec{Resolution: ptr(1080), ReleaseGroup: ptr("SubsPlease")}},
 		{"Show S02E05 1080p BluRay - Grp.mkv", "Show", ptr(2), ptr(5), nil, false,
 			ReleaseSpec{Resolution: ptr(1080), Source: ptr("BluRay"), ReleaseGroup: ptr("Grp")}},
-		{"[SubsPlease] Show - 01-12 (1080p) [Group]", "Show - 01", nil, ptr(1), ptr(12), true,
+		{"[SubsPlease] Show - 01-12 (1080p) [Group]", "Show", nil, ptr(1), ptr(12), true,
 			ReleaseSpec{Resolution: ptr(1080), ReleaseGroup: ptr("SubsPlease"), IsBatch: true}},
+		// The en-dash range delegates "Show - 01" from ParseAnimeFilename; the tail is trimmed.
+		{"Show - 01 – 12 [1080p][BluRay]", "Show", nil, ptr(1), ptr(12), true,
+			ReleaseSpec{Resolution: ptr(1080), Source: ptr("BluRay"), IsBatch: true}},
 		{"[Group] Show (Batch) (1080p).mkv", "", nil, nil, nil, true,
 			ReleaseSpec{Resolution: ptr(1080), ReleaseGroup: ptr("Group"), IsBatch: true}},
 		{"[SubsPlease] Show - 01v2 (1080p).mkv", "", nil, nil, nil, false,

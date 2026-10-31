@@ -337,10 +337,15 @@ var (
 	bitDepthPattern   = regexp.MustCompile(`(?i)\b(Hi10P?|10[-. ]?bit|8[-. ]?bit)\b`)
 	// E-AC-3 must precede AC-3 in the alternation or the leading E would detach.
 	audioCodecPattern = regexp.MustCompile(`(?i)\b(E-?AC-?3(?:\.?\d\.\d)?|TrueHD(?:\.?\d\.\d)?|DTS(?:-HD(?: MA)?|:X)?|AAC(?:\.?\d\.\d)?|FLAC|Opus|AC-?3(?:\.?\d\.\d)?|Vorbis|ALAC|MP3|PCM(?:\s\d\.\d)?)\b`)
-	subsPattern       = regexp.MustCompile(`(?i)\b(Multi(?:ple)?[ -]?(?:Sub(?:title)?s?|Audio)|Soft[ -]?Subs?|Hard[ -]?Subs?|Dual[ -]?Audio|No[ -]?Subs?)\b`)
-	hdrPattern        = regexp.MustCompile(`(?i)\b(HDR(?:10\+?)?|Dolby Vision|DV)\b`)
-	episodeRange      = regexp.MustCompile(`(?i)(?:e|ep\.?|\s-\s|\s)(\d{1,4})\s*(?:-|~|–|to)\s*e?(\d{1,4})\b`)
-	batchWord         = regexp.MustCompile(`(?i)\b(batch|complete)\b`)
+	// Only tags that name subtitle tracks feed Subs; audio tags like "Dual Audio" say
+	// nothing about subtitles and set DualAudio instead.
+	subsPattern  = regexp.MustCompile(`(?i)\b(Multi(?:ple)?[ -]?Sub(?:title)?s?|Soft[ -]?Subs?|Hard[ -]?Subs?|No[ -]?Subs?)\b`)
+	hdrPattern   = regexp.MustCompile(`(?i)\b(HDR(?:10\+?)?|Dolby Vision|DV)\b`)
+	episodeRange = regexp.MustCompile(`(?i)(?:e|ep\.?|\s-\s|\s)(\d{1,4})\s*(?:-|~|–|to)\s*e?(\d{1,4})\b`)
+	// ParseAnimeFilename reads a batch's range end as its episode and leaves the range start
+	// in the title ("Show - 01-12" → "Show - 01"); ParseTorrentTitle trims that tail.
+	batchRangeTailPattern = regexp.MustCompile(`\s*[-–]\s*\d{1,4}\s*$`)
+	batchWord             = regexp.MustCompile(`(?i)\b(batch|complete)\b`)
 )
 
 // trailingTagTokens are the technical tokens a trailing "-Token" suffix may not be read as:
@@ -406,7 +411,8 @@ func ParseRelease(raw string) ReleaseSpec {
 // ParseTorrentTitle resolves a torrent name into its content identity and technical spec.
 // ParseAnimeFilename stays the only source of show, season and episode; the range check
 // runs afterwards because "Show - 01-12" parses as episode 12 there, and a batch's first
-// episode is the more useful reading for the download pipeline.
+// episode is the more useful reading for the download pipeline. Once the range is
+// confirmed, the trailing "- 01" that reading leaves in the delegated title is trimmed.
 func ParseTorrentTitle(raw string) TorrentTitle {
 	stripped := StripExtension(raw)
 	spec := ParseRelease(raw)
@@ -428,6 +434,7 @@ func ParseTorrentTitle(raw string) TorrentTitle {
 			title.EpisodeStart = &start
 			title.EpisodeEnd = &end
 			title.IsBatch = true
+			title.Show = strings.TrimSpace(batchRangeTailPattern.ReplaceAllString(title.Show, ""))
 		}
 	}
 	return title
@@ -515,8 +522,9 @@ func canonicalAudioCodec(tag string) string {
 	}
 }
 
-// canonicalSubs maps a subtitle-tag match to the pipeline's coarse labels. The brief defines
-// "Dual Audio" and "Multi-Audio" as multi-track releases, so they land on "multi" too.
+// canonicalSubs maps a subtitle-tag match to the pipeline's coarse labels. Only tags that
+// name subtitle tracks reach it: audio tags like "Dual Audio" say nothing about subtitles,
+// so they set DualAudio alone and leave Subs nil.
 func canonicalSubs(tag string) string {
 	low := strings.ToLower(tag)
 	switch {
