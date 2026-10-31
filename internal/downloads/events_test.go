@@ -189,6 +189,61 @@ func TestHubCapsSubscribers(t *testing.T) {
 	}
 }
 
+func TestHubCloseEndsEveryStream(t *testing.T) {
+	// Shutdown must be able to end the SSE streams itself: until every
+	// subscriber channel closes, its handler keeps the connection open and
+	// server.Shutdown blocks for its whole timeout window.
+	hub := NewEventHub()
+	userID := "user-close"
+	ch1, _, cancel1, ok1 := hub.Subscribe(userID)
+	if !ok1 {
+		t.Fatal("first Subscribe refused")
+	}
+	ch2, _, cancel2, ok2 := hub.Subscribe(userID)
+	if !ok2 {
+		t.Fatal("second Subscribe refused")
+	}
+	if hub.Len() != 2 {
+		t.Fatalf("Len = %d, want 2", hub.Len())
+	}
+	// Leave coalescing state behind so Close has timers to tear down too.
+	hub.Publish(userID, JobEvent{ID: "j1", State: "downloading", Progress: 10})
+	hub.Publish(userID, JobEvent{ID: "j1", State: "downloading", Progress: 20})
+
+	hub.Close()
+
+	if hub.Len() != 0 {
+		t.Fatalf("Len = %d after Close, want 0 (caps freed)", hub.Len())
+	}
+	drainUntilClosed(t, ch1)
+	drainUntilClosed(t, ch2)
+
+	// Pre-existing cancels must stay no-ops, not double-close a channel.
+	cancel1()
+	cancel2()
+
+	// Publish after Close must be a silent no-op, not a panic on a closed
+	// channel — and it must not block, either.
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		hub.Publish(userID, JobEvent{ID: "j1", State: "ready"})
+	}()
+	select {
+	case <-done:
+	case <-time.After(time.Second):
+		t.Fatal("Publish blocked after Close")
+	}
+
+	// Subscribe after Close is refused: the process is going down, so no new
+	// stream may re-arm the stall.
+	if _, _, _, ok := hub.Subscribe(userID); ok {
+		t.Fatal("Subscribe accepted after Close")
+	}
+
+	hub.Close() // idempotent
+}
+
 func drainUntilClosed(t *testing.T, ch <-chan JobEvent) {
 	t.Helper()
 	for i := 0; i < streamBuffer*2; i++ {

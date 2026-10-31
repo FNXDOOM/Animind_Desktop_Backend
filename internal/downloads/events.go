@@ -40,6 +40,9 @@ type Hub struct {
 	mu    sync.Mutex
 	subs  map[string]map[*subscriber]struct{}
 	nsubs int
+	// closed marks shutdown: Publish becomes a no-op and Subscribe refuses, so
+	// nothing can re-arm a stream the process is trying to drain.
+	closed bool
 	// last survives unsubscribes: it is the reconnect snapshot.
 	last map[string]map[string]JobEvent
 	// sent and pend only matter while a user has live streams.
@@ -77,6 +80,9 @@ func (h *Hub) Len() int {
 func (h *Hub) Publish(userID string, ev JobEvent) {
 	h.mu.Lock()
 	defer h.mu.Unlock()
+	if h.closed {
+		return // shutdown: nothing streams and no snapshot will be read again
+	}
 
 	lastByJob := h.last[userID]
 	if lastByJob == nil {
@@ -156,11 +162,12 @@ func (h *Hub) deliver(userID string, ev JobEvent, now time.Time) {
 
 // Subscribe registers a stream for the user: ch carries live events, snapshot
 // holds the last known event per job, cancel removes the stream. ok is false
-// when the per-user (2) or total (100) cap is hit.
+// when the hub is closed (shutdown) or the per-user (2) or total (100) cap is
+// hit.
 func (h *Hub) Subscribe(userID string) (ch <-chan JobEvent, snapshot []JobEvent, cancel func(), ok bool) {
 	h.mu.Lock()
 	defer h.mu.Unlock()
-	if h.nsubs >= maxTotal || len(h.subs[userID]) >= maxPerUser {
+	if h.closed || h.nsubs >= maxTotal || len(h.subs[userID]) >= maxPerUser {
 		return nil, nil, nil, false
 	}
 	s := &subscriber{ch: make(chan JobEvent, streamBuffer)}
@@ -192,6 +199,36 @@ func (h *Hub) Subscribe(userID string) (ch <-chan JobEvent, snapshot []JobEvent,
 		close(s.ch) // lets the SSE handler's receive loop terminate
 	}
 	return s.ch, snapshot, cancel, true
+}
+
+// Close ends every subscriber stream at once: each channel is closed so its
+// SSE handler's receive loop returns and the HTTP connections drain instead of
+// holding server.Shutdown open for its whole timeout window. It is idempotent;
+// afterwards Publish is a no-op and Subscribe returns ok=false. Pre-existing
+// cancel funcs stay no-ops, so no channel can be closed twice.
+func (h *Hub) Close() {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	if h.closed {
+		return
+	}
+	h.closed = true
+	for _, bySub := range h.subs {
+		for s := range bySub {
+			close(s.ch)
+		}
+	}
+	// The caps are free again — moot, since Subscribe now refuses — and the
+	// per-user coalescing state dies with its streams.
+	h.subs = map[string]map[*subscriber]struct{}{}
+	h.nsubs = 0
+	for _, byJob := range h.pend {
+		for _, p := range byJob {
+			p.timer.Stop()
+		}
+	}
+	h.pend = map[string]map[string]*pendingFlush{}
+	h.sent = map[string]map[string]time.Time{}
 }
 
 func (h *Hub) dropCoalesceState(userID string) {

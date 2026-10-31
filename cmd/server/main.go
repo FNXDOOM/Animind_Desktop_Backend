@@ -198,19 +198,19 @@ func main() {
 	case err := <-serverErrors:
 		if err != nil && !errors.Is(err, http.ErrServerClosed) {
 			logger.Error("server stopped", slog.String("error", err.Error()))
-			shutdown(hub, jobs, server, hlsManager, downloadManager, engine, logger)
+			shutdown(hub, jobs, server, hlsManager, downloadManager, engine, eventHub, logger)
 			os.Exit(1)
 		}
 	case <-ctx.Done():
 		logger.Info("shutdown signal received")
 	}
 
-	shutdown(hub, jobs, server, hlsManager, downloadManager, engine, logger)
+	shutdown(hub, jobs, server, hlsManager, downloadManager, engine, eventHub, logger)
 }
 
 // shutdown stops accepting work, then releases the resources that hold processes or sockets
 // open, in that order.
-func shutdown(hub *syncplay.Hub, jobs *scheduler.Jobs, server *httpx.Server, hls *media.HLSManager, manager *downloads.Manager, engine downloads.Engine, logger *slog.Logger) {
+func shutdown(hub *syncplay.Hub, jobs *scheduler.Jobs, server *httpx.Server, hls *media.HLSManager, manager *downloads.Manager, engine downloads.Engine, eventHub *downloads.Hub, logger *slog.Logger) {
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
 
@@ -218,6 +218,13 @@ func shutdown(hub *syncplay.Hub, jobs *scheduler.Jobs, server *httpx.Server, hls
 	if manager != nil {
 		// Stops the drive loops; non-terminal rows survive for the next start.
 		manager.Close()
+	}
+	if eventHub != nil {
+		// Closing the SSE subscribers ends their handlers; without this,
+		// server.Shutdown would block on every live stream for its whole
+		// 30 s window, because Shutdown waits for connections to go idle
+		// rather than cutting them.
+		eventHub.Close()
 	}
 	if hub != nil {
 		hub.CloseAll()
