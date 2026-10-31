@@ -15,6 +15,7 @@ import (
 
 	"animind-backend-go/internal/config"
 	"animind-backend-go/internal/repository"
+	"animind-backend-go/internal/scanner"
 )
 
 // Failure codes recorded on download_jobs.error. SetDownloadJobError is
@@ -24,6 +25,7 @@ const (
 	codeEngineDisabled  = "engine_disabled"
 	codeNoFiles         = "no_files"
 	codeDownloadFailed  = "download_failed"
+	codeImportConflict  = "import_conflict"
 )
 
 var (
@@ -65,6 +67,7 @@ type store interface {
 	CountActiveDownloadJobs(ctx context.Context, userID *string) (int, error)
 	ListResumableDownloadJobs(ctx context.Context) ([]repository.DownloadJob, error)
 	DeleteDownloadJob(ctx context.Context, id string) error
+	SetDownloadJobImportResult(ctx context.Context, id, savePath string, showID *string) error
 }
 
 // dbStore adapts the concrete repository to the narrow store seam.
@@ -72,23 +75,29 @@ type dbStore struct{ *repository.Store }
 
 var _ store = dbStore{}
 
-// scanRunner is the import seam: Task 8's importer calls the library scanner
-// through it once the verifying -> importing hop is real.
+// scanRunner is the import seam: one library scan after files land, matching
+// scanner.Service.Run exactly so the real service slots in unwrapped.
 type scanRunner interface {
-	Run(ctx context.Context) error
+	Run(ctx context.Context) (*scanner.Result, error)
 }
+
+// The real service must keep satisfying the seam; a signature drift breaks the
+// build here instead of at wiring time.
+var _ scanRunner = (*scanner.Service)(nil)
 
 // Manager owns the download_jobs state machine: quotas and dedupe on Create, one
 // drive goroutine per live job, startup resume, and hub publications. It never
 // writes download_jobs outside the repository methods on the store seam.
 type Manager struct {
-	store    store
-	engine   Engine
-	cfg      config.DownloadsConfig
-	scanner  scanRunner // unused until Task 8 wires the importer
-	hub      eventPublisher
-	diskFree func(path string, min int64) (bool, error)
-	tick     time.Duration // progress poll interval; tests shorten it
+	store      store
+	engine     Engine
+	cfg        config.DownloadsConfig
+	scanner    scanRunner
+	shows      showResolver // show_id lookups; nil when the store can't answer them
+	hub        eventPublisher
+	diskFree   func(path string, min int64) (bool, error)
+	tick       time.Duration // progress poll interval; tests shorten it
+	scanSettle time.Duration // ErrAlreadyRunning wait before the one scan retry
 
 	base    context.Context
 	stopAll context.CancelFunc
@@ -109,8 +118,12 @@ func newManager(st store, engine Engine, cfg config.DownloadsConfig, scanner sca
 		diskFree = statfsFree
 	}
 	base, stopAll := context.WithCancel(context.Background())
+	var shows showResolver
+	if r, ok := st.(showResolver); ok {
+		shows = r // dbStore carries *repository.ShowByTitle; fakes may too
+	}
 	return &Manager{
-		store: st, engine: engine, cfg: cfg, scanner: scanner, hub: hub, diskFree: diskFree,
+		store: st, engine: engine, cfg: cfg, scanner: scanner, shows: shows, hub: hub, diskFree: diskFree,
 		tick: 500 * time.Millisecond,
 		base: base, stopAll: stopAll,
 		jobs: map[string]*jobRun{},
@@ -532,7 +545,16 @@ func (m *Manager) drive(ctx context.Context, j *jobRun) {
 			job = next
 
 		case StateImporting:
-			if err := m.importJob(ctx, job, j.currentHandle()); err != nil {
+			h, ok := m.ensureHandle(ctx, j, job) // also rebuilds the handle after a restart
+			if !ok {
+				return
+			}
+			files, err := h.Files()
+			if err != nil {
+				m.failJob(ctx, j, job.State, codeFor(err))
+				return
+			}
+			if _, err := m.importJob(ctx, job, files, job.SelectedFiles); err != nil {
 				m.failJob(ctx, j, job.State, codeFor(err))
 				return
 			}
@@ -644,16 +666,13 @@ func codeFor(err error) string {
 		return codeMetadataTimeout
 	case errors.Is(err, ErrNotEnabled):
 		return codeEngineDisabled
+	case errors.Is(err, errImportConflict):
+		return codeImportConflict
+	case errors.Is(err, errNothingSelected):
+		return codeNoFiles
 	default:
 		return codeDownloadFailed
 	}
-}
-
-// importJob moves the verified files into the library (Task 8). The stub keeps
-// the verifying -> importing -> ready walk exercised end to end until the real
-// importer lands.
-func (m *Manager) importJob(ctx context.Context, job repository.DownloadJob, h TorrentHandle) error {
-	return nil
 }
 
 // ── events ───────────────────────────────────────────────────────────────────
@@ -695,10 +714,10 @@ func eventFor(job repository.DownloadJob, st *Stats) JobEvent {
 
 // ── helpers ──────────────────────────────────────────────────────────────────
 
-// defaultVideoExts mirrors the config's default video suffixes. Task 8's
-// files.go owns the full selection rules; the auto-select heuristic only needs
-// to tell one episode from a pack.
-var defaultVideoExts = map[string]bool{"mkv": true, "mp4": true, "avi": true, "webm": true, "m4v": true}
+// defaultVideoExts is the video-only half of files.go's selection allowlist:
+// the auto-select heuristic must tell one episode from a pack, so subtitles
+// stay out of the count.
+var defaultVideoExts = videoExtensionSet
 
 func countVideoFiles(files []EngineFile) int {
 	n := 0

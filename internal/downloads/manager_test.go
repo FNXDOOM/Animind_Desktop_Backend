@@ -26,9 +26,18 @@ type fakeStore struct {
 	mu   sync.Mutex
 	jobs map[string]repository.DownloadJob
 	ids  []string // queued ids handed out by CreateDownloadJob, for tests that must know the id up front
+	// show-resolver fixtures: lowered titles and exact episode paths
+	showTitles   map[string]string
+	episodePaths map[string]string
 }
 
-func newFakeStore() *fakeStore { return &fakeStore{jobs: map[string]repository.DownloadJob{}} }
+func newFakeStore() *fakeStore {
+	return &fakeStore{
+		jobs:         map[string]repository.DownloadJob{},
+		showTitles:   map[string]string{},
+		episodePaths: map[string]string{},
+	}
+}
 
 var _ store = (*fakeStore)(nil)
 
@@ -185,6 +194,53 @@ func (s *fakeStore) DeleteDownloadJob(_ context.Context, id string) error {
 	}
 	delete(s.jobs, id)
 	return nil
+}
+
+func (s *fakeStore) SetDownloadJobImportResult(_ context.Context, id, savePath string, showID *string) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	job, ok := s.jobs[id]
+	if !ok {
+		return repository.ErrNotFound
+	}
+	job.SavePath = &savePath
+	job.ShowID = showID
+	now := time.Now()
+	job.CompletedAt = &now
+	job.UpdatedAt = now
+	s.jobs[id] = job
+	return nil
+}
+
+// seedShow installs a catalog row for the title-match half of show resolution.
+func (s *fakeStore) seedShow(title, id string) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.showTitles[strings.ToLower(strings.TrimSpace(title))] = id
+}
+
+// seedEpisodePath installs an indexed file for the path-match half.
+func (s *fakeStore) seedEpisodePath(path, showID string) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.episodePaths[path] = showID
+}
+
+func (s *fakeStore) ShowByTitle(_ context.Context, title string) (*repository.Show, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	id, ok := s.showTitles[strings.ToLower(strings.TrimSpace(title))]
+	if !ok {
+		return nil, repository.ErrNotFound
+	}
+	return &repository.Show{ID: id, Title: title}, nil
+}
+
+func (s *fakeStore) ShowByEpisodePath(_ context.Context, path string) (string, bool, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	id, ok := s.episodePaths[path]
+	return id, ok, nil
 }
 
 // ── fake engine ──────────────────────────────────────────────────────────────
@@ -539,7 +595,8 @@ func TestCreateQuotaChecksRunInOrder(t *testing.T) {
 }
 
 func TestCreateHappyPathWalksTheStates(t *testing.T) {
-	dir := t.TempDir()
+	lib := t.TempDir()
+	dir := filepath.Join(lib, ".incoming") // cfg.Dir; its parent is the import library root
 	user := uuid.New()
 	id := uuid.New()
 
@@ -549,6 +606,8 @@ func TestCreateHappyPathWalksTheStates(t *testing.T) {
 			{Index: 1, Path: "Show - 02.mkv", SizeBytes: 600},
 		},
 	}
+	seedSource(t, dir, id.String(), "Show - 01.mkv", "ep1")
+	seedSource(t, dir, id.String(), "Show - 02.mkv", "ep2")
 	f := newFakeEngine(files)
 	st := newFakeStore()
 	st.queueID(id.String())
@@ -599,8 +658,12 @@ func TestCreateHappyPathWalksTheStates(t *testing.T) {
 	if f.verifyOps[id.String()] != 1 {
 		t.Fatalf("Verify called %d times, want 1", f.verifyOps[id.String()])
 	}
-	if c := st.get(id.String()).CompletedAt; c != nil {
-		t.Fatalf("completed_at stamped by the manager, want nil (only the importer stamps it)")
+	// the importer stamps completed_at and save_path on its way to ready
+	if c := st.get(id.String()).CompletedAt; c == nil {
+		t.Fatal("importer did not stamp completed_at")
+	}
+	if sp := st.get(id.String()).SavePath; sp == nil || *sp != filepath.Join(lib, "Show", "Season 00") {
+		t.Fatalf("save_path = %v, want the season folder", st.get(id.String()).SavePath)
 	}
 
 	states := hub.statesFor(id.String())
@@ -619,16 +682,20 @@ func TestCreateHappyPathWalksTheStates(t *testing.T) {
 func TestCreateSingleEpisodeAutoSelects(t *testing.T) {
 	user := uuid.New()
 	id := uuid.New()
+	lib := t.TempDir()
+	dir := filepath.Join(lib, ".incoming")
 	files := map[string][]EngineFile{
 		id.String(): {
 			{Index: 0, Path: "Show - 01.mkv", SizeBytes: 500},
 			{Index: 1, Path: "Show - 01.ass", SizeBytes: 50},
 		},
 	}
+	seedSource(t, dir, id.String(), "Show - 01.mkv", "ep1")
+	seedSource(t, dir, id.String(), "Show - 01.ass", "subs")
 	f := newFakeEngine(files)
 	st := newFakeStore()
 	st.queueID(id.String())
-	m := newTestManager(t, f, st, testConfig(t.TempDir()), diskOK, nil)
+	m := newTestManager(t, f, st, testConfig(dir), diskOK, nil)
 
 	if _, err := m.Create(context.Background(), reqFor(user, "abc123", 550)); err != nil {
 		t.Fatal(err)
@@ -642,7 +709,8 @@ func TestCreateSingleEpisodeAutoSelects(t *testing.T) {
 }
 
 func TestPauseResumeAndCancel(t *testing.T) {
-	dir := t.TempDir()
+	lib := t.TempDir()
+	dir := filepath.Join(lib, ".incoming")
 	user := uuid.New()
 	ctx := context.Background()
 	cfg := testConfig(dir)
@@ -652,6 +720,7 @@ func TestPauseResumeAndCancel(t *testing.T) {
 		t.Helper()
 		id := uuid.New()
 		f.files[id.String()] = []EngineFile{{Index: 0, Path: "Show - 01.mkv", SizeBytes: 500}}
+		seedSource(t, m.cfg.Dir, id.String(), "Show - 01.mkv", "ep1")
 		st.queueID(id.String())
 		if _, err := m.Create(ctx, reqFor(user, uuid.NewString(), 500)); err != nil {
 			t.Fatal(err)
@@ -819,17 +888,20 @@ func TestManagerActionsEnforceOwnership(t *testing.T) {
 
 func TestStartupResume(t *testing.T) {
 	user := uuid.New()
+	lib := t.TempDir()
+	dir := filepath.Join(lib, ".incoming")
 	fmID, pID, rID := uuid.New(), uuid.New(), uuid.New()
 	f := newFakeEngine(map[string][]EngineFile{
 		fmID.String(): {{Index: 0, Path: "A - 01.mkv", SizeBytes: 100}},
 		pID.String():  {{Index: 0, Path: "B - 01.mkv", SizeBytes: 100}},
 	})
+	seedSource(t, dir, pID.String(), "B - 01.mkv", "ep1") // only pID is driven to a ready import
 	st := newFakeStore()
 	st.seed(repository.DownloadJob{ID: fmID.String(), UserID: user.String(), InfoHash: "h1", State: StateFetchingMetadata, ResultTitle: "A"})
 	st.seed(repository.DownloadJob{ID: pID.String(), UserID: user.String(), InfoHash: "h2", State: StatePaused, ResultTitle: "B", SelectedFiles: []int{0}})
 	st.seed(repository.DownloadJob{ID: rID.String(), UserID: user.String(), InfoHash: "h3", State: StateReady, ResultTitle: "C"})
 
-	m := newTestManager(t, f, st, testConfig(t.TempDir()), diskOK, nil)
+	m := newTestManager(t, f, st, testConfig(dir), diskOK, nil)
 	if err := m.ResumeFromStore(context.Background()); err != nil {
 		t.Fatal(err)
 	}
