@@ -343,8 +343,13 @@ var (
 	hdrPattern   = regexp.MustCompile(`(?i)\b(HDR(?:10\+?)?|Dolby Vision|DV)\b`)
 	episodeRange = regexp.MustCompile(`(?i)(?:e|ep\.?|\s-\s|\s)(\d{1,4})\s*(?:-|~|–|to)\s*e?(\d{1,4})\b`)
 	// ParseAnimeFilename reads a batch's range end as its episode and leaves the range start
-	// in the title ("Show - 01-12" → "Show - 01"); ParseTorrentTitle trims that tail.
-	batchRangeTailPattern = regexp.MustCompile(`\s*[-–]\s*\d{1,4}\s*$`)
+	// behind in the title. The leftover tail depends on the separator: dash ranges delegate
+	// "Show - 01" (separator + start), while "~" and "to" ranges delegate "Show - 01 ~" /
+	// "Show - 01 to" (start + separator). The trim removes both shapes — an optional leading
+	// dash, the start number, then an optional trailing separator — anchored to the title's
+	// end at a word boundary before the tail's whitespace so numbers inside the show name
+	// itself survive.
+	batchRangeTailPattern = regexp.MustCompile(`(?i)(?:^|\b)\s*(?:[-–]\s*)?\d{1,4}\s*(?:[-–~]|\bto\b)?\s*$`)
 	batchWord             = regexp.MustCompile(`(?i)\b(batch|complete)\b`)
 )
 
@@ -412,7 +417,8 @@ func ParseRelease(raw string) ReleaseSpec {
 // ParseAnimeFilename stays the only source of show, season and episode; the range check
 // runs afterwards because "Show - 01-12" parses as episode 12 there, and a batch's first
 // episode is the more useful reading for the download pipeline. Once the range is
-// confirmed, the trailing "- 01" that reading leaves in the delegated title is trimmed.
+// confirmed, the start number and its separator are trimmed from the delegated title for
+// every range shape: "Show - 01", "Show - 01 ~" and "Show - 01 to" all clean to "Show".
 func ParseTorrentTitle(raw string) TorrentTitle {
 	stripped := StripExtension(raw)
 	spec := ParseRelease(raw)

@@ -312,9 +312,10 @@ func TestParseTorrentTitleBatches(t *testing.T) {
 }
 
 // TestParseTorrentTitle pins how show, season and episode flow out of a torrent name.
-// ParseAnimeFilename stays the only source of content fields — a batch range's trailing
-// "- NN" is trimmed from the delegated show — and rows also document where it currently
-// yields nothing (v2-suffixed episodes).
+// ParseAnimeFilename stays the only source of content fields — a batch range's delegated
+// tail ("Show - 01", "Show - 01 ~", "Show - 01 to") is trimmed to the bare show for every
+// separator shape — and rows also document where it currently yields nothing (v2-suffixed
+// episodes).
 func TestParseTorrentTitle(t *testing.T) {
 	cases := []struct {
 		name        string
@@ -334,6 +335,18 @@ func TestParseTorrentTitle(t *testing.T) {
 		// The en-dash range delegates "Show - 01" from ParseAnimeFilename; the tail is trimmed.
 		{"Show - 01 – 12 [1080p][BluRay]", "Show", nil, ptr(1), ptr(12), true,
 			ReleaseSpec{Resolution: ptr(1080), Source: ptr("BluRay"), IsBatch: true}},
+		// Tilde and worded ranges delegate "Show - 01 ~" / "Show - 01 to" instead (the range
+		// end is read as the episode, the start and separator stay behind); every separator
+		// shape must trim to the bare show.
+		{"[SubsPlease] Show - 01 ~ 12 (1080p)", "Show", nil, ptr(1), ptr(12), true,
+			ReleaseSpec{Resolution: ptr(1080), ReleaseGroup: ptr("SubsPlease"), IsBatch: true}},
+		{"Show 01 ~ 12 [1080p]", "Show", nil, ptr(1), ptr(12), true,
+			ReleaseSpec{Resolution: ptr(1080), IsBatch: true}},
+		{"[Group] Show - 01 to 12 (1080p)", "Show", nil, ptr(1), ptr(12), true,
+			ReleaseSpec{Resolution: ptr(1080), ReleaseGroup: ptr("Group"), IsBatch: true}},
+		// Without a dash before the start number the trim still stops at the word boundary.
+		{"Show Episodes 01 to 12 [1080p]", "Show Episodes", nil, ptr(1), ptr(12), true,
+			ReleaseSpec{Resolution: ptr(1080), IsBatch: true}},
 		{"[Group] Show (Batch) (1080p).mkv", "", nil, nil, nil, true,
 			ReleaseSpec{Resolution: ptr(1080), ReleaseGroup: ptr("Group"), IsBatch: true}},
 		{"[SubsPlease] Show - 01v2 (1080p).mkv", "", nil, nil, nil, false,
