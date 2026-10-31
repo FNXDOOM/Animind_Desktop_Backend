@@ -14,6 +14,7 @@ import (
 	"fmt"
 	"net/url"
 	"os"
+	"path/filepath"
 	"strconv"
 	"strings"
 	"time"
@@ -57,6 +58,8 @@ type Config struct {
 	Metrics    MetricsConfig
 	Storage    StorageConfig
 	Scanner    ScannerConfig
+	Torrent    TorrentConfig
+	Downloads  DownloadsConfig
 	Metadata   MetadataConfig
 	FFmpeg     FFmpegConfig
 	HLS        HLSConfig
@@ -185,6 +188,43 @@ type ScannerConfig struct {
 	PruneDeletedFiles bool
 	// ScanOnStartup indexes the library once during boot.
 	ScanOnStartup bool
+}
+
+// TorrentConfig points at the Torznab indexer backing /api/torrents/search.
+type TorrentConfig struct {
+	// URL is the Torznab base URL. Empty disables search entirely.
+	URL string
+	// APIKey is required when URL is set.
+	APIKey string
+	// CacheTTL bounds how long a search page is reused across requests.
+	CacheTTL time.Duration
+}
+
+// DownloadsConfig governs the server-side torrent downloads. The knobs only take
+// effect when storage is local: S3 has no place on this host to put the files.
+type DownloadsConfig struct {
+	// Dir is the download destination, kept inside the library so completed
+	// imports are indexable by the scanner without a second mount.
+	Dir              string
+	MaxActive        int
+	MaxActivePerUser int
+	// MaxBytesPerJob caps one download's total size before it is refused.
+	MaxBytesPerJob int64
+	// MinFreeBytes is the disk headroom below which new jobs are refused.
+	MinFreeBytes int64
+	// DownKbps/UpKbps throttle the torrent client; 0 = unlimited.
+	DownKbps int64
+	UpKbps   int64
+	// SeedRatio stops seeding at this share ratio; 0 stops at completion.
+	SeedRatio   float64
+	SeedMinutes int
+	DHT         bool
+	PEX         bool
+	UTP         bool
+	// MaxFiles caps entries extracted from a single torrent.
+	MaxFiles int
+	// Enabled mirrors Storage.Mode == local.
+	Enabled bool
 }
 
 // MetadataConfig covers AniList, MyAnimeList and the OpenRouter scanner fallback.
@@ -324,6 +364,12 @@ func Load() (*Config, error) {
 	}
 	if err := cfg.loadStorage(); err != nil {
 		return nil, fmt.Errorf("config: storage: %w", err)
+	}
+	if err := cfg.loadTorrent(); err != nil {
+		return nil, fmt.Errorf("config: torrent: %w", err)
+	}
+	if err := cfg.loadDownloads(); err != nil {
+		return nil, fmt.Errorf("config: downloads: %w", err)
 	}
 	cfg.loadCache()
 	cfg.loadMetrics()
@@ -469,6 +515,76 @@ func (c *Config) loadScanner() {
 		PruneDeletedFiles:  getBool("SCANNER_PRUNE_DELETED", true),
 		ScanOnStartup:      getBool("SCANNER_ON_STARTUP", false),
 	}
+}
+
+func (c *Config) loadTorrent() error {
+	c.Torrent = TorrentConfig{
+		URL:      strings.TrimRight(getString("TORZNAB_URL", ""), "/"),
+		APIKey:   getString("TORZNAB_API_KEY", ""),
+		CacheTTL: time.Duration(getInt("TORRENT_SEARCH_CACHE_MINUTES", 10)) * time.Minute,
+	}
+	if c.Torrent.CacheTTL < time.Minute {
+		c.Torrent.CacheTTL = time.Minute
+	}
+	if c.Torrent.URL == "" {
+		return nil
+	}
+	u, err := url.Parse(c.Torrent.URL)
+	if err != nil || (u.Scheme != "http" && u.Scheme != "https") {
+		return errors.New("TORZNAB_URL must be an http(s) URL")
+	}
+	// Credentials in the URL would leak into logs; Torznab takes the key as a query parameter.
+	if u.User != nil {
+		return errors.New("TORZNAB_URL must not carry userinfo")
+	}
+	if c.Torrent.APIKey == "" {
+		return errors.New("TORZNAB_API_KEY is required when TORZNAB_URL is set")
+	}
+	return nil
+}
+
+func (c *Config) loadDownloads() error {
+	dir := getString("DOWNLOADS_DIR", filepath.Join(c.Storage.LocalPath, ".incoming"))
+	maxJob := getInt64Default("DOWNLOADS_MAX_BYTES_PER_JOB", 25<<30)
+	if maxJob < 1<<30 {
+		maxJob = 1 << 30
+	}
+	c.Downloads = DownloadsConfig{
+		Dir:              dir,
+		MaxActive:        maxInt(getInt("DOWNLOADS_MAX_ACTIVE", 2), 1),
+		MaxActivePerUser: maxInt(getInt("DOWNLOADS_MAX_ACTIVE_PER_USER", 3), 1),
+		MaxBytesPerJob:   maxJob,
+		MinFreeBytes:     int64(getInt("DOWNLOADS_MIN_FREE_GB", 20)) << 30,
+		DownKbps:         int64(getInt("DOWNLOADS_DOWN_KBPS", 0)),
+		UpKbps:           int64(getInt("DOWNLOADS_UP_KBPS", 500)),
+		SeedRatio:        getFloat("DOWNLOADS_SEED_RATIO", 0),
+		SeedMinutes:      getInt("DOWNLOADS_SEED_MINUTES", 0),
+		DHT:              getBool("DOWNLOADS_DHT", true),
+		PEX:              getBool("DOWNLOADS_PEX", true),
+		UTP:              getBool("DOWNLOADS_UTP", true),
+		MaxFiles:         clampInt(getInt("DOWNLOADS_MAX_FILES", 500), 1, 5000),
+	}
+	// In s3 mode nothing runs locally, so the containment check must not fire.
+	c.Downloads.Enabled = c.Storage.Mode == StorageLocal
+	if !c.Downloads.Enabled {
+		return nil
+	}
+	libAbs, err := filepath.Abs(c.Storage.LocalPath)
+	if err != nil {
+		return err
+	}
+	dirAbs, err := filepath.Abs(dir)
+	if err != nil {
+		return err
+	}
+	rel, err := filepath.Rel(libAbs, dirAbs)
+	if err != nil || rel == ".." || strings.HasPrefix(rel, ".."+string(filepath.Separator)) {
+		return errors.New("DOWNLOADS_DIR must be under the library root")
+	}
+	if err := os.MkdirAll(dirAbs, 0o755); err != nil {
+		return fmt.Errorf("create DOWNLOADS_DIR: %w", err)
+	}
+	return nil
 }
 
 func (c *Config) loadMetadata() {
@@ -623,6 +739,25 @@ func getInt(key string, fallback int) int {
 		return fallback
 	}
 	return n
+}
+
+func getInt64Default(key string, fallback int64) int64 {
+	raw, ok := os.LookupEnv(key)
+	if !ok {
+		return fallback
+	}
+	n, err := strconv.ParseInt(strings.TrimSpace(raw), 10, 64)
+	if err != nil {
+		return fallback
+	}
+	return n
+}
+
+func maxInt(a, b int) int {
+	if a > b {
+		return a
+	}
+	return b
 }
 
 func getFloat(key string, fallback float64) float64 {

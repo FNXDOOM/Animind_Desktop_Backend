@@ -1,6 +1,8 @@
 package config
 
 import (
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 	"time"
@@ -265,4 +267,66 @@ func TestStreamTicketTTLHasAFloor(t *testing.T) {
 	if cfg.Storage.TicketTTL != 2*time.Minute {
 		t.Errorf("TicketTTL = %v, want the 120s floor", cfg.Storage.TicketTTL)
 	}
+}
+
+func TestTorrentAndDownloadsValidation(t *testing.T) {
+	t.Run("torznab url requires api key", func(t *testing.T) {
+		baseEnv(t)
+		t.Setenv("TORZNAB_URL", "https://prowlarr.example")
+		t.Setenv("TORZNAB_API_KEY", "")
+		_, err := Load()
+		if err == nil || !strings.Contains(err.Error(), "TORZNAB_API_KEY is required") {
+			t.Fatalf("want TORZNAB_API_KEY required, got %v", err)
+		}
+	})
+	t.Run("torznab url rejects userinfo", func(t *testing.T) {
+		baseEnv(t)
+		t.Setenv("TORZNAB_URL", "https://user:pass@prowlarr.example")
+		_, err := Load()
+		if err == nil || !strings.Contains(err.Error(), "userinfo") {
+			t.Fatalf("want userinfo rejection, got %v", err)
+		}
+	})
+	t.Run("downloads defaults", func(t *testing.T) {
+		baseEnv(t)
+		t.Setenv("TORZNAB_URL", "")
+		t.Setenv("STORAGE_MODE", "local")
+		t.Setenv("LOCAL_STORAGE_PATH", t.TempDir())
+		cfg, err := Load()
+		if err != nil {
+			t.Fatal(err)
+		}
+		if cfg.Downloads.Dir != filepath.Join(cfg.Storage.LocalPath, ".incoming") {
+			t.Fatalf("downloads dir default wrong: %q", cfg.Downloads.Dir)
+		}
+		if cfg.Downloads.MaxActive != 2 || cfg.Downloads.MaxFiles != 500 ||
+			cfg.Downloads.MaxBytesPerJob != 25<<30 || !cfg.Downloads.DHT {
+			t.Fatalf("defaults wrong: %+v", cfg.Downloads)
+		}
+		if !cfg.Downloads.Enabled {
+			t.Fatal("local storage must enable downloads")
+		}
+	})
+	t.Run("s3 mode disables downloads", func(t *testing.T) {
+		baseEnv(t)
+		t.Setenv("STORAGE_MODE", "s3")
+		t.Setenv("S3_BUCKET_NAME", "bucket")
+		cfg, err := Load()
+		if err != nil {
+			t.Fatal(err)
+		}
+		if cfg.Downloads.Enabled {
+			t.Fatal("downloads must be disabled in s3 mode")
+		}
+	})
+	t.Run("downloads dir must stay under the library", func(t *testing.T) {
+		baseEnv(t)
+		t.Setenv("STORAGE_MODE", "local")
+		t.Setenv("LOCAL_STORAGE_PATH", t.TempDir())
+		t.Setenv("DOWNLOADS_DIR", filepath.Join(os.TempDir(), "elsewhere", ".incoming"))
+		_, err := Load()
+		if err == nil || !strings.Contains(err.Error(), "under the library root") {
+			t.Fatalf("want containment error, got %v", err)
+		}
+	})
 }
