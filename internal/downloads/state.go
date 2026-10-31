@@ -14,9 +14,12 @@ const (
 	StateCancelled         = "cancelled"
 )
 
-// transitions is the state machine from spec §7.5, verbatim. The store's
-// TransitionDownloadJob is a state-blind compare-and-set, so this table is the
-// only guard keeping illegal hops out of the database.
+// transitions is the state machine from spec §7.5 with one controller-ruled
+// addition: paused -> awaiting_selection, so a pack paused before any files
+// were selected resumes into the selection wait instead of a downloading row
+// whose Done() never fires. The store's TransitionDownloadJob is a state-blind
+// compare-and-set, so this table is the only guard keeping illegal hops out of
+// the database.
 var transitions = map[string][]string{
 	StateQueued:            {StateFetchingMetadata, StateFailed, StateCancelled, StatePaused},
 	StateFetchingMetadata:  {StateAwaitingSelection, StateFailed, StateCancelled, StatePaused},
@@ -24,7 +27,7 @@ var transitions = map[string][]string{
 	StateDownloading:       {StateVerifying, StateFailed, StateCancelled, StatePaused},
 	StateVerifying:         {StateImporting, StateFailed, StateCancelled, StatePaused},
 	StateImporting:         {StateReady, StateFailed, StateCancelled},
-	StatePaused:            {StateDownloading, StateCancelled},
+	StatePaused:            {StateDownloading, StateAwaitingSelection, StateCancelled},
 	StateReady:             {},
 	StateFailed:            {},
 	StateCancelled:         {},

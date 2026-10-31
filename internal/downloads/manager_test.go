@@ -409,6 +409,11 @@ func TestTransitionsMatchSpecTable(t *testing.T) {
 			}
 		}
 	}
+	// controller-ruled edge: a selection-less pack resumed after a pause goes
+	// back to awaiting_selection instead of zombifying in downloading
+	if !canTransition(StatePaused, StateAwaitingSelection) {
+		t.Errorf("canTransition(paused, awaiting_selection) = false, want true")
+	}
 	illegal := [][2]string{
 		{StateQueued, StateDownloading},
 		{StateQueued, StateReady},
@@ -567,7 +572,7 @@ func TestCreateHappyPathWalksTheStates(t *testing.T) {
 		t.Fatalf("Add magnet = %q", got)
 	}
 
-	got, err := m.SelectFiles(context.Background(), id, user, []int{0, 1})
+	got, err := m.SelectFiles(context.Background(), id.String(), user.String(), false, []int{0, 1})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -661,7 +666,7 @@ func TestPauseResumeAndCancel(t *testing.T) {
 
 	id := driveToDownloading(t, m, f, st)
 
-	paused, err := m.Pause(ctx, id, user)
+	paused, err := m.Pause(ctx, id.String(), user.String(), false)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -670,7 +675,7 @@ func TestPauseResumeAndCancel(t *testing.T) {
 	}
 	waitFor(t, "engine paused", func() bool { return f.pauseOps[id.String()] == 1 })
 
-	resumed, err := m.Resume(ctx, id, user)
+	resumed, err := m.Resume(ctx, id.String(), user.String(), false)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -690,7 +695,7 @@ func TestPauseResumeAndCancel(t *testing.T) {
 	if err := os.WriteFile(filepath.Join(jobDir, "Show - 01.mkv"), []byte("x"), 0o644); err != nil {
 		t.Fatal(err)
 	}
-	if err := m.Cancel(ctx, id, user, true); err != nil {
+	if err := m.Cancel(ctx, id.String(), user.String(), false, true); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := st.GetDownloadJob(ctx, id.String()); !errors.Is(err, repository.ErrNotFound) {
@@ -705,7 +710,7 @@ func TestPauseResumeAndCancel(t *testing.T) {
 
 	// cancel a downloading job without deleteFiles: row stays as cancelled, files kept
 	id2 := driveToDownloading(t, m, f, st)
-	if err := m.Cancel(ctx, id2, user, false); err != nil {
+	if err := m.Cancel(ctx, id2.String(), user.String(), false, false); err != nil {
 		t.Fatal(err)
 	}
 	if got := st.get(id2.String()).State; got != StateCancelled {
@@ -717,7 +722,7 @@ func TestPauseResumeAndCancel(t *testing.T) {
 
 	// cancel a queued row that never reached the engine (post-restart shape)
 	queued := st.seed(repository.DownloadJob{UserID: user.String(), InfoHash: "zzz", State: StateQueued})
-	if err := m.Cancel(ctx, uuid.MustParse(queued.ID), user, false); err != nil {
+	if err := m.Cancel(ctx, queued.ID, user.String(), false, false); err != nil {
 		t.Fatal(err)
 	}
 	if got := st.get(queued.ID).State; got != StateCancelled {
@@ -733,22 +738,82 @@ func TestPauseAndResumeGuardTheTable(t *testing.T) {
 
 	// importing must not pause: the table forbids importing -> paused
 	importing := st.seed(repository.DownloadJob{UserID: user.String(), InfoHash: "aaa", State: StateImporting})
-	if _, err := m.Pause(ctx, uuid.MustParse(importing.ID), user); !errors.Is(err, repository.ErrConflict) {
+	if _, err := m.Pause(ctx, importing.ID, user.String(), false); !errors.Is(err, repository.ErrConflict) {
 		t.Fatalf("pause from importing: want ErrConflict, got %v", err)
 	}
 	// resume requires paused
 	downloading := st.seed(repository.DownloadJob{UserID: user.String(), InfoHash: "bbb", State: StateDownloading})
-	if _, err := m.Resume(ctx, uuid.MustParse(downloading.ID), user); !errors.Is(err, repository.ErrConflict) {
+	if _, err := m.Resume(ctx, downloading.ID, user.String(), false); !errors.Is(err, repository.ErrConflict) {
 		t.Fatalf("resume from downloading: want ErrConflict, got %v", err)
 	}
 	// SelectFiles requires awaiting_selection
 	pack := st.seed(repository.DownloadJob{UserID: user.String(), InfoHash: "ccc", State: StateDownloading})
-	if _, err := m.SelectFiles(ctx, uuid.MustParse(pack.ID), user, []int{0}); !errors.Is(err, repository.ErrConflict) {
+	if _, err := m.SelectFiles(ctx, pack.ID, user.String(), false, []int{0}); !errors.Is(err, repository.ErrConflict) {
 		t.Fatalf("select on downloading: want ErrConflict, got %v", err)
 	}
 	// unknown rows 404
-	if _, err := m.Pause(ctx, uuid.New(), user); !errors.Is(err, repository.ErrNotFound) {
+	if _, err := m.Pause(ctx, uuid.NewString(), user.String(), false); !errors.Is(err, repository.ErrNotFound) {
 		t.Fatalf("pause missing job: want ErrNotFound, got %v", err)
+	}
+}
+
+func TestManagerActionsEnforceOwnership(t *testing.T) {
+	// Finding 2: the manager must not accept-and-discard the actor's id — a
+	// mismatched actor gets ErrForbidden, the owner and admins get through.
+	user, other := uuid.New(), uuid.New()
+	ctx := context.Background()
+	st := newFakeStore()
+	m := newTestManager(t, newFakeEngine(nil), st, testConfig(t.TempDir()), diskOK, nil)
+
+	downloading := st.seed(repository.DownloadJob{UserID: user.String(), InfoHash: "h1", State: StateDownloading, SelectedFiles: []int{0}})
+	awaiting := st.seed(repository.DownloadJob{UserID: user.String(), InfoHash: "h2", State: StateAwaitingSelection})
+
+	// a non-owner gets ErrForbidden from every action — before any state check —
+	// and moves nothing
+	attempts := []struct {
+		name string
+		act  func() error
+	}{
+		{"pause", func() error { _, err := m.Pause(ctx, downloading.ID, other.String(), false); return err }},
+		{"resume", func() error { _, err := m.Resume(ctx, downloading.ID, other.String(), false); return err }},
+		{"cancel", func() error { return m.Cancel(ctx, downloading.ID, other.String(), false, false) }},
+		{"selectfiles", func() error { _, err := m.SelectFiles(ctx, awaiting.ID, other.String(), false, []int{0}); return err }},
+	}
+	for _, a := range attempts {
+		if err := a.act(); !errors.Is(err, ErrForbidden) {
+			t.Errorf("%s by a non-owner: want ErrForbidden, got %v", a.name, err)
+		}
+	}
+	if got := st.get(downloading.ID).State; got != StateDownloading {
+		t.Fatalf("a non-owner moved the row: %s", got)
+	}
+	if got := st.get(awaiting.ID).State; got != StateAwaitingSelection {
+		t.Fatalf("a non-owner moved the awaiting row: %s", got)
+	}
+
+	// the owner acts
+	if _, err := m.Pause(ctx, downloading.ID, user.String(), false); err != nil {
+		t.Fatalf("owner pause: %v", err)
+	}
+	if _, err := m.Resume(ctx, downloading.ID, user.String(), false); err != nil {
+		t.Fatalf("owner resume: %v", err)
+	}
+	if got := st.get(downloading.ID).State; got != StateDownloading {
+		t.Fatalf("owner-resumed state = %s, want downloading", got)
+	}
+	if _, err := m.SelectFiles(ctx, awaiting.ID, user.String(), false, []int{0}); err != nil {
+		t.Fatalf("owner select: %v", err)
+	}
+
+	// an admin acts on someone else's job
+	if _, err := m.Pause(ctx, downloading.ID, other.String(), true); err != nil {
+		t.Fatalf("admin pause: %v", err)
+	}
+	if err := m.Cancel(ctx, downloading.ID, other.String(), true, false); err != nil {
+		t.Fatalf("admin cancel: %v", err)
+	}
+	if got := st.get(downloading.ID).State; got != StateCancelled {
+		t.Fatalf("admin-cancelled state = %s, want cancelled", got)
 	}
 }
 
@@ -790,6 +855,126 @@ func TestStartupResume(t *testing.T) {
 	}
 	if f.addedFor(rID) != 0 {
 		t.Fatalf("ready job re-added %d times", f.addedFor(rID))
+	}
+}
+
+func TestResumeIsSelectionAware(t *testing.T) {
+	// Finding 1: a pack paused while awaiting_selection has no stored selection
+	// to replay, so resuming it into downloading strands the row there forever
+	// (Done() never fires for unselected bytes). Both resume paths must be
+	// target-aware: no selection -> awaiting_selection, selection -> downloading.
+	user := uuid.New()
+	ctx := context.Background()
+
+	packFiles := func(id uuid.UUID) map[string][]EngineFile {
+		return map[string][]EngineFile{
+			id.String(): {
+				{Index: 0, Path: "Show - 01.mkv", SizeBytes: 500},
+				{Index: 1, Path: "Show - 02.mkv", SizeBytes: 600},
+			},
+		}
+	}
+
+	t.Run("resume of a paused selection-less pack re-enters awaiting_selection", func(t *testing.T) {
+		id := uuid.New()
+		f := newFakeEngine(packFiles(id))
+		st := newFakeStore()
+		st.queueID(id.String())
+		m := newTestManager(t, f, st, testConfig(t.TempDir()), diskOK, nil)
+
+		if _, err := m.Create(ctx, reqFor(user, "pack-1", 1100)); err != nil {
+			t.Fatal(err)
+		}
+		waitFor(t, "awaiting_selection", func() bool { return st.get(id.String()).State == StateAwaitingSelection })
+
+		if _, err := m.Pause(ctx, id.String(), user.String(), false); err != nil {
+			t.Fatal(err)
+		}
+		resumed, err := m.Resume(ctx, id.String(), user.String(), false)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if resumed.State != StateAwaitingSelection {
+			t.Fatalf("resumed state = %s, want awaiting_selection", resumed.State)
+		}
+		// SelectFiles walks it on from there
+		got, err := m.SelectFiles(ctx, id.String(), user.String(), false, []int{1})
+		if err != nil {
+			t.Fatal(err)
+		}
+		if got.State != StateDownloading {
+			t.Fatalf("after SelectFiles state = %s, want downloading", got.State)
+		}
+	})
+
+	t.Run("resume of a paused selected pack returns to downloading", func(t *testing.T) {
+		id := uuid.New()
+		f := newFakeEngine(packFiles(id))
+		st := newFakeStore()
+		st.queueID(id.String())
+		m := newTestManager(t, f, st, testConfig(t.TempDir()), diskOK, nil)
+
+		if _, err := m.Create(ctx, reqFor(user, "pack-2", 1100)); err != nil {
+			t.Fatal(err)
+		}
+		waitFor(t, "awaiting_selection", func() bool { return st.get(id.String()).State == StateAwaitingSelection })
+		if _, err := m.SelectFiles(ctx, id.String(), user.String(), false, []int{0, 1}); err != nil {
+			t.Fatal(err)
+		}
+		waitFor(t, "downloading", func() bool { return st.get(id.String()).State == StateDownloading })
+
+		if _, err := m.Pause(ctx, id.String(), user.String(), false); err != nil {
+			t.Fatal(err)
+		}
+		resumed, err := m.Resume(ctx, id.String(), user.String(), false)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if resumed.State != StateDownloading {
+			t.Fatalf("resumed state = %s, want downloading", resumed.State)
+		}
+	})
+
+	t.Run("startup resume of a selection-less pack re-enters awaiting_selection", func(t *testing.T) {
+		id := uuid.New()
+		f := newFakeEngine(packFiles(id))
+		st := newFakeStore()
+		st.seed(repository.DownloadJob{ID: id.String(), UserID: user.String(), InfoHash: "pack-3", State: StatePaused, ResultTitle: "Show"})
+		m := newTestManager(t, f, st, testConfig(t.TempDir()), diskOK, nil)
+
+		if err := m.ResumeFromStore(ctx); err != nil {
+			t.Fatal(err)
+		}
+		waitFor(t, "awaiting_selection", func() bool { return st.get(id.String()).State == StateAwaitingSelection })
+		waitFor(t, "handle rebuilt", func() bool { return f.addedFor(id) == 1 })
+		f.mu.Lock()
+		sel := f.selectOps[id.String()]
+		f.mu.Unlock()
+		if len(sel) != 0 {
+			t.Fatalf("pack auto-selected %v without a user pick", sel)
+		}
+		// and it stays put until the user picks
+		time.Sleep(20 * time.Millisecond)
+		if got := st.get(id.String()).State; got != StateAwaitingSelection {
+			t.Fatalf("row drifted to %s without a selection", got)
+		}
+	})
+}
+
+func TestStatfsFreeBoundaryIsInclusive(t *testing.T) {
+	// Finding 3: the spec's boundary is free >= max(jobSize, 0) + MinFreeBytes,
+	// so free == needed must pass — the strict > rejected the exact boundary.
+	orig := freeDiskBytesOf
+	t.Cleanup(func() { freeDiskBytesOf = orig })
+	freeDiskBytesOf = func(string) (int64, error) { return 1 << 20, nil }
+
+	ok, err := statfsFree("dir", 1<<20)
+	if err != nil || !ok {
+		t.Fatalf("statfsFree(free == min) = (%v, %v), want (true, nil)", ok, err)
+	}
+	ok, err = statfsFree("dir", (1<<20)+1)
+	if err != nil || ok {
+		t.Fatalf("statfsFree(free < min) = (%v, %v), want (false, nil)", ok, err)
 	}
 }
 

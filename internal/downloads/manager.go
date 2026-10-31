@@ -27,7 +27,9 @@ const (
 )
 
 var (
-	// ErrForbidden is unused here: httpx owns the 403 decision.
+	// ErrForbidden answers the 403 class: the actor is neither the job's owner
+	// nor an admin. Enforced by the user-action methods right after the row is
+	// loaded, before any state check.
 	ErrForbidden = errors.New("downloads: forbidden")
 	// ErrDiskFull answers the 507 class: the download root lacks headroom.
 	ErrDiskFull = errors.New("downloads: insufficient_disk")
@@ -161,17 +163,17 @@ func (m *Manager) register(j *jobRun) *jobRun {
 	return j
 }
 
-func (m *Manager) lookup(id uuid.UUID) *jobRun {
+func (m *Manager) lookup(id string) *jobRun {
 	m.mu.Lock()
 	defer m.mu.Unlock()
-	return m.jobs[id.String()]
+	return m.jobs[id]
 }
 
-func (m *Manager) take(id uuid.UUID) *jobRun {
+func (m *Manager) take(id string) *jobRun {
 	m.mu.Lock()
 	defer m.mu.Unlock()
-	j := m.jobs[id.String()]
-	delete(m.jobs, id.String())
+	j := m.jobs[id]
+	delete(m.jobs, id)
 	return j
 }
 
@@ -260,8 +262,22 @@ func magnetFor(magnet string, job repository.DownloadJob) string {
 
 // ── user actions ─────────────────────────────────────────────────────────────
 
-func (m *Manager) Pause(ctx context.Context, jobID, userID uuid.UUID) (repository.DownloadJob, error) {
-	job, err := m.store.GetDownloadJob(ctx, jobID.String())
+// authorized loads the row and enforces ownership before any state work: the
+// actor must own the job or hold the admin bypass. A mismatch answers
+// ErrForbidden without leaking anything else about the row.
+func (m *Manager) authorized(ctx context.Context, jobID, actorUserID string, isAdmin bool) (repository.DownloadJob, error) {
+	job, err := m.store.GetDownloadJob(ctx, jobID)
+	if err != nil {
+		return repository.DownloadJob{}, err
+	}
+	if !isAdmin && job.UserID != actorUserID {
+		return repository.DownloadJob{}, ErrForbidden
+	}
+	return job, nil
+}
+
+func (m *Manager) Pause(ctx context.Context, jobID, actorUserID string, isAdmin bool) (repository.DownloadJob, error) {
+	job, err := m.authorized(ctx, jobID, actorUserID, isAdmin)
 	if err != nil {
 		return repository.DownloadJob{}, err
 	}
@@ -282,21 +298,21 @@ func (m *Manager) Pause(ctx context.Context, jobID, userID uuid.UUID) (repositor
 	return updated, nil
 }
 
-func (m *Manager) Resume(ctx context.Context, jobID, userID uuid.UUID) (repository.DownloadJob, error) {
-	job, err := m.store.GetDownloadJob(ctx, jobID.String())
+func (m *Manager) Resume(ctx context.Context, jobID, actorUserID string, isAdmin bool) (repository.DownloadJob, error) {
+	job, err := m.authorized(ctx, jobID, actorUserID, isAdmin)
 	if err != nil {
 		return repository.DownloadJob{}, err
 	}
 	if job.State != StatePaused {
 		return repository.DownloadJob{}, fmt.Errorf("downloads: cannot resume from %s: %w", job.State, repository.ErrConflict)
 	}
-	updated, err := m.store.TransitionDownloadJob(ctx, job.ID, StatePaused, StateDownloading)
+	updated, err := m.store.TransitionDownloadJob(ctx, job.ID, StatePaused, resumeTarget(job))
 	if err != nil {
 		return repository.DownloadJob{}, err
 	}
-	j := m.lookup(jobID)
-	if j == nil {
-		j = m.register(&jobRun{id: jobID, userID: updated.UserID, magnet: magnetFor("", updated)})
+	j, err := m.runFor(updated)
+	if err != nil {
+		return updated, err
 	}
 	if h := j.currentHandle(); h != nil {
 		_ = h.Resume()
@@ -306,11 +322,36 @@ func (m *Manager) Resume(ctx context.Context, jobID, userID uuid.UUID) (reposito
 	return updated, nil
 }
 
+// runFor returns the live run for a stored row, registering a fresh one when
+// the job is not being driven in this session (post-restart resume).
+func (m *Manager) runFor(job repository.DownloadJob) (*jobRun, error) {
+	if j := m.lookup(job.ID); j != nil {
+		return j, nil
+	}
+	id, err := uuid.Parse(job.ID)
+	if err != nil {
+		return nil, fmt.Errorf("downloads: job id %q: %w", job.ID, err)
+	}
+	return m.register(&jobRun{id: id, userID: job.UserID, magnet: magnetFor("", job)}), nil
+}
+
+// resumeTarget picks the state a paused row returns to. Rows with a stored
+// selection replay it into downloading; selection-less rows (packs paused
+// while awaiting_selection) go back to awaiting_selection — resuming them
+// into downloading would strand them there, since Done() only fires for
+// selected bytes and the row could never leave.
+func resumeTarget(job repository.DownloadJob) string {
+	if len(job.SelectedFiles) > 0 {
+		return StateDownloading
+	}
+	return StateAwaitingSelection
+}
+
 // Cancel stops a live job from any non-terminal or paused state, or removes a
 // terminal row outright. deleteFiles additionally drops the engine torrent's
 // data and the job directory.
-func (m *Manager) Cancel(ctx context.Context, jobID, userID uuid.UUID, deleteFiles bool) error {
-	job, err := m.store.GetDownloadJob(ctx, jobID.String())
+func (m *Manager) Cancel(ctx context.Context, jobID, actorUserID string, isAdmin, deleteFiles bool) error {
+	job, err := m.authorized(ctx, jobID, actorUserID, isAdmin)
 	if err != nil {
 		return err
 	}
@@ -335,15 +376,15 @@ func (m *Manager) Cancel(ctx context.Context, jobID, userID uuid.UUID, deleteFil
 		}
 	}
 	if deleteFiles {
-		return removeJobDir(m.cfg.Dir, jobID.String())
+		return removeJobDir(m.cfg.Dir, jobID)
 	}
 	return nil
 }
 
 // SelectFiles records the user's pick for a pack waiting in awaiting_selection
 // and pushes it into the engine; the row then walks on to downloading.
-func (m *Manager) SelectFiles(ctx context.Context, jobID, userID uuid.UUID, indexes []int) (repository.DownloadJob, error) {
-	job, err := m.store.GetDownloadJob(ctx, jobID.String())
+func (m *Manager) SelectFiles(ctx context.Context, jobID, actorUserID string, isAdmin bool, indexes []int) (repository.DownloadJob, error) {
+	job, err := m.authorized(ctx, jobID, actorUserID, isAdmin)
 	if err != nil {
 		return repository.DownloadJob{}, err
 	}
@@ -364,9 +405,9 @@ func (m *Manager) SelectFiles(ctx context.Context, jobID, userID uuid.UUID, inde
 	if err != nil {
 		return repository.DownloadJob{}, err
 	}
-	j := m.lookup(jobID)
-	if j == nil {
-		j = m.register(&jobRun{id: jobID, userID: updated.UserID, magnet: magnetFor("", updated)})
+	j, err := m.runFor(updated)
+	if err != nil {
+		return updated, err
 	}
 	m.launch(j)
 	m.publish(updated)
@@ -375,9 +416,11 @@ func (m *Manager) SelectFiles(ctx context.Context, jobID, userID uuid.UUID, inde
 
 // ── startup ──────────────────────────────────────────────────────────────────
 
-// ResumeFromStore re-drives every non-terminal row after a restart: paused rows
-// resume through the paused->downloading edge, everything else re-enters at its
-// own state. Ready rows are left alone.
+// ResumeFromStore re-drives every non-terminal row after a restart: paused
+// rows are CASed to their selection-aware target first (selection ->
+// downloading, none -> awaiting_selection), everything else re-enters at its
+// own state. Ready rows are left alone. The CAS lives here, not in the drive
+// loop, so no drive generation can ever un-pause a row on its own.
 func (m *Manager) ResumeFromStore(ctx context.Context) error {
 	jobs, err := m.store.ListResumableDownloadJobs(ctx)
 	if err != nil {
@@ -386,6 +429,12 @@ func (m *Manager) ResumeFromStore(ctx context.Context) error {
 	for _, job := range jobs {
 		if isTerminal(job.State) {
 			continue
+		}
+		if job.State == StatePaused {
+			job, err = m.store.TransitionDownloadJob(ctx, job.ID, StatePaused, resumeTarget(job))
+			if err != nil {
+				continue // paused->cancelled or failed raced underneath us
+			}
 		}
 		id, err := uuid.Parse(job.ID)
 		if err != nil {
@@ -492,15 +541,13 @@ func (m *Manager) drive(ctx context.Context, j *jobRun) {
 			}
 			return // terminal: the drive loop's work is done
 
-		case StatePaused:
-			next, ok := m.hop(ctx, j, StatePaused, StateDownloading)
-			if !ok {
-				return
-			}
-			job = next
-
 		default:
-			return // terminal or unknown state
+			// Terminal, paused, or unknown. A paused row leaves paused only
+			// through the explicit resume paths (Resume, ResumeFromStore): a
+			// drive generation that merely observes paused — e.g. one
+			// scheduled after the user's Pause CAS but before its stop — must
+			// not un-pause the job underneath the user.
+			return
 		}
 	}
 }
@@ -536,6 +583,12 @@ func (m *Manager) watch(ctx context.Context, j *jobRun, job repository.DownloadJ
 		case <-h.Done():
 			return true
 		case <-ticker.C:
+			if ctx.Err() != nil {
+				// Superseded generation: a pause (or pause+resume) launched a
+				// new drive loop for this row; never let this stale one write
+				// a progress tick into a row it no longer owns.
+				return false
+			}
 			st := h.Stats()
 			if err := m.store.SetDownloadJobProgress(ctx, j.id.String(), st.BytesDone); err != nil {
 				if errors.Is(err, repository.ErrNotFound) {
@@ -686,12 +739,17 @@ func removeJobDir(root, jobID string) error {
 	return nil
 }
 
+// freeDiskBytesOf is the free-space probe behind statfsFree, swappable so
+// tests can pin the boundary without touching a real filesystem.
+var freeDiskBytesOf = freeDiskBytes
+
 // statfsFree is the production diskFree: the root must keep min bytes of
-// headroom beyond whatever the job itself will occupy.
+// headroom beyond whatever the job itself will occupy. The boundary is
+// inclusive per spec — free >= max(jobSize, 0) + MinFreeBytes passes.
 func statfsFree(path string, min int64) (bool, error) {
-	free, err := freeDiskBytes(path)
+	free, err := freeDiskBytesOf(path)
 	if err != nil {
 		return false, err
 	}
-	return free > min, nil
+	return free >= min, nil
 }
