@@ -177,8 +177,12 @@ func TestSearchMergesByInfoHashAndRanks(t *testing.T) {
 		t.Fatalf("health: %q %q", resp.Data[0].Health, resp.Data[1].Health)
 	}
 	// The run is exactly the two deduped variants: the raw "frieren" never runs beside its
-	// provider-cased variant, and both variant queries actually hit the indexer.
-	if !slices.Equal(resp.QueryUsed, []string{"Sousou no Frieren", "Frieren"}) {
+	// provider-cased variant, and both variant queries actually hit the indexer. The q
+	// stand-in leads the run so the three-query cap can never drop it, so only the set is
+	// pinned, not the order (the sub-queries run concurrently anyway).
+	if len(resp.QueryUsed) != 2 ||
+		!slices.Contains(resp.QueryUsed, "Sousou no Frieren") ||
+		!slices.Contains(resp.QueryUsed, "Frieren") {
 		t.Fatalf("queryUsed must be the deduped variant run: %v", resp.QueryUsed)
 	}
 	if idx.calls() != 2 {
@@ -379,6 +383,74 @@ func TestSearchPropagatesIndexerError(t *testing.T) {
 	_, err := svc.Search(context.Background(), Query{Q: "frieren"})
 	if !errors.Is(err, ErrNotConfigured) {
 		t.Fatalf("indexer errors must propagate unwrapped enough for errors.Is: %v", err)
+	}
+}
+
+// The three-query cap must never truncate away the variant that stands in for q: with four
+// distinct metadata titles and the q-matching one last, the executed run still carries it —
+// otherwise the search would execute neither q nor any case-variant of it.
+func TestSearchTruncationKeepsQueryStandIn(t *testing.T) {
+	idx := &fakeIndexer{results: map[string][]Result{
+		"Frieren": {{InfoHash: "aa", Title: "Frieren 01", Seeders: 5, SizeBytes: 100}},
+	}}
+	svc := newTestServiceMeta(t, idx, &metadata.Metadata{
+		Title: "Sousou no Frieren",
+		AlternateTitles: []string{
+			"Frieren: Beyond Journey's End",
+			"Frieren no Mori",
+			"Frieren", // the q stand-in is the last of four distinct variants
+		},
+	})
+	resp, err := svc.Search(context.Background(), Query{Q: "frieren"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(resp.QueryUsed) != 3 {
+		t.Fatalf("the run stays capped at three: %v", resp.QueryUsed)
+	}
+	if !slices.Contains(resp.QueryUsed, "Frieren") {
+		t.Fatalf("truncation dropped the q stand-in: %v", resp.QueryUsed)
+	}
+	if slices.Contains(resp.QueryUsed, "frieren") {
+		t.Fatalf("the raw q must not run beside its stand-in: %v", resp.QueryUsed)
+	}
+	if idx.calls() != 3 {
+		t.Fatalf("indexer calls: %d", idx.calls())
+	}
+	// The stand-in's rows flow into the page, so the binding is real, not just a label.
+	if resp.Total != 1 || len(resp.Data) != 1 || resp.Data[0].InfoHash != "aa" {
+		t.Fatalf("stand-in results must reach the page: %+v", resp)
+	}
+}
+
+// A search whose indexer returns nothing is still a page: empty non-nil data, total 0, no
+// ids to resolve, and the empty page itself is cached for the next identical call.
+func TestSearchEmptyResults(t *testing.T) {
+	ctx := context.Background()
+	idx := &fakeIndexer{} // no results configured: every query comes back empty
+	svc := newTestServiceMeta(t, idx, nil)
+	resp, err := svc.Search(ctx, Query{Q: "ghost query"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if resp.Data == nil || len(resp.Data) != 0 {
+		t.Fatalf("zero rows must marshal as an empty list, not null: %#v", resp.Data)
+	}
+	if resp.Total != 0 || resp.Cached {
+		t.Fatalf("first empty page: %+v", resp)
+	}
+	if _, ok := svc.Result("no-such-id"); ok {
+		t.Fatal("no ids were minted, so Result must miss")
+	}
+	again, err := svc.Search(ctx, Query{Q: "ghost query"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !again.Cached || idx.calls() != 1 {
+		t.Fatalf("an empty page must still cache: cached=%v calls=%d", again.Cached, idx.calls())
+	}
+	if again.Data == nil || len(again.Data) != 0 {
+		t.Fatalf("cached empty page must keep empty non-nil data: %#v", again.Data)
 	}
 }
 

@@ -133,7 +133,9 @@ func normalizeQuery(q string) string {
 // planQueries builds the concurrent run. Variants come from the metadata catalog (primary
 // title, then alternates); they are deduped case-insensitively, and a variant that is q in
 // provider casing stands in for q instead of running beside it — sending both would spend
-// one of the three calls on the same query. A metadata miss never fails the search.
+// one of the three calls on the same query. The stand-in is moved to the front of the run
+// so the three-query cap can never truncate it away: a long variant list must not leave the
+// user's query unexecuted. A metadata miss never fails the search.
 func (s *Service) planQueries(ctx context.Context, q string) []string {
 	variants := s.titleVariants(ctx, q)
 	seen := make(map[string]bool, len(variants))
@@ -147,6 +149,14 @@ func (s *Service) planQueries(ctx context.Context, q string) []string {
 		unique = append(unique, v)
 	}
 	if seen[strings.ToLower(q)] {
+		// The q-matching variant is the stand-in for q; it must survive the cap, so it
+		// leads the run before truncation.
+		for i, v := range unique {
+			if strings.ToLower(v) == strings.ToLower(q) {
+				unique[0], unique[i] = unique[i], unique[0]
+				break
+			}
+		}
 		// The q slot is freed, so a third variant may use it; the cap stays three.
 		if len(unique) > maxQueries {
 			unique = unique[:maxQueries]

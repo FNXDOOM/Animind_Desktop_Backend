@@ -102,9 +102,11 @@ func parsedRichness(t scanner.TorrentTitle) int {
 }
 
 // rankRows orders a copy of rows by the requested sort; anything unknown, including the
-// empty string, means relevance.
+// empty string, means relevance. The copy is never nil, so a zero-row search page still
+// marshals its data as [] rather than null.
 func rankRows(rows []Result, q, sortBy string) []Result {
-	out := append([]Result(nil), rows...)
+	out := make([]Result, len(rows))
+	copy(out, rows)
 	switch sortBy {
 	case "seeders":
 		sort.SliceStable(out, func(i, j int) bool { return out[i].Seeders > out[j].Seeders })
