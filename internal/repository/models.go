@@ -10,6 +10,11 @@ import (
 // real database failure.
 var ErrNotFound = errors.New("repository: row not found")
 
+// ErrConflict is returned when a compare-and-set update matched no row, for example
+// a download job that left its expected state before the transition ran. Handlers
+// map it to 409.
+var ErrConflict = errors.New("repository: conflicting state")
+
 // User is an account row. IDs are strings rather than uuid types because every
 // client speaks them as JSON strings and every query casts them explicitly; this
 // keeps the transport, storage and log representations identical.
@@ -29,13 +34,14 @@ type User struct {
 
 // PublicUser is the shape returned to clients: no hash, no lock counters.
 type PublicUser struct {
-	ID        string    `json:"id"`
-	Email     string    `json:"email"`
-	Username  string    `json:"username"`
-	AvatarURL *string   `json:"avatar_url"`
-	IsAdmin   bool      `json:"is_admin"`
-	CreatedAt time.Time `json:"created_at"`
-	UpdatedAt time.Time `json:"updated_at"`
+	ID          string    `json:"id"`
+	Email       string    `json:"email"`
+	Username    string    `json:"username"`
+	AvatarURL   *string   `json:"avatar_url"`
+	IsAdmin     bool      `json:"is_admin"`
+	CanDownload bool      `json:"can_download"`
+	CreatedAt   time.Time `json:"created_at"`
+	UpdatedAt   time.Time `json:"updated_at"`
 }
 
 // Public projects a User onto its client-visible form.

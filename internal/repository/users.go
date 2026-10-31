@@ -165,6 +165,19 @@ func (s *Store) SetAdmin(ctx context.Context, userID string, isAdmin bool) error
 	return nil
 }
 
+// SetCanDownload grants or revokes the torrent-download entitlement.
+func (s *Store) SetCanDownload(ctx context.Context, userID string, allowed bool) error {
+	tag, err := s.pool.Exec(ctx, `
+		update animind_users set can_download = $2, updated_at = now() where id = $1::uuid`, userID, allowed)
+	if err != nil {
+		return err
+	}
+	if tag.RowsAffected() == 0 {
+		return ErrNotFound
+	}
+	return nil
+}
+
 // RegisterFailedLogin increments the failure counter and returns whether the account
 // is now locked, so the caller can distinguish "wrong password" from "try later"
 // without a second query.
@@ -208,7 +221,7 @@ func (s *Store) DeleteUser(ctx context.Context, userID string) error {
 // ListUsers returns accounts for the admin panel, newest first.
 func (s *Store) ListUsers(ctx context.Context, limit, offset int) ([]PublicUser, error) {
 	rows, err := s.pool.Query(ctx, `
-		select id::text, email, username, avatar_url, is_admin, created_at, updated_at
+		select id::text, email, username, avatar_url, is_admin, can_download, created_at, updated_at
 		from animind_users
 		order by created_at desc
 		limit $1 offset $2`, limit, offset)
@@ -220,7 +233,7 @@ func (s *Store) ListUsers(ctx context.Context, limit, offset int) ([]PublicUser,
 	out := make([]PublicUser, 0, 32)
 	for rows.Next() {
 		var u PublicUser
-		if err := rows.Scan(&u.ID, &u.Email, &u.Username, &u.AvatarURL, &u.IsAdmin, &u.CreatedAt, &u.UpdatedAt); err != nil {
+		if err := rows.Scan(&u.ID, &u.Email, &u.Username, &u.AvatarURL, &u.IsAdmin, &u.CanDownload, &u.CreatedAt, &u.UpdatedAt); err != nil {
 			return nil, err
 		}
 		out = append(out, u)
