@@ -52,16 +52,33 @@ type AnacrolixEngine struct {
 	jobs map[uuid.UUID]*anacrolixHandle
 }
 
-// NewAnacrolixEngine builds the client. DHT/PEX/UTP come from cfg; port
-// mapping is left off because the operator owns the network posture. The
-// client still binds local TCP/UDP ports even with discovery disabled.
+// NewAnacrolixEngine builds the client. DHT/PEX/UTP come from cfg; UPnP/NAT
+// port mapping is hard-disabled because the engine must never punch holes in
+// the operator's network. The client still binds local TCP/UDP ports even with
+// discovery disabled.
 func NewAnacrolixEngine(cfg config.DownloadsConfig) (*AnacrolixEngine, error) {
+	cli, err := torrent.NewClient(newClientConfig(cfg))
+	if err != nil {
+		return nil, fmt.Errorf("downloads: new client: %w", err)
+	}
+	return &AnacrolixEngine{cfg: cfg, cli: cli, jobs: map[uuid.UUID]*anacrolixHandle{}}, nil
+}
+
+// newClientConfig builds the client configuration. Extracted from
+// NewAnacrolixEngine so tests can assert the config contract without
+// constructing a client (which binds ports). Upstream's torrent.NewClient
+// starts a UPnP/NAT-PMP forwardPort goroutine whenever NoDefaultPortForwarding
+// is false (the default), so it is always set here.
+func newClientConfig(cfg config.DownloadsConfig) *torrent.ClientConfig {
 	cliConf := torrent.NewDefaultClientConfig()
 	cliConf.DataDir = cfg.Dir
 	cliConf.DisableTrackers = false
 	cliConf.NoDHT = !cfg.DHT
 	cliConf.DisablePEX = !cfg.PEX
 	cliConf.DisableUTP = !cfg.UTP
+	// No port mapping: without this upstream launches go cl.forwardPort() and
+	// may add a UPnP/NAT-PMP mapping on the operator's router.
+	cliConf.NoDefaultPortForwarding = true
 	// Empty host = wildcard per socket network: upstream also opens tcp6, and a
 	// literal "0.0.0.0" fails that listen on dual-stack hosts.
 	cliConf.SetListenAddr(":0")
@@ -77,11 +94,7 @@ func NewAnacrolixEngine(cfg config.DownloadsConfig) (*AnacrolixEngine, error) {
 	if cfg.UpKbps != 0 {
 		cliConf.UploadRateLimiter = limiter(cfg.UpKbps)
 	}
-	cli, err := torrent.NewClient(cliConf)
-	if err != nil {
-		return nil, fmt.Errorf("downloads: new client: %w", err)
-	}
-	return &AnacrolixEngine{cfg: cfg, cli: cli, jobs: map[uuid.UUID]*anacrolixHandle{}}, nil
+	return cliConf
 }
 
 // Add resolves the magnet and blocks until metadata is available, the 120s
@@ -95,17 +108,25 @@ func (e *AnacrolixEngine) Add(ctx context.Context, jobID uuid.UUID, magnet strin
 	if err := os.MkdirAll(jobDir, 0o755); err != nil {
 		return nil, fmt.Errorf("downloads: create job dir: %w", err)
 	}
+	// Every failure before the job is registered must remove the placeholder
+	// dir again: the job never started, so nothing may be left on disk under
+	// <Dir>/<jobID>. (The timeout/ctx paths below use abandon for the same.)
 	spec, err := torrent.TorrentSpecFromMagnetUri(magnet)
 	if err != nil {
+		_ = os.Remove(jobDir)
 		return nil, fmt.Errorf("downloads: parse magnet: %w", err)
 	}
 	// Per-job storage root: everything this job writes stays under jobDir.
 	spec.Storage = storage.NewFile(jobDir)
 	t, isNew, err := e.cli.AddTorrentSpec(spec)
 	if err != nil {
+		// Upstream already dropped its own newly-created torrent on this error.
+		_ = os.Remove(jobDir)
 		return nil, fmt.Errorf("downloads: add torrent: %w", err)
 	}
 	if !isNew {
+		// t belongs to the other live job; only the placeholder dir is ours.
+		_ = os.Remove(jobDir)
 		return nil, fmt.Errorf("downloads: infohash %s already active in another job", t.InfoHash().HexString())
 	}
 	select {
@@ -116,6 +137,11 @@ func (e *AnacrolixEngine) Add(ctx context.Context, jobID uuid.UUID, magnet strin
 	case <-ctx.Done():
 		e.abandon(t, jobDir)
 		return nil, ctx.Err()
+	}
+	// Nothing may download before Select: enforce the contract by construction
+	// instead of relying on upstream's initial priorities happening to be none.
+	for _, f := range t.Files() {
+		f.SetPriority(torrent.PiecePriorityNone)
 	}
 	h := newAnacrolixHandle(e, jobID, jobDir, t)
 	e.mu.Lock()

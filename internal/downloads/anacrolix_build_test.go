@@ -3,6 +3,9 @@ package downloads
 import (
 	"context"
 	"errors"
+	"os"
+	"path/filepath"
+	"strings"
 	"testing"
 
 	"github.com/google/uuid"
@@ -30,6 +33,51 @@ func TestAnacrolixEngineConfiguration(t *testing.T) {
 	// An invalid magnet must fail fast, synchronously, without touching the network.
 	if _, err := eng.Add(context.Background(), uuid.New(), "not-a-magnet"); err == nil {
 		t.Fatal("bad magnet must error")
+	}
+}
+
+// TestClientConfigDisablesPortForwarding pins the no-port-mapping constraint
+// on the client config itself: upstream's torrent.NewClient launches its
+// UPnP/NAT-PMP forwardPort goroutine whenever NoDefaultPortForwarding is false
+// (the default), so the adapter must always set it. Asserted via the pure
+// config builder so the test never binds a port.
+func TestClientConfigDisablesPortForwarding(t *testing.T) {
+	cc := newClientConfig(config.DownloadsConfig{
+		Dir: t.TempDir(), MaxFiles: 500, MaxBytesPerJob: 25 << 30,
+		DownKbps: 0, UpKbps: 500, SeedRatio: 0, SeedMinutes: 0,
+		DHT: false, PEX: false, UTP: false,
+	})
+	if !cc.NoDefaultPortForwarding {
+		t.Fatal("NoDefaultPortForwarding must be true: the engine must never run UPnP/NAT port mapping")
+	}
+}
+
+// TestAddParseFailureLeavesNoJobDir pins the symmetric-cleanup contract of Add:
+// a magnet that passes the engine's pattern gate but fails upstream parsing
+// must not leave an empty placeholder job dir behind.
+func TestAddParseFailureLeavesNoJobDir(t *testing.T) {
+	if testing.Short() {
+		t.Skip("needs the real library")
+	}
+	dir := t.TempDir()
+	eng, err := NewAnacrolixEngine(config.DownloadsConfig{
+		Dir: dir, MaxFiles: 500, MaxBytesPerJob: 25 << 30,
+		DownKbps: 0, UpKbps: 500, SeedRatio: 0, SeedMinutes: 0,
+		DHT: false, PEX: false, UTP: false, // no network in unit tests
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer eng.Close()
+	jobID := uuid.New()
+	// 33 infohash chars: accepted by magnetPattern, rejected by upstream's
+	// TorrentSpecFromMagnetUri (only 40-char hex / 32-char base32 parse).
+	magnet := "magnet:?xt=urn:btih:" + strings.Repeat("a", 33)
+	if _, err := eng.Add(context.Background(), jobID, magnet); err == nil {
+		t.Fatal("magnet that upstream cannot parse must error")
+	}
+	if _, err := os.Stat(filepath.Join(dir, jobID.String())); !os.IsNotExist(err) {
+		t.Fatalf("failed Add must not leave a job dir behind, stat err = %v", err)
 	}
 }
 
