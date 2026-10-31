@@ -215,9 +215,10 @@ func (s *Service) IsVideoFile(path string) bool {
 // ListVideoFiles returns every video path in the library, relative to the root in local
 // mode and as an object key in S3 mode.
 //
-// Local mode skips the audio variant cache directory: those are derived artifacts, and
-// indexing them would double the library and create a feedback loop where each scan
-// indexes the previous scan's transcodes.
+// Local mode skips the audio variant cache directory and the .incoming download staging
+// directory: those are derived or incomplete artifacts, and indexing them would double the
+// library and create a feedback loop where each scan indexes the previous scan's transcodes
+// or a torrent's unfinished download.
 func (s *Service) ListVideoFiles(ctx context.Context) ([]string, error) {
 	if s.IsLocal() {
 		return s.listLocalVideoFiles(ctx, s.cfg.Storage.LocalPath, s.cfg.Storage.LocalPath)
@@ -238,7 +239,7 @@ func (s *Service) listLocalVideoFiles(ctx context.Context, root, current string)
 		}
 		name := filepath.Join(current, entry.Name())
 		if entry.IsDir() {
-			if entry.Name() == AudioCacheDirName {
+			if entry.Name() == AudioCacheDirName || entry.Name() == DownloadsDirName {
 				continue
 			}
 			nested, err := s.listLocalVideoFiles(ctx, root, name)
@@ -296,6 +297,10 @@ func (s *Service) listS3VideoFiles(ctx context.Context) ([]string, error) {
 
 // AudioCacheDirName is the hidden directory holding derived audio variants.
 const AudioCacheDirName = ".animind-audio-cache"
+
+// DownloadsDirName is the hidden directory where the download manager stages torrents while
+// they are incomplete; the scanner must never index it.
+const DownloadsDirName = ".incoming"
 
 // SubtitleDirName is the canonical folder name for extracted subtitles.
 const SubtitleDirName = "Subtitles"

@@ -43,6 +43,10 @@ type Metadata struct {
 	Year          *string  `json:"year"`
 	AnilistID     *int     `json:"anilist_id"`
 	Trailer       *Trailer `json:"trailer"`
+	// AlternateTitles carries every other name a provider knows the show by: synonyms plus
+	// the romaji and native titles. The download pipeline matches torrent names against
+	// them, and the scanner's fuzzy title match reads them too.
+	AlternateTitles []string `json:"alternate_titles,omitempty"`
 }
 
 // Service orchestrates the providers and the cache.
@@ -228,7 +232,22 @@ func fromAniList(m *Media) *Metadata {
 	if m.Trailer != nil && m.Trailer.ID != "" {
 		meta.Trailer = &Trailer{ID: m.Trailer.ID, Site: orDefaultString(m.Trailer.Site, "youtube"), Thumbnail: m.Trailer.Thumbnail}
 	}
+	meta.AlternateTitles = dedupeTitles(alternateTitlesFromAniList(m))
 	return meta
+}
+
+// alternateTitlesFromAniList collects the synonyms plus the romaji and native titles; the
+// English title is already the primary Metadata.Title.
+func alternateTitlesFromAniList(m *Media) []string {
+	titles := make([]string, 0, len(m.Synonyms)+2)
+	titles = append(titles, m.Synonyms...)
+	if strings.TrimSpace(m.Title.Romaji) != "" {
+		titles = append(titles, m.Title.Romaji)
+	}
+	if strings.TrimSpace(m.Title.Native) != "" {
+		titles = append(titles, m.Title.Native)
+	}
+	return titles
 }
 
 func fromMAL(a *MALAnime) *Metadata {
@@ -261,7 +280,33 @@ func fromMAL(a *MALAnime) *Metadata {
 		year := itoa(*a.StartSeason.Year)
 		meta.Year = &year
 	}
+	// The English alternative title is already the primary Metadata.Title candidate, so the
+	// alternates are the synonyms plus the native (Japanese) title.
+	alternates := make([]string, 0, len(a.AlternativeTitles.Synonyms)+1)
+	alternates = append(alternates, a.AlternativeTitles.Synonyms...)
+	if native := deref(a.AlternativeTitles.Japanese); strings.TrimSpace(native) != "" {
+		alternates = append(alternates, native)
+	}
+	meta.AlternateTitles = dedupeTitles(alternates)
 	return meta
+}
+
+// dedupeTitles keeps the first occurrence of each non-empty title, preserving provider order.
+func dedupeTitles(titles []string) []string {
+	seen := make(map[string]bool, len(titles))
+	out := make([]string, 0, len(titles))
+	for _, title := range titles {
+		trimmed := strings.TrimSpace(title)
+		if trimmed == "" || seen[trimmed] {
+			continue
+		}
+		seen[trimmed] = true
+		out = append(out, trimmed)
+	}
+	if len(out) == 0 {
+		return nil
+	}
+	return out
 }
 
 // nonWordPattern collapses anything that is not a letter or digit into a single space.

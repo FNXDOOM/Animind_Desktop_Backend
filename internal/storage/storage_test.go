@@ -146,13 +146,21 @@ func TestBucketNamePerMode(t *testing.T) {
 	}
 }
 
-func TestAudioCacheDirIsSkippedByDiscovery(t *testing.T) {
+func TestHiddenDirsAreSkippedByDiscovery(t *testing.T) {
 	service, root := localService(t)
 
 	if err := os.MkdirAll(filepath.Join(root, "Show", ".animind-audio-cache"), 0o755); err != nil {
 		t.Fatal(err)
 	}
 	if err := os.WriteFile(filepath.Join(root, "Show", ".animind-audio-cache", "cached.mkv"), []byte("x"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	// The download manager stages incomplete torrents in .incoming; indexing them would put
+	// partial files in the library and pruning would then delete their rows as missing.
+	if err := os.MkdirAll(filepath.Join(root, "Show", ".incoming"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(root, "Show", ".incoming", "partial.mkv"), []byte("x"), 0o644); err != nil {
 		t.Fatal(err)
 	}
 	if err := os.WriteFile(filepath.Join(root, "Show", "real.mkv"), []byte("x"), 0o644); err != nil {
@@ -164,7 +172,7 @@ func TestAudioCacheDirIsSkippedByDiscovery(t *testing.T) {
 		t.Fatalf("ListVideoFiles: %v", err)
 	}
 	if len(files) != 1 || files[0] != "Show/real.mkv" {
-		t.Errorf("listed %v; the derived audio cache must never be indexed", files)
+		t.Errorf("listed %v; derived caches and .incoming staging must never be indexed", files)
 	}
 }
 

@@ -45,6 +45,7 @@ var (
 	folderReleasePattern  = regexp.MustCompile(`(?i)\s+(\d{3,4}p|BluRay|WEBRip|WEB-DL|HDTV|BDRip|DVDRip|x264|x265|HEVC|AVC|AAC|Opus|FLAC|H\.?264|H\.?265)\b.*`)
 	folderGroupPattern    = regexp.MustCompile(`\s+-\s*\S+\s*$`)
 	trailingGroupPattern  = regexp.MustCompile(`^(.+?)\s*[-–]\s*(\d{1,4})\s*$`)
+	releaseGroupSuffix    = regexp.MustCompile(`[-–]\s*([A-Za-z][A-Za-z0-9]*)\s*$`)
 	bareSeasonEpisode     = regexp.MustCompile(`(?i)^[Ss](\d{1,2})[Ee](\d{1,4})(?:[Vv]\d+)?$`)
 	prefixedSeasonEpisode = regexp.MustCompile(`(?i)^(.+?)\s*(?:[-–]\s*)?[Ss](\d{1,2})[Ee](\d{1,4})(?:[Vv]\d+)?\b`)
 	episodeWordPattern    = regexp.MustCompile(`^(.+?)\s*[Ee]p(?:isode)?\s*(\d{1,4})\s*$`)
@@ -293,4 +294,259 @@ func intPointer(raw string) *int {
 		return nil
 	}
 	return &n
+}
+
+// ref builds a pointer to a value, for optional ReleaseSpec fields.
+func ref[T any](v T) *T { return &v }
+
+// ReleaseSpec is the technical profile of one release name: every field the download
+// pipeline needs to compare a torrent against the library's quality preferences. A field the
+// name never tags stays nil, empty or false — nothing is inferred from neighbours, so
+// "Hi10P" alone is a bit depth and never a video codec.
+type ReleaseSpec struct {
+	Resolution   *int
+	Source       *string
+	VideoCodec   *string
+	BitDepth     *int
+	AudioCodecs  []string
+	DualAudio    bool
+	Subs         *string
+	HDR          bool
+	ReleaseGroup *string
+	IsBatch      bool
+}
+
+// TorrentTitle merges what a torrent name says about its content (show, season, episode
+// span) with its technical profile. EpisodeStart holds a single episode's number or the
+// first episode of a batch; EpisodeEnd is only set for explicit ranges.
+type TorrentTitle struct {
+	Show         string
+	Season       *int
+	EpisodeStart *int
+	EpisodeEnd   *int
+	IsBatch      bool
+	Spec         ReleaseSpec
+}
+
+var (
+	// The frame-rate suffixes ("1080p60", "720p30fps") ride on the same resolution token.
+	resolutionPattern = regexp.MustCompile(`(?i)\b(480|720|1080|2160)p(?:\d{1,2})?(?:fps)?\b`)
+	sourcePattern     = regexp.MustCompile(`(?i)\b(WEB[-. ]?DL|WEBRip|BluRay|BDRip|HDTV|DVD(?:Rip)?)\b`)
+	// "H.264" survives the dot-to-space pass as "H 264", so the separator class admits spaces.
+	videoCodecPattern = regexp.MustCompile(`(?i)\b(x264|h[ .]?264|avc|x265|h[ .]?265|hevc|av1|vp9)\b`)
+	bitDepthPattern   = regexp.MustCompile(`(?i)\b(Hi10P?|10[-. ]?bit|8[-. ]?bit)\b`)
+	// E-AC-3 must precede AC-3 in the alternation or the leading E would detach.
+	audioCodecPattern = regexp.MustCompile(`(?i)\b(E-?AC-?3(?:\.?\d\.\d)?|TrueHD(?:\.?\d\.\d)?|DTS(?:-HD(?: MA)?|:X)?|AAC(?:\.?\d\.\d)?|FLAC|Opus|AC-?3(?:\.?\d\.\d)?|Vorbis|ALAC|MP3|PCM(?:\s\d\.\d)?)\b`)
+	subsPattern       = regexp.MustCompile(`(?i)\b(Multi(?:ple)?[ -]?(?:Sub(?:title)?s?|Audio)|Soft[ -]?Subs?|Hard[ -]?Subs?|Dual[ -]?Audio|No[ -]?Subs?)\b`)
+	hdrPattern        = regexp.MustCompile(`(?i)\b(HDR(?:10\+?)?|Dolby Vision|DV)\b`)
+	episodeRange      = regexp.MustCompile(`(?i)(?:e|ep\.?|\s-\s|\s)(\d{1,4})\s*(?:-|~|–|to)\s*e?(\d{1,4})\b`)
+	batchWord         = regexp.MustCompile(`(?i)\b(batch|complete)\b`)
+)
+
+// trailingTagTokens are the technical tokens a trailing "-Token" suffix may not be read as:
+// without this guard a bracket-less "Show.S01.WEB-DL" would name its release group "DL".
+var trailingTagTokens = map[string]bool{
+	"264": true, "265": true, "8bit": true, "10bit": true, "aac": true, "ac3": true, "av1": true,
+	"avc": true, "bd": true, "bdrip": true, "bluray": true, "batch": true, "dts": true,
+	"dts-hd": true, "dv": true, "dvd": true, "dvdrip": true, "dl": true, "eac3": true,
+	"flac": true, "h264": true, "h265": true, "hd": true, "hdtv": true, "hdr": true,
+	"hdr10": true, "hdr10+": true, "hevc": true, "hybrid": true, "ma": true, "mp3": true,
+	"opus": true, "pcm": true, "repack": true, "remux": true, "truehd": true, "v2": true,
+	"vorbis": true, "web": true, "web-dl": true, "webdl": true, "webrip": true, "x264": true,
+	"x265": true, "alac": true,
+}
+
+// ParseRelease reads the technical tags out of a release name.
+//
+// Tags are matched after the leading "[Group]" marker is removed but while bracketed and
+// parenthesised sections stay intact: release names carry "(1080p)", "[Dual Audio]" and
+// CRC hashes inside those sections, and a full noise strip would delete exactly what this
+// function is asked to read. Dots and underscores become spaces first so dotted names like
+// "Show.1080p.WEB-DL.H.264" tokenize like spaced ones.
+func ParseRelease(raw string) ReleaseSpec {
+	stripped := StripExtension(raw)
+	body, group := stripGroupTag(stripped)
+	loose := whitespacePattern.ReplaceAllString(dotUnderscorePattern.ReplaceAllString(body, " "), " ")
+	denoised := stripTrailingNoise(body)
+
+	spec := ReleaseSpec{}
+	if m := resolutionPattern.FindStringSubmatch(loose); m != nil {
+		if n, err := strconv.Atoi(m[1]); err == nil {
+			spec.Resolution = &n
+		}
+	}
+	if m := sourcePattern.FindStringSubmatch(loose); m != nil {
+		spec.Source = ref(canonicalSource(m[1]))
+	}
+	if m := videoCodecPattern.FindStringSubmatch(loose); m != nil {
+		spec.VideoCodec = ref(canonicalVideoCodec(m[1]))
+	}
+	if m := bitDepthPattern.FindStringSubmatch(loose); m != nil {
+		spec.BitDepth = ref(canonicalBitDepth(m[0]))
+	}
+	for _, m := range audioCodecPattern.FindAllStringSubmatch(loose, -1) {
+		spec.AudioCodecs = append(spec.AudioCodecs, canonicalAudioCodec(m[1]))
+	}
+	spec.AudioCodecs = dedupeCodecs(spec.AudioCodecs)
+	if m := subsPattern.FindStringSubmatch(loose); m != nil {
+		spec.Subs = ref(canonicalSubs(m[0]))
+	}
+	flattened := strings.ReplaceAll(strings.ToLower(loose), "-", " ")
+	spec.DualAudio = strings.Contains(flattened, "dual audio") || strings.Contains(flattened, "multi audio")
+	spec.HDR = hdrPattern.MatchString(loose)
+	if group != "" {
+		spec.ReleaseGroup = ref(group)
+	} else if m := releaseGroupSuffix.FindStringSubmatch(denoised); m != nil && !trailingTagTokens[strings.ToLower(m[1])] {
+		spec.ReleaseGroup = ref(m[1])
+	}
+	spec.IsBatch = batchWord.MatchString(stripped) || episodeRange.MatchString(stripped)
+	return spec
+}
+
+// ParseTorrentTitle resolves a torrent name into its content identity and technical spec.
+// ParseAnimeFilename stays the only source of show, season and episode; the range check
+// runs afterwards because "Show - 01-12" parses as episode 12 there, and a batch's first
+// episode is the more useful reading for the download pipeline.
+func ParseTorrentTitle(raw string) TorrentTitle {
+	stripped := StripExtension(raw)
+	spec := ParseRelease(raw)
+	title := TorrentTitle{Spec: spec, IsBatch: spec.IsBatch}
+	parsed := ParseAnimeFilename(stripped)
+	if parsed == nil {
+		return title
+	}
+	title.Show = parsed.Title
+	title.Season = parsed.Season
+	if parsed.Episode > 0 {
+		episode := int(parsed.Episode)
+		title.EpisodeStart = &episode
+	}
+	if m := episodeRange.FindStringSubmatch(stripped); m != nil {
+		start, startErr := strconv.Atoi(m[1])
+		end, endErr := strconv.Atoi(m[2])
+		if startErr == nil && endErr == nil {
+			title.EpisodeStart = &start
+			title.EpisodeEnd = &end
+			title.IsBatch = true
+		}
+	}
+	return title
+}
+
+func canonicalSource(tag string) string {
+	low := strings.ReplaceAll(strings.ToLower(tag), " ", "")
+	switch low {
+	case "web-dl", "web.dl", "webdl":
+		return "WEB-DL"
+	case "webrip":
+		return "WEBRip"
+	case "bluray":
+		return "BluRay"
+	case "bdrip":
+		return "BDRip"
+	case "hdtv":
+		return "HDTV"
+	case "dvdrip":
+		return "DVDRip"
+	case "dvd":
+		return "DVD"
+	default:
+		return tag
+	}
+}
+
+func canonicalVideoCodec(tag string) string {
+	low := strings.NewReplacer(" ", "", ".", "", "-", "").Replace(strings.ToLower(tag))
+	switch low {
+	case "x264", "h264", "avc":
+		return "AVC"
+	case "x265", "h265", "hevc":
+		return "HEVC"
+	case "av1":
+		return "AV1"
+	case "vp9":
+		return "VP9"
+	default:
+		return tag
+	}
+}
+
+func canonicalBitDepth(tag string) int {
+	if strings.Contains(strings.ToLower(tag), "8") {
+		return 8
+	}
+	return 10
+}
+
+func canonicalAudioCodec(tag string) string {
+	low := strings.ToLower(tag)
+	switch {
+	case strings.HasPrefix(low, "e-ac-3"), strings.HasPrefix(low, "eac-3"), strings.HasPrefix(low, "eac3"):
+		return "E-AC-3"
+	case strings.HasPrefix(low, "truehd"):
+		return "TrueHD"
+	case strings.HasPrefix(low, "dts-hd"):
+		if strings.Contains(low, "ma") {
+			return "DTS-HD MA"
+		}
+		return "DTS-HD"
+	case strings.HasPrefix(low, "dts:x"):
+		return "DTS-X"
+	case strings.HasPrefix(low, "dts"):
+		return "DTS"
+	case strings.HasPrefix(low, "aac"):
+		return "AAC"
+	case strings.HasPrefix(low, "flac"):
+		return "FLAC"
+	case strings.HasPrefix(low, "opus"):
+		return "Opus"
+	case strings.HasPrefix(low, "vorbis"):
+		return "Vorbis"
+	case strings.HasPrefix(low, "alac"):
+		return "ALAC"
+	case strings.HasPrefix(low, "mp3"):
+		return "MP3"
+	case strings.HasPrefix(low, "pcm"):
+		return "PCM"
+	case strings.HasPrefix(low, "ac3"), strings.HasPrefix(low, "ac-3"):
+		return "AC-3"
+	default:
+		return tag
+	}
+}
+
+// canonicalSubs maps a subtitle-tag match to the pipeline's coarse labels. The brief defines
+// "Dual Audio" and "Multi-Audio" as multi-track releases, so they land on "multi" too.
+func canonicalSubs(tag string) string {
+	low := strings.ToLower(tag)
+	switch {
+	case strings.Contains(low, "soft"):
+		return "softsub"
+	case strings.Contains(low, "hard"):
+		return "hardsub"
+	case strings.HasPrefix(low, "no"):
+		return "none"
+	default:
+		return "multi"
+	}
+}
+
+// dedupeCodecs keeps the first spelling of each codec: names often repeat "AAC 2.0 … AAC 5.1".
+func dedupeCodecs(codecs []string) []string {
+	if len(codecs) == 0 {
+		return nil
+	}
+	seen := make(map[string]bool, len(codecs))
+	out := make([]string, 0, len(codecs))
+	for _, codec := range codecs {
+		if codec == "" || seen[codec] {
+			continue
+		}
+		seen[codec] = true
+		out = append(out, codec)
+	}
+	if len(out) == 0 {
+		return nil
+	}
+	return out
 }

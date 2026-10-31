@@ -4,8 +4,11 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"reflect"
 	"strings"
 	"testing"
+
+	"animind-backend-go/internal/cache"
 )
 
 func TestNormalizeTitleKey(t *testing.T) {
@@ -47,7 +50,8 @@ func TestStripHTML(t *testing.T) {
 
 const anilistFixture = `{
   "id": 51140,
-  "title": { "romaji": "Frieren", "english": "Frieren: Beyond Journey's End" },
+  "title": { "romaji": "Sousou no Frieren", "english": "Frieren: Beyond Journey's End", "native": "葬送のフリーレン" },
+  "synonyms": ["Frieren", "Mahoutsukai no Frieren", "Sousou no Frieren", "Frieren"],
   "description": "<p>An elf reviews her life.</p>",
   "coverImage": { "large": "https://cdn.example/large.jpg", "medium": "https://cdn.example/medium.jpg" },
   "episodes": 28,
@@ -101,13 +105,20 @@ func TestFromAniListMapsToLibraryShape(t *testing.T) {
 	if result.Source != "anilist" {
 		t.Errorf("Source = %q", result.Source)
 	}
+	// Romaji, the native title and every distinct synonym must land in AlternateTitles,
+	// deduplicated: the repeated "Frieren" synonym and the romaji that repeats a synonym
+	// each collapse to one entry.
+	wantAlternates := []string{"Frieren", "Mahoutsukai no Frieren", "Sousou no Frieren", "葬送のフリーレン"}
+	if !reflect.DeepEqual(result.AlternateTitles, wantAlternates) {
+		t.Errorf("AlternateTitles = %v, want %v", result.AlternateTitles, wantAlternates)
+	}
 }
 
 const malFixture = `{
   "id": 12345,
   "title": "Frieren: Mahoutsukai no Tabiji",
   "main_picture": { "medium": "https://cdn.example/m.jpg", "large": "https://cdn.example/l.jpg" },
-  "alternative_titles": { "en": "Frieren" },
+  "alternative_titles": { "en": "Frieren", "ja": "葬送のフリーレン", "synonyms": ["Frieren", "Sousou no Frieren", "Frieren"] },
   "synopsis": "An elf reviews her life.",
   "mean": 9.13,
   "num_episodes": 24,
@@ -148,6 +159,25 @@ func TestFromMALFallsBackWithoutAniListID(t *testing.T) {
 	}
 	if result.EpisodeCount == nil || *result.EpisodeCount != 24 {
 		t.Errorf("EpisodeCount = %v", result.EpisodeCount)
+	}
+	// Synonyms plus the native title, deduplicated: the repeated "Frieren" synonym
+	// collapses to one entry.
+	wantAlternates := []string{"Frieren", "Sousou no Frieren", "葬送のフリーレン"}
+	if !reflect.DeepEqual(result.AlternateTitles, wantAlternates) {
+		t.Errorf("AlternateTitles = %v, want %v", result.AlternateTitles, wantAlternates)
+	}
+}
+
+// TestMetadataCacheKeyIsUnchanged pins the cache identity (spec §7.9): alternate titles ride
+// inside the cached payload, but the key stays the normalized title, so entries written
+// before this change and after it address the same slot.
+func TestMetadataCacheKeyIsUnchanged(t *testing.T) {
+	key := NormalizeTitleKey("Frieren: Beyond Journey's End")
+	if key != "frieren beyond journey s end" {
+		t.Fatalf("NormalizeTitleKey = %q, want the documented alphanumeric key", key)
+	}
+	if got := cache.MetadataKey(key); got != "metadata:frieren_beyond_journey_s_end" {
+		t.Errorf("MetadataKey = %q, want metadata:frieren_beyond_journey_s_end", got)
 	}
 }
 

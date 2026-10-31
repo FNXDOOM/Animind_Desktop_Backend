@@ -24,7 +24,8 @@ import (
 const mediaQuery = `query($search: String!) {
   Media(search: $search, type: ANIME, sort: SEARCH_MATCH) {
     id
-    title { romaji english }
+    title { romaji english native }
+    synonyms
     description(asHtml: false)
     coverImage { large medium }
     episodes
@@ -44,8 +45,10 @@ type Media struct {
 	Title struct {
 		Romaji  string  `json:"romaji"`
 		English *string `json:"english"`
+		Native  string  `json:"native"`
 	} `json:"title"`
-	Description *string `json:"description"`
+	Synonyms    []string `json:"synonyms"`
+	Description *string  `json:"description"`
 	CoverImage  struct {
 		Large  *string `json:"large"`
 		Medium *string `json:"medium"`
