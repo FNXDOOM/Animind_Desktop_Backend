@@ -89,15 +89,20 @@ var _ scanRunner = (*scanner.Service)(nil)
 // drive goroutine per live job, startup resume, and hub publications. It never
 // writes download_jobs outside the repository methods on the store seam.
 type Manager struct {
-	store      store
-	engine     Engine
-	cfg        config.DownloadsConfig
-	scanner    scanRunner
-	shows      showResolver // show_id lookups; nil when the store can't answer them
-	hub        eventPublisher
-	diskFree   func(path string, min int64) (bool, error)
-	tick       time.Duration // progress poll interval; tests shorten it
-	scanSettle time.Duration // ErrAlreadyRunning wait before the one scan retry
+	store  store
+	engine Engine
+	cfg    config.DownloadsConfig
+	// libraryRoot is the real library root the importer builds destinations in
+	// and removeImported checks containment against. Task 1 only pins
+	// DOWNLOADS_DIR somewhere under it, so it is threaded, never derived from
+	// cfg.Dir; an empty root fails imports closed.
+	libraryRoot string
+	scanner     scanRunner
+	shows       showResolver // show_id lookups; nil when the store can't answer them
+	hub         eventPublisher
+	diskFree    func(path string, min int64) (bool, error)
+	tick        time.Duration // progress poll interval; tests shorten it
+	scanSettle  time.Duration // ErrAlreadyRunning wait before the one scan retry
 
 	base    context.Context
 	stopAll context.CancelFunc
@@ -106,11 +111,14 @@ type Manager struct {
 	jobs map[string]*jobRun
 }
 
-func NewManager(store *repository.Store, engine Engine, cfg config.DownloadsConfig, scanner scanRunner, hub eventPublisher, diskFree func(path string, min int64) (bool, error)) *Manager {
-	return newManager(dbStore{store}, engine, cfg, scanner, hub, diskFree)
+// NewManager wires the production manager. libraryRoot must be the configured
+// library root (cfg.Storage.LocalPath at wiring time), not anything derived
+// from cfg.Dir: DOWNLOADS_DIR is only guaranteed to live under it.
+func NewManager(store *repository.Store, engine Engine, cfg config.DownloadsConfig, libraryRoot string, scanner scanRunner, hub eventPublisher, diskFree func(path string, min int64) (bool, error)) *Manager {
+	return newManager(dbStore{store}, engine, cfg, libraryRoot, scanner, hub, diskFree)
 }
 
-func newManager(st store, engine Engine, cfg config.DownloadsConfig, scanner scanRunner, hub eventPublisher, diskFree func(path string, min int64) (bool, error)) *Manager {
+func newManager(st store, engine Engine, cfg config.DownloadsConfig, libraryRoot string, scanner scanRunner, hub eventPublisher, diskFree func(path string, min int64) (bool, error)) *Manager {
 	if engine == nil {
 		engine = NewNoopEngine()
 	}
@@ -120,10 +128,10 @@ func newManager(st store, engine Engine, cfg config.DownloadsConfig, scanner sca
 	base, stopAll := context.WithCancel(context.Background())
 	var shows showResolver
 	if r, ok := st.(showResolver); ok {
-		shows = r // dbStore carries *repository.ShowByTitle; fakes may too
+		shows = r // dbStore carries *repository.Store.ShowByTitle; fakes may too
 	}
 	return &Manager{
-		store: st, engine: engine, cfg: cfg, scanner: scanner, shows: shows, hub: hub, diskFree: diskFree,
+		store: st, engine: engine, cfg: cfg, libraryRoot: libraryRoot, scanner: scanner, shows: shows, hub: hub, diskFree: diskFree,
 		tick: 500 * time.Millisecond,
 		base: base, stopAll: stopAll,
 		jobs: map[string]*jobRun{},

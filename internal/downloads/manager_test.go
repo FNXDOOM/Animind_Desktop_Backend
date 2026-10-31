@@ -419,9 +419,11 @@ func testConfig(dir string) config.DownloadsConfig {
 
 func diskOK(string, int64) (bool, error) { return true, nil }
 
-func newTestManager(t *testing.T, eng Engine, st store, cfg config.DownloadsConfig, disk func(string, int64) (bool, error), hub eventPublisher) *Manager {
+// newTestManager threads the library root explicitly, exactly as production
+// wiring must: importing tests pass the directory cfg.Dir lives inside.
+func newTestManager(t *testing.T, eng Engine, st store, cfg config.DownloadsConfig, libRoot string, disk func(string, int64) (bool, error), hub eventPublisher) *Manager {
 	t.Helper()
-	m := newManager(st, eng, cfg, nil, hub, disk)
+	m := newManager(st, eng, cfg, libRoot, nil, hub, disk)
 	m.tick = 5 * time.Millisecond
 	t.Cleanup(m.Close)
 	return m
@@ -518,7 +520,8 @@ func TestCreateQuotaChecksRunInOrder(t *testing.T) {
 
 	t.Run("disk check runs before the size cap", func(t *testing.T) {
 		st := newFakeStore()
-		m := newTestManager(t, newFakeEngine(nil), st, testConfig(t.TempDir()),
+		dir := t.TempDir()
+		m := newTestManager(t, newFakeEngine(nil), st, testConfig(dir), dir,
 			func(string, int64) (bool, error) { return false, nil }, nil)
 		req := reqFor(user, "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", 1<<40) // over the size cap too
 		if _, err := m.Create(ctx, req); !errors.Is(err, ErrDiskFull) {
@@ -531,9 +534,10 @@ func TestCreateQuotaChecksRunInOrder(t *testing.T) {
 
 	t.Run("size cap runs before the active counts", func(t *testing.T) {
 		st := newFakeStore()
-		cfg := testConfig(t.TempDir())
+		dir := t.TempDir()
+		cfg := testConfig(dir)
 		st.seed(repository.DownloadJob{UserID: user.String(), InfoHash: "bbbb", State: StateDownloading})
-		m := newTestManager(t, newFakeEngine(nil), st, cfg, diskOK, nil)
+		m := newTestManager(t, newFakeEngine(nil), st, cfg, dir, diskOK, nil)
 		req := reqFor(user, "bbbb", 1<<40) // over cap AND at the per-user cap and a duplicate
 		if _, err := m.Create(ctx, req); !errors.Is(err, ErrTooLarge) {
 			t.Fatalf("want ErrTooLarge, got %v", err)
@@ -546,7 +550,8 @@ func TestCreateQuotaChecksRunInOrder(t *testing.T) {
 	t.Run("per-user cap runs before the duplicate check", func(t *testing.T) {
 		st := newFakeStore()
 		existing := st.seed(repository.DownloadJob{UserID: user.String(), InfoHash: "cccc", State: StateDownloading})
-		m := newTestManager(t, newFakeEngine(nil), st, testConfig(t.TempDir()), diskOK, nil)
+		dir := t.TempDir()
+		m := newTestManager(t, newFakeEngine(nil), st, testConfig(dir), dir, diskOK, nil)
 		_, err := m.Create(ctx, reqFor(user, "cccc", 10)) // duplicate too
 		if !errors.Is(err, ErrTooManyActive) {
 			t.Fatalf("want ErrTooManyActive, got %v", err)
@@ -558,11 +563,12 @@ func TestCreateQuotaChecksRunInOrder(t *testing.T) {
 
 	t.Run("global cap", func(t *testing.T) {
 		st := newFakeStore()
-		cfg := testConfig(t.TempDir())
+		dir := t.TempDir()
+		cfg := testConfig(dir)
 		cfg.MaxActive, cfg.MaxActivePerUser = 1, 5
 		other := uuid.New()
 		st.seed(repository.DownloadJob{UserID: other.String(), InfoHash: "dddd", State: StateDownloading})
-		m := newTestManager(t, newFakeEngine(nil), st, cfg, diskOK, nil)
+		m := newTestManager(t, newFakeEngine(nil), st, cfg, dir, diskOK, nil)
 		if _, err := m.Create(ctx, reqFor(user, "eeee", 10)); !errors.Is(err, ErrTooManyActive) {
 			t.Fatalf("want ErrTooManyActive, got %v", err)
 		}
@@ -570,10 +576,11 @@ func TestCreateQuotaChecksRunInOrder(t *testing.T) {
 
 	t.Run("duplicate carries the existing job id", func(t *testing.T) {
 		st := newFakeStore()
-		cfg := testConfig(t.TempDir())
+		dir := t.TempDir()
+		cfg := testConfig(dir)
 		cfg.MaxActive, cfg.MaxActivePerUser = 10, 10
 		existing := st.seed(repository.DownloadJob{UserID: user.String(), InfoHash: "ffff", State: StateAwaitingSelection})
-		m := newTestManager(t, newFakeEngine(nil), st, cfg, diskOK, nil)
+		m := newTestManager(t, newFakeEngine(nil), st, cfg, dir, diskOK, nil)
 		_, err := m.Create(ctx, reqFor(user, "ffff", 10))
 		if !errors.Is(err, ErrDuplicate) {
 			t.Fatalf("want ErrDuplicate, got %v", err)
@@ -585,9 +592,10 @@ func TestCreateQuotaChecksRunInOrder(t *testing.T) {
 
 	t.Run("disabled downloads", func(t *testing.T) {
 		st := newFakeStore()
-		cfg := testConfig(t.TempDir())
+		dir := t.TempDir()
+		cfg := testConfig(dir)
 		cfg.Enabled = false
-		m := newTestManager(t, newFakeEngine(nil), st, cfg, diskOK, nil)
+		m := newTestManager(t, newFakeEngine(nil), st, cfg, dir, diskOK, nil)
 		if _, err := m.Create(ctx, reqFor(user, "aaaa", 10)); !errors.Is(err, ErrNotEnabled) {
 			t.Fatalf("want ErrNotEnabled, got %v", err)
 		}
@@ -596,7 +604,7 @@ func TestCreateQuotaChecksRunInOrder(t *testing.T) {
 
 func TestCreateHappyPathWalksTheStates(t *testing.T) {
 	lib := t.TempDir()
-	dir := filepath.Join(lib, ".incoming") // cfg.Dir; its parent is the import library root
+	dir := filepath.Join(lib, ".incoming") // cfg.Dir, nested inside the library root
 	user := uuid.New()
 	id := uuid.New()
 
@@ -612,7 +620,7 @@ func TestCreateHappyPathWalksTheStates(t *testing.T) {
 	st := newFakeStore()
 	st.queueID(id.String())
 	hub := &recordingHub{}
-	m := newTestManager(t, f, st, testConfig(dir), diskOK, hub)
+	m := newTestManager(t, f, st, testConfig(dir), lib, diskOK, hub)
 
 	job, err := m.Create(context.Background(), reqFor(user, "abc123", 1100))
 	if err != nil {
@@ -695,7 +703,7 @@ func TestCreateSingleEpisodeAutoSelects(t *testing.T) {
 	f := newFakeEngine(files)
 	st := newFakeStore()
 	st.queueID(id.String())
-	m := newTestManager(t, f, st, testConfig(dir), diskOK, nil)
+	m := newTestManager(t, f, st, testConfig(dir), lib, diskOK, nil)
 
 	if _, err := m.Create(context.Background(), reqFor(user, "abc123", 550)); err != nil {
 		t.Fatal(err)
@@ -731,7 +739,7 @@ func TestPauseResumeAndCancel(t *testing.T) {
 
 	st := newFakeStore()
 	f := newFakeEngine(map[string][]EngineFile{})
-	m := newTestManager(t, f, st, cfg, diskOK, nil)
+	m := newTestManager(t, f, st, cfg, lib, diskOK, nil)
 
 	id := driveToDownloading(t, m, f, st)
 
@@ -803,7 +811,8 @@ func TestPauseAndResumeGuardTheTable(t *testing.T) {
 	user := uuid.New()
 	ctx := context.Background()
 	st := newFakeStore()
-	m := newTestManager(t, newFakeEngine(nil), st, testConfig(t.TempDir()), diskOK, nil)
+	dir := t.TempDir()
+	m := newTestManager(t, newFakeEngine(nil), st, testConfig(dir), dir, diskOK, nil)
 
 	// importing must not pause: the table forbids importing -> paused
 	importing := st.seed(repository.DownloadJob{UserID: user.String(), InfoHash: "aaa", State: StateImporting})
@@ -832,7 +841,8 @@ func TestManagerActionsEnforceOwnership(t *testing.T) {
 	user, other := uuid.New(), uuid.New()
 	ctx := context.Background()
 	st := newFakeStore()
-	m := newTestManager(t, newFakeEngine(nil), st, testConfig(t.TempDir()), diskOK, nil)
+	dir := t.TempDir()
+	m := newTestManager(t, newFakeEngine(nil), st, testConfig(dir), dir, diskOK, nil)
 
 	downloading := st.seed(repository.DownloadJob{UserID: user.String(), InfoHash: "h1", State: StateDownloading, SelectedFiles: []int{0}})
 	awaiting := st.seed(repository.DownloadJob{UserID: user.String(), InfoHash: "h2", State: StateAwaitingSelection})
@@ -901,7 +911,7 @@ func TestStartupResume(t *testing.T) {
 	st.seed(repository.DownloadJob{ID: pID.String(), UserID: user.String(), InfoHash: "h2", State: StatePaused, ResultTitle: "B", SelectedFiles: []int{0}})
 	st.seed(repository.DownloadJob{ID: rID.String(), UserID: user.String(), InfoHash: "h3", State: StateReady, ResultTitle: "C"})
 
-	m := newTestManager(t, f, st, testConfig(dir), diskOK, nil)
+	m := newTestManager(t, f, st, testConfig(dir), lib, diskOK, nil)
 	if err := m.ResumeFromStore(context.Background()); err != nil {
 		t.Fatal(err)
 	}
@@ -952,7 +962,8 @@ func TestResumeIsSelectionAware(t *testing.T) {
 		f := newFakeEngine(packFiles(id))
 		st := newFakeStore()
 		st.queueID(id.String())
-		m := newTestManager(t, f, st, testConfig(t.TempDir()), diskOK, nil)
+		dir := t.TempDir()
+		m := newTestManager(t, f, st, testConfig(dir), dir, diskOK, nil)
 
 		if _, err := m.Create(ctx, reqFor(user, "pack-1", 1100)); err != nil {
 			t.Fatal(err)
@@ -984,7 +995,8 @@ func TestResumeIsSelectionAware(t *testing.T) {
 		f := newFakeEngine(packFiles(id))
 		st := newFakeStore()
 		st.queueID(id.String())
-		m := newTestManager(t, f, st, testConfig(t.TempDir()), diskOK, nil)
+		dir := t.TempDir()
+		m := newTestManager(t, f, st, testConfig(dir), dir, diskOK, nil)
 
 		if _, err := m.Create(ctx, reqFor(user, "pack-2", 1100)); err != nil {
 			t.Fatal(err)
@@ -1012,7 +1024,8 @@ func TestResumeIsSelectionAware(t *testing.T) {
 		f := newFakeEngine(packFiles(id))
 		st := newFakeStore()
 		st.seed(repository.DownloadJob{ID: id.String(), UserID: user.String(), InfoHash: "pack-3", State: StatePaused, ResultTitle: "Show"})
-		m := newTestManager(t, f, st, testConfig(t.TempDir()), diskOK, nil)
+		dir := t.TempDir()
+		m := newTestManager(t, f, st, testConfig(dir), dir, diskOK, nil)
 
 		if err := m.ResumeFromStore(ctx); err != nil {
 			t.Fatal(err)
@@ -1057,7 +1070,8 @@ func TestMetadataTimeoutFailsTheJob(t *testing.T) {
 	f.addErr[id.String()] = ErrMetadataTimeout
 	st := newFakeStore()
 	st.queueID(id.String())
-	m := newTestManager(t, f, st, testConfig(t.TempDir()), diskOK, nil)
+	dir := t.TempDir()
+	m := newTestManager(t, f, st, testConfig(dir), dir, diskOK, nil)
 
 	// the failure is asynchronous: Create itself answers 201-shaped success
 	if _, err := m.Create(context.Background(), reqFor(user, "abc123", 100)); err != nil {
@@ -1085,7 +1099,8 @@ func TestSynchronousAddFailureFailsTheJob(t *testing.T) {
 	f.addErr[id.String()] = errors.New("downloads: duplicate infohash for an existing torrent")
 	st := newFakeStore()
 	st.queueID(id.String())
-	m := newTestManager(t, f, st, testConfig(t.TempDir()), diskOK, nil)
+	dir := t.TempDir()
+	m := newTestManager(t, f, st, testConfig(dir), dir, diskOK, nil)
 
 	if _, err := m.Create(context.Background(), reqFor(user, "abc123", 100)); err != nil {
 		t.Fatal(err)

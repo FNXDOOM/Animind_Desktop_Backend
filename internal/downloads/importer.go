@@ -31,6 +31,9 @@ var (
 	// errNothingSelected marks an importing row with no files picked; moving
 	// nothing would stamp an empty season folder onto the library.
 	errNothingSelected = errors.New("downloads: no files selected for import")
+	// errNoLibraryRoot marks a manager wired without the real library root:
+	// guessing one from DOWNLOADS_DIR is unsound, so the import refuses.
+	errNoLibraryRoot = errors.New("downloads: library root not configured")
 )
 
 // showResolver answers the two lookups behind show_id resolution: an episode
@@ -109,10 +112,14 @@ func (m *Manager) runScan(ctx context.Context) error {
 // importJob moves the selected files into the library under
 // <library>/<Show>/Season NN, rescans, and records the import result.
 //
-// The library root is DOWNLOADS_DIR's parent: Task 1's containment rule pins
-// DOWNLOADS_DIR inside the library root (config refuses anything else), so the
-// parent directory is the library root by construction.
+// The library root arrives through the constructor: Task 1 only pins
+// DOWNLOADS_DIR somewhere under it (equal or nested both allowed), so the
+// root is never guessed from DOWNLOADS_DIR here — an unconfigured root fails
+// the import instead.
 func (m *Manager) importJob(ctx context.Context, job repository.DownloadJob, files []EngineFile, selected []int) (Imported, error) {
+	if m.libraryRoot == "" {
+		return Imported{}, errNoLibraryRoot
+	}
 	if len(selected) == 0 {
 		return Imported{}, errNothingSelected
 	}
@@ -137,6 +144,16 @@ func (m *Manager) importJob(ctx context.Context, job repository.DownloadJob, fil
 		}
 	}
 
+	// Fail-closed symlink defense, run before anything moves and before any
+	// destination directory is created: every selected source must resolve
+	// inside the job directory, and one escape fails the whole import.
+	jobDir := filepath.Join(m.cfg.Dir, job.ID)
+	for _, f := range moving {
+		if err := ensureSourceInsideJobDir(jobDir, filepath.Join(jobDir, f.Path)); err != nil {
+			return Imported{}, err
+		}
+	}
+
 	parsed := scanner.ParseTorrentTitle(job.ResultTitle)
 	show := parsed.Show
 	if show == "" {
@@ -148,14 +165,14 @@ func (m *Manager) importJob(ctx context.Context, job repository.DownloadJob, fil
 	if showDir == "" || windowsDeviceName(showDir) {
 		return Imported{}, fmt.Errorf("downloads: unusable show title %q", job.ResultTitle)
 	}
-	dest := filepath.Join(filepath.Dir(m.cfg.Dir), showDir, seasonDir(parsed.Season))
+	dest := filepath.Join(m.libraryRoot, showDir, seasonDir(parsed.Season))
 	if err := os.MkdirAll(dest, 0o755); err != nil {
 		return Imported{}, fmt.Errorf("downloads: create destination: %w", err)
 	}
 
 	paths := make([]string, 0, len(moving))
 	for _, f := range moving {
-		src := filepath.Join(m.cfg.Dir, job.ID, f.Path)
+		src := filepath.Join(jobDir, f.Path)
 		dst, err := moveInto(dest, src)
 		if err != nil {
 			return Imported{}, err
@@ -198,13 +215,46 @@ func (m *Manager) resolveShow(ctx context.Context, paths []string, show string) 
 	return &id
 }
 
+// ensureSourceInsideJobDir is the import-time symlink defense: EvalSymlinks
+// resolves every component of src, and the result must stay under the resolved
+// job directory — a symlinked entry pointing outside would otherwise move the
+// link or copy its target's content into the library. Sources that no longer
+// exist are not checked here: moveInto decides whether that is an
+// already-imported resume or a genuine failure.
+func ensureSourceInsideJobDir(jobDir, src string) error {
+	resJobDir, err := filepath.EvalSymlinks(jobDir)
+	if err != nil {
+		if os.IsNotExist(err) {
+			return nil // nothing was downloaded under this job; moveInto reports it
+		}
+		return fmt.Errorf("downloads: resolve job dir: %w", err)
+	}
+	resSrc, err := filepath.EvalSymlinks(src)
+	if err != nil {
+		if os.IsNotExist(err) {
+			return nil // gone: an already-moved resume or a missing file; moveInto decides
+		}
+		return fmt.Errorf("downloads: resolve %s: %w", src, err)
+	}
+	if !withinDir(resJobDir, resSrc) {
+		return fmt.Errorf("%w: %s resolves outside the job directory", errUnsafePath, src)
+	}
+	return nil
+}
+
 // moveInto lands one file inside dstDir without ever overwriting: an existing
-// destination is the spec's import_conflict. Rename first — the download root
-// and the library share a volume by config — falling back to copy+delete for
-// the day they don't share one.
+// destination whose source is still on disk is the spec's import_conflict,
+// while an existing destination whose source is gone is the shape a crash
+// between the final move and SetDownloadJobImportResult leaves behind — the
+// re-driven import treats it as already-imported and succeeds untouched.
+// Rename first — the download root and the library share a volume by config —
+// falling back to copy+delete for the day they don't share one.
 func moveInto(dstDir, src string) (string, error) {
 	dst := filepath.Join(dstDir, filepath.Base(src))
 	if _, err := os.Lstat(dst); err == nil {
+		if _, serr := os.Lstat(src); os.IsNotExist(serr) {
+			return dst, nil // already imported by the attempt the crash interrupted
+		}
 		return "", errImportConflict
 	} else if !os.IsNotExist(err) {
 		return "", fmt.Errorf("downloads: stat destination: %w", err)
@@ -252,13 +302,16 @@ func copyFileContents(dst *os.File, srcPath string) error {
 }
 
 // removeImported deletes exactly the files a job imported — every path must
-// still resolve inside the library root — and rescans once so the pruned
-// episodes leave the catalog (spec §7.5).
+// still resolve inside the library root the constructor was given — and
+// rescans once so the pruned episodes leave the catalog (spec §7.5).
 func (m *Manager) removeImported(ctx context.Context, paths []string) error {
 	if len(paths) == 0 {
 		return nil
 	}
-	root := filepath.Dir(m.cfg.Dir)
+	if m.libraryRoot == "" {
+		return errNoLibraryRoot
+	}
+	root := m.libraryRoot
 	for _, p := range paths {
 		inside, err := containedInLibrary(root, p)
 		if err != nil {
