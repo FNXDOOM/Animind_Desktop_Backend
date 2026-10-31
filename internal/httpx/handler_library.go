@@ -564,6 +564,9 @@ func (s *Server) handleAdminUsers(w http.ResponseWriter, r *http.Request) {
 
 type setAdminRequest struct {
 	IsAdmin bool `json:"is_admin"`
+	// CanDownload is optional: nil leaves the entitlement untouched, so the
+	// legacy {"is_admin": ...} payload keeps its exact old behaviour.
+	CanDownload *bool `json:"can_download"`
 }
 
 func (s *Server) handleAdminSetUserAdmin(w http.ResponseWriter, r *http.Request) {
@@ -586,8 +589,18 @@ func (s *Server) handleAdminSetUserAdmin(w http.ResponseWriter, r *http.Request)
 		s.serverError(w, "Failed to update user.", err)
 		return
 	}
-	// IsAdmin is part of the cached identity, so a promotion or demotion must evict it or
-	// the change lands a minute late.
+	if req.CanDownload != nil {
+		if err := s.store.SetCanDownload(r.Context(), target, *req.CanDownload); err != nil {
+			if errors.Is(err, repository.ErrNotFound) {
+				WriteError(w, http.StatusNotFound, "User not found.")
+				return
+			}
+			s.serverError(w, "Failed to update user.", err)
+			return
+		}
+	}
+	// IsAdmin and can_download are part of the cached identity, so a change must
+	// evict it or the change lands a minute late.
 	s.auth.InvalidateUser(r.Context(), target)
 	WriteJSON(w, http.StatusOK, map[string]bool{"success": true})
 }

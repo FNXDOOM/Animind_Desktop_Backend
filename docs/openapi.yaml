@@ -24,6 +24,7 @@ tags:
   - name: user
   - name: library
   - name: syncplay
+  - name: downloads
   - name: admin
 
 security:
@@ -228,7 +229,7 @@ paths:
         - { name: state, in: query, schema: { type: string } }
         - { name: error, in: query, schema: { type: string } }
       responses:
-        '302': { description: Redirect to the site with ?auth_code, ?auth=failed or ?auth=cancelled }
+        '302': { description: 'Redirect to the site with ?auth_code, ?auth=failed or ?auth=cancelled' }
         '400': { description: Missing code or state }
         '401': { description: State did not verify }
 
@@ -760,13 +761,17 @@ paths:
   /api/admin/users/{id}:
     patch:
       tags: [admin]
-      summary: Grant or revoke admin rights
+      summary: Grant or revoke admin rights and the download entitlement
       parameters: [ { name: id, in: path, required: true, schema: { type: string, format: uuid } } ]
       requestBody:
         required: true
         content:
           application/json:
-            schema: { type: object, required: [is_admin], properties: { is_admin: { type: boolean } } }
+            schema:
+              type: object
+              properties:
+                is_admin: { type: boolean, description: Required unless can_download is sent }
+                can_download: { type: boolean, description: Torrent-download entitlement; omitted leaves it unchanged }
       responses:
         '200': { description: Updated }
         '400': { description: Refused, because it removes the caller's own access }
@@ -841,6 +846,180 @@ paths:
                   DeletedDirs: { type: integer }
                   PrunedEntries: { type: integer }
         '400': { description: Not in local storage mode }
+
+  /api/torrents/search:
+    get:
+      tags: [downloads]
+      summary: Search the configured Torznab indexer
+      description: |
+        Session required. 501 `indexer_not_configured` when no TORZNAB_URL is set, and
+        501 `downloads_unavailable` in s3 storage mode. Results are ranked, deduped by
+        info hash and cached; every row carries an opaque id used to start a download.
+        The wire shape has no magnet field by construction.
+      parameters:
+        - { name: q, in: query, required: true, schema: { type: string, minLength: 2, maxLength: 120 } }
+        - { name: season, in: query, schema: { type: integer } }
+        - { name: episode, in: query, schema: { type: integer } }
+        - { name: resolution, in: query, schema: { type: integer, enum: [480, 720, 1080, 2160] } }
+        - { name: codec, in: query, schema: { type: string } }
+        - { name: minSeeders, in: query, schema: { type: integer, minimum: 0 } }
+        - { name: batch, in: query, schema: { type: string, enum: [any, only, exclude] } }
+        - { name: sort, in: query, schema: { type: string, enum: [relevance, seeders, size, date] } }
+        - { name: limit, in: query, schema: { type: integer, minimum: 1, maximum: 100, default: 50 } }
+      responses:
+        '200':
+          description: Ranked, deduped results
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/TorrentSearchResponse' }
+        '400': { description: Malformed query or filter }
+        '429': { $ref: '#/components/responses/RateLimited' }
+        '501': { description: No indexer configured (indexer_not_configured) or s3 mode (downloads_unavailable) }
+
+  /api/downloads:
+    post:
+      tags: [downloads]
+      summary: Start a download from an opaque search result id
+      description: |
+        Session required plus the `can_download` entitlement (admins exempt). The magnet is
+        resolved server-side and never sent to the client. 501 `downloads_unavailable` in s3
+        mode. The quota counts every non-terminal state plus ready and paused as active.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [resultId]
+              properties:
+                resultId: { type: string, description: The opaque id from a search response }
+      responses:
+        '201':
+          description: Job created
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/DownloadJob' }
+        '400':
+          description: Malformed body, or the torrent exceeds the size cap (job_too_large)
+        '403':
+          description: No entitlement, or the quota is fully used (download_forbidden)
+        '409':
+          description: Same torrent already queued or downloading; body carries existingJobId
+        '410': { description: Search result cache entry expired, code result_expired }
+        '429': { $ref: '#/components/responses/RateLimited' }
+        '507': { description: Not enough free space, code insufficient_disk }
+    get:
+      tags: [downloads]
+      summary: List the caller's download jobs, newest first
+      parameters:
+        - { name: limit, in: query, schema: { type: integer, minimum: 1, maximum: 200, default: 100 } }
+        - { name: all, in: query, schema: { type: boolean, description: Admin-only; lists every account } }
+      responses:
+        '200':
+          description: One page of jobs
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  data: { type: array, items: { $ref: '#/components/schemas/DownloadJob' } }
+        '429': { $ref: '#/components/responses/RateLimited' }
+        '501': { description: s3 storage mode, code downloads_unavailable }
+
+  /api/downloads/events:
+    get:
+      tags: [downloads]
+      summary: Stream job events over SSE
+      description: |
+        Session required. Emits `event: snapshot` frames (last known state per job) on
+        connect, then `event: job` frames, with a comment heartbeat every 15 seconds.
+        Two concurrent streams per user, 100 total; refusal answers 503.
+      responses:
+        '200':
+          description: text/event-stream of JobEvent frames
+          content:
+            text/event-stream:
+              schema: { $ref: '#/components/schemas/JobEvent' }
+        '429': { $ref: '#/components/responses/RateLimited' }
+        '501': { description: s3 storage mode, code downloads_unavailable }
+        '503': { description: Per-user or total stream cap reached }
+
+  /api/downloads/{id}:
+    get:
+      tags: [downloads]
+      summary: One job with per-file progress
+      description: A job owned by another user answers 404, like a missing one.
+      parameters: [ { name: id, in: path, required: true, schema: { type: string, format: uuid } } ]
+      responses:
+        '200':
+          description: The job
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/DownloadJob' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '429': { $ref: '#/components/responses/RateLimited' }
+        '501': { description: s3 storage mode, code downloads_unavailable }
+    patch:
+      tags: [downloads]
+      summary: Pause, resume or select files
+      description: |
+        Owner or admin. `{ "action": "pause"|"resume" }` always; `{ "fileIndexes": [...] }`
+        only while the job is in awaiting_selection (409 otherwise). A bad selection
+        answers 400 `invalid_file_selection`.
+      parameters: [ { name: id, in: path, required: true, schema: { type: string, format: uuid } } ]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                action: { type: string, enum: [pause, resume] }
+                fileIndexes:
+                  type: array
+                  items: { type: integer, minimum: 0 }
+                  description: Torrent file positions; only for awaiting_selection
+      responses:
+        '200':
+          description: Updated job
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/DownloadJob' }
+        '400': { description: No action or selection, or an invalid selection }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '409': { description: The job's state does not allow the action }
+        '429': { $ref: '#/components/responses/RateLimited' }
+    delete:
+      tags: [downloads]
+      summary: Cancel a live job or remove a finished one
+      description: |
+        Owner or admin, and the same `can_download` entitlement as create (admins exempt).
+        `deleteFiles=true` also drops the engine's data and the job directory, then runs a
+        library scan.
+      parameters:
+        - { name: id, in: path, required: true, schema: { type: string, format: uuid } }
+        - { name: deleteFiles, in: query, schema: { type: boolean, default: false } }
+      responses:
+        '200': { description: Cancelled or removed }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '403': { description: No entitlement, code download_forbidden }
+        '429': { $ref: '#/components/responses/RateLimited' }
+
+  /api/search/trending:
+    get:
+      tags: [downloads]
+      summary: Most-recorded normalized search queries of the last seven days
+      description: Session required. Counts are query text only; no user identity is recorded.
+      responses:
+        '200':
+          description: Up to ten queries, most-recorded first
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  data: { type: array, items: { type: string } }
+        '429': { $ref: '#/components/responses/RateLimited' }
 
 components:
   securitySchemes:
@@ -983,8 +1162,101 @@ components:
         currentTime: { type: number }
         isPlaying: { type: boolean }
         participantCount: { type: integer }
+    TorrentSearchResponse:
+      type: object
+      properties:
+        data: { type: array, items: { $ref: '#/components/schemas/TorrentResult' } }
+        total: { type: integer, description: Rows before the limit was applied }
+        cached: { type: boolean }
+        queryUsed: { type: array, items: { type: string } }
+    TorrentResult:
+      type: object
+      description: No magnet field exists on this shape by construction.
+      properties:
+        id: { type: string, description: Opaque id for POST /api/downloads }
+        infoHash: { type: string }
+        title: { type: string, description: Raw release name }
+        sizeBytes: { type: integer, format: int64 }
+        seeders: { type: integer }
+        leechers: { type: integer }
+        grabs: { type: integer }
+        publishedAt: { type: string, format: date-time }
+        indexer: { type: string }
+        category: { type: string, enum: [anime, other] }
+        parsed: { $ref: '#/components/schemas/ParsedTitle' }
+        health: { type: string, enum: [excellent, good, poor, dead] }
+        trusted: { type: boolean }
+    ParsedTitle:
+      type: object
+      properties:
+        show: { type: string }
+        season: { type: integer, nullable: true }
+        episodeStart: { type: integer, nullable: true }
+        episodeEnd: { type: integer, nullable: true }
+        isBatch: { type: boolean }
+        resolution: { type: integer, nullable: true }
+        source: { type: string, nullable: true }
+        videoCodec: { type: string, nullable: true }
+        bitDepth: { type: integer, nullable: true }
+        audioCodecs: { type: array, items: { type: string } }
+        dualAudio: { type: boolean }
+        subs: { type: string, nullable: true }
+        hdr: { type: boolean }
+        releaseGroup: { type: string, nullable: true }
+    DownloadJob:
+      type: object
+      properties:
+        id: { type: string, format: uuid }
+        resultTitle: { type: string }
+        infoHash: { type: string }
+        state:
+          type: string
+          enum: [queued, fetching_metadata, awaiting_selection, downloading, verifying, importing, ready, paused, failed, cancelled]
+        progressBytes: { type: integer, format: int64 }
+        sizeBytes: { type: integer, format: int64 }
+        progressPct: { type: number, minimum: 0, maximum: 100 }
+        downKbps: { type: integer, format: int64 }
+        upKbps: { type: integer, format: int64 }
+        peers: { type: integer }
+        etaSec: { type: integer, format: int64 }
+        error: { type: string, nullable: true, description: metadata_timeout, engine_disabled, no_files, import_conflict or download_failed on failed jobs }
+        showId: { type: string, format: uuid, nullable: true }
+        createdAt: { type: string, format: date-time }
+        updatedAt: { type: string, format: date-time }
+        completedAt: { type: string, format: date-time, nullable: true }
+        files: { type: array, items: { $ref: '#/components/schemas/JobFile' } }
+    JobFile:
+      type: object
+      properties:
+        index: { type: integer }
+        path: { type: string }
+        sizeBytes: { type: integer, format: int64 }
+        selected: { type: boolean }
+        progressBytes: { type: integer, format: int64 }
+    JobEvent:
+      type: object
+      description: One SSE payload about a download job; carries no magnets or paths.
+      properties:
+        id: { type: string, format: uuid }
+        state: { type: string }
+        progress: { type: number, description: Percent 0..100 }
+        bytesDone: { type: integer, format: int64 }
+        sizeBytes: { type: integer, format: int64 }
+        downKbps: { type: integer, format: int64 }
+        upKbps: { type: integer, format: int64 }
+        peers: { type: integer }
+        etaSec: { type: integer, format: int64 }
+        showId: { type: string, format: uuid, nullable: true }
+        error: { type: string, nullable: true }
 
   responses:
+    RateLimited:
+      description: The per-route, per-IP fixed window is exhausted
+      headers:
+        Retry-After: { schema: { type: integer }, description: Seconds until the window resets }
+      content:
+        application/json:
+          schema: { type: object, properties: { error: { type: string }, code: { type: string, enum: [rate_limited] } } }
     Unauthorized:
       description: Missing, invalid or expired credential
       content:

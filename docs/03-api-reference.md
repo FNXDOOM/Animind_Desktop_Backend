@@ -361,12 +361,57 @@ has since ended. The socket protocol is documented in [Watch parties](06-watch-p
 
 ---
 
+## Torrent search and downloads
+
+Every route below requires a session and is only served in local storage mode — in `s3` mode the
+download routes answer 501 `downloads_unavailable`. Limits are per client IP per minute.
+
+| Endpoint | Limit | Notes |
+| --- | --- | --- |
+| `GET /api/torrents/search` | 30 | `q` (2–120 chars, required), `season`, `episode`, `resolution`, `codec`, `minSeeders`, `batch=any\|only\|exclude`, `sort=relevance\|seeders\|size\|date`, `limit ≤ 100` |
+| `POST /api/downloads` | 10 | `{ "resultId": "opaque" }`; needs `can_download` or admin |
+| `GET /api/downloads?limit=&all=` | 120 | own jobs newest first; `all=true` is admin-only and lists every account |
+| `GET /api/downloads/{id}` | 120 | one job with per-file progress; a foreign job is 404, like a missing one |
+| `PATCH /api/downloads/{id}` | 60 | `{ "action": "pause"\|"resume" }` or `{ "fileIndexes": [...] }` while `awaiting_selection` |
+| `DELETE /api/downloads/{id}?deleteFiles=` | 60 | cancel/remove; needs `can_download` or admin; `deleteFiles=true` also drops data and rescans |
+| `GET /api/downloads/events` | 10 | SSE stream: snapshot, live job events, 15 s heartbeat |
+| `GET /api/search/trending` | 60 | top 10 normalized queries of the last 7 days |
+| `PATCH /api/admin/users/{id}` | 60 | admin; body may set `is_admin` and/or `can_download` |
+
+`POST /api/downloads` resolves the opaque search id server-side: the magnet never reaches a
+client. Responses and error codes:
+
+- 201 returns the job: `{ id, resultTitle, infoHash, state, progressBytes, sizeBytes, progressPct,
+  downKbps, upKbps, peers, etaSec, error, showId, createdAt, updatedAt, completedAt,
+  files: [{ index, path, sizeBytes, selected, progressBytes }] }` (camelCase; the REST read
+  merges the live engine view when the job is running in this session).
+- 410 `result_expired` — the search result's cache entry is gone.
+- 403 `download_forbidden` — no `can_download` entitlement, or the quota is already fully used.
+- 409 with `existingJobId` — the same torrent is already queued or downloading; finished and
+  cancelled rows do not count.
+- 400 `job_too_large`, 507 `insufficient_disk`, 501 `downloads_unavailable` /
+  `indexer_not_configured`, 429 on limit refusals.
+- `GET /api/torrents/search` returns `{ data: [{ id, infoHash, title, sizeBytes, seeders,
+  leechers, grabs, publishedAt, indexer, category, parsed: { show, season, episodeStart,
+  episodeEnd, isBatch, resolution, source, videoCodec, bitDepth, audioCodecs, dualAudio, subs,
+  hdr, releaseGroup }, health, trusted }], total, cached, queryUsed }` — no magnet field exists
+  on the wire shape.
+
+SSE frames are `event: snapshot` (one per known job on connect) and `event: job` (live), each
+carrying `{ id, state, progress, bytesDone, sizeBytes, downKbps, upKbps, peers, etaSec, showId,
+error? }`.
+
+The full operational story — setup, quotas, the `.incoming` directory, imports — lives in
+[Downloads](11-downloads.md).
+
+---
+
 ## Administration
 
 | Endpoint | Notes |
 | --- | --- |
-| `GET /api/admin/users?limit=&offset=` | Array of `{ id, email, username, avatar_url, is_admin, created_at, updated_at }`, newest first. Every account appears, including ones that never opened the site. |
-| `PATCH /api/admin/users/{id}` | `{ "is_admin": true|false }`. Refuses self-demotion. |
+| `GET /api/admin/users?limit=&offset=` | Array of `{ id, email, username, avatar_url, is_admin, can_download, created_at, updated_at }`, newest first. Every account appears, including ones that never opened the site. |
+| `PATCH /api/admin/users/{id}` | `{ "is_admin": true\|false }` and/or `{ "can_download": true\|false }` (the torrent-download entitlement). Refuses self-demotion. |
 | `DELETE /api/admin/shows/{id}` | Deletes the show; its episodes cascade. |
 | `POST /api/admin/scan` | Raw scan result: `{ scanned, inserted, updated, removed, errors, durationMs, prunedEpisodes, prunedShows, subtitleFiles }`. |
 | `GET /api/admin/metrics` | Real counts: shows, episodes, users, active watch parties, socket peers/rooms, storage mode, uptime, HLS session stats. |

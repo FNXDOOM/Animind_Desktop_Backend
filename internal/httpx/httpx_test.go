@@ -1,6 +1,8 @@
 package httpx
 
 import (
+	"bytes"
+	"context"
 	"encoding/json"
 	"io"
 	"log/slog"
@@ -9,6 +11,9 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/go-chi/chi/v5"
+
+	"animind-backend-go/internal/auth"
 	"animind-backend-go/internal/config"
 )
 
@@ -75,16 +80,18 @@ func TestRoutesAreRegistered(t *testing.T) {
 			`/api/hls/` + session + `/playlist.m3u8 /api/hls/` + session + `/seg00000.ts ` +
 			`/api/auth/me /api/auth/sessions /api/auth/google/url /api/auth/google/callback ` +
 			`/api/me/watchlist /api/me/progress /api/me/progress/recent /api/me/history /api/me/preferences ` +
+			`/api/torrents/search /api/downloads /api/downloads/` + uuid + ` /api/downloads/events ` +
+			`/api/search/trending ` +
 			`/api/admin/users /api/admin/metrics /api/syncplay/rooms/ABCDE`,
 		http.MethodPost: `/api/anilist /api/webhooks/storage /api/rescan /api/admin/scan /api/admin/library/cleanup ` +
 			`/api/episodes/` + uuid + `/hls-session /api/hls/` + session + `/seek ` +
-			`/api/hls/` + session + `/heartbeat ` +
+			`/api/hls/` + session + `/heartbeat /api/downloads ` +
 			`/api/auth/signup /api/auth/login /api/auth/logout /api/auth/consume-code ` +
 			`/api/auth/password/change /api/auth/password/forgot /api/auth/password/reset ` +
 			`/api/auth/desktop/exchange /api/auth/desktop/refresh /api/auth/desktop/revoke /api/auth/desktop/bridge-token`,
 		http.MethodPut:    `/api/me/watchlist/1 /api/me/progress /api/me/history /api/me/preferences`,
-		http.MethodPatch:  `/api/me /api/me/watchlist/1 /api/admin/users/` + uuid,
-		http.MethodDelete: `/api/me /api/me/watchlist/1 /api/hls/` + session + ` /api/admin/shows/` + uuid + ` /api/auth/sessions/` + uuid,
+		http.MethodPatch:  `/api/me /api/me/watchlist/1 /api/downloads/` + uuid + ` /api/admin/users/` + uuid,
+		http.MethodDelete: `/api/me /api/me/watchlist/1 /api/hls/` + session + ` /api/admin/shows/` + uuid + ` /api/auth/sessions/` + uuid + ` /api/downloads/` + uuid,
 	}
 
 	for method, list := range required {
@@ -135,6 +142,14 @@ func TestProtectedRoutesRejectAnonymous(t *testing.T) {
 		{http.MethodPost, "/api/hls/00000000000000000000000000000000/heartbeat", false},
 		{http.MethodDelete, "/api/hls/00000000000000000000000000000000", false},
 		{http.MethodPost, "/api/rescan", false},
+		{http.MethodGet, "/api/torrents/search", false},
+		{http.MethodPost, "/api/downloads", true},
+		{http.MethodGet, "/api/downloads", false},
+		{http.MethodGet, "/api/downloads/events", false},
+		{http.MethodGet, "/api/downloads/00000000-0000-0000-0000-000000000000", false},
+		{http.MethodPatch, "/api/downloads/00000000-0000-0000-0000-000000000000", true},
+		{http.MethodDelete, "/api/downloads/00000000-0000-0000-0000-000000000000", false},
+		{http.MethodGet, "/api/search/trending", false},
 		{http.MethodGet, "/api/admin/users", false},
 		{http.MethodPost, "/api/admin/scan", false},
 		{http.MethodGet, "/api/admin/metrics", false},
@@ -441,4 +456,77 @@ func assertErrorShape(t *testing.T, body []byte) {
 	if !ok || strings.TrimSpace(value) == "" {
 		t.Errorf("error body must carry a non-empty \"error\" string, got %v", payload)
 	}
+}
+
+// ── Download/torrent handler seams ───────────────────────────────────────────
+//
+// The download handlers run against fakes over the narrow interfaces they
+// consume (torrentServiceAPI, downloadsManagerAPI, downloadsJobStore,
+// downloadEntitlement), so their behaviour is tested without a database. The
+// real wiring is exercised by the route inventory and anonymous-rejection
+// tests above, which run through the full router.
+
+// testServerWith builds a server from a mutated dependency set, so a test can
+// install fakes exactly where production wiring would place the real services.
+func testServerWith(t *testing.T, mutate func(*Deps)) *Server {
+	t.Helper()
+	deps := Deps{Config: testConfig(t), Logger: slog.New(slog.NewTextHandler(io.Discard, nil))}
+	if mutate != nil {
+		mutate(&deps)
+	}
+	server := New(deps)
+	server.httpServer = &http.Server{}
+	return server
+}
+
+// sessionUser is the caller a handler test authenticates as. Handlers read the
+// principal from the request context, so tests mint one directly instead of
+// storing a session row; canDownload feeds the fake entitlement store.
+type sessionUser struct {
+	id          string
+	admin       bool
+	canDownload bool
+}
+
+func user(id string) sessionUser { return sessionUser{id: id} }
+
+func (u sessionUser) withAdmin() sessionUser       { u.admin = true; return u }
+func (u sessionUser) withCanDownload() sessionUser { u.canDownload = true; return u }
+func (u sessionUser) entitlements() fakeEntitlements {
+	return fakeEntitlements{allowed: map[string]bool{u.id: u.canDownload}}
+}
+
+func (u sessionUser) principal() *auth.Principal {
+	return &auth.Principal{
+		UserID: u.id, Email: u.id + "@animind.test", Username: u.id,
+		IsAdmin: u.admin, Kind: "web",
+	}
+}
+
+// callAs invokes one handler with the pieces RequireAuth and chi routing would
+// have produced: a principal on the context and route params from the path.
+// Per-route limits and anonymous rejection are covered through the full router.
+func callAs(t *testing.T, u sessionUser, handler http.HandlerFunc, method, target string, params map[string]string, body any) *httptest.ResponseRecorder {
+	t.Helper()
+	var reader io.Reader
+	if body != nil {
+		raw, err := json.Marshal(body)
+		if err != nil {
+			t.Fatal(err)
+		}
+		reader = bytes.NewReader(raw)
+	}
+	request := httptest.NewRequest(method, target, reader)
+	if body != nil {
+		request.Header.Set("Content-Type", "application/json")
+	}
+	rctx := chi.NewRouteContext()
+	for key, value := range params {
+		rctx.URLParams.Add(key, value)
+	}
+	ctx := context.WithValue(request.Context(), chi.RouteCtxKey, rctx)
+	request = request.WithContext(WithPrincipal(ctx, u.principal()))
+	recorder := httptest.NewRecorder()
+	handler(recorder, request)
+	return recorder
 }

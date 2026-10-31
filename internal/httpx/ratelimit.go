@@ -90,18 +90,24 @@ func mathCeilSeconds(d time.Duration) float64 {
 
 // RateLimitPresets bundles the per-route limiters the API uses.
 type RateLimitPresets struct {
-	PublicRead   *RateLimiter
-	StreamTicket *RateLimiter
-	MediaStream  *RateLimiter
-	HLSSession   *RateLimiter
-	HLSSegment   *RateLimiter
-	Rescan       *RateLimiter
-	Webhook      *RateLimiter
-	Signup       *RateLimiter
-	Login        *RateLimiter
-	Account      *RateLimiter
-	Admin        *RateLimiter
-	UserData     *RateLimiter
+	PublicRead     *RateLimiter
+	StreamTicket   *RateLimiter
+	MediaStream    *RateLimiter
+	HLSSession     *RateLimiter
+	HLSSegment     *RateLimiter
+	Rescan         *RateLimiter
+	Webhook        *RateLimiter
+	Signup         *RateLimiter
+	Login          *RateLimiter
+	Account        *RateLimiter
+	Admin          *RateLimiter
+	UserData       *RateLimiter
+	TorrentSearch  *RateLimiter
+	DownloadCreate *RateLimiter
+	DownloadRead   *RateLimiter
+	DownloadWrite  *RateLimiter
+	DownloadEvents *RateLimiter
+	Trending       *RateLimiter
 
 	// fallback reports local-window verdicts across every bucket, for the metrics endpoint.
 	fallback cache.FallbackCounter
@@ -129,18 +135,27 @@ func NewRateLimitPresets(store cache.Store, logger *slog.Logger) *RateLimitPrese
 		return NewRateLimiter(name, limit, interval, window)
 	}
 	presets := &RateLimitPresets{
-		PublicRead:   newOne("public", 120, time.Minute),
-		StreamTicket: newOne("ticket", 120, time.Minute),
-		MediaStream:  newOne("stream", 600, time.Minute),
-		HLSSession:   newOne("hls-session", 60, time.Minute),
-		HLSSegment:   newOne("hls-segment", 1200, time.Minute),
-		Rescan:       newOne("rescan", 3, time.Minute),
-		Webhook:      newOne("webhook", 30, time.Minute),
-		Signup:       newOne("signup", 10, time.Minute),
-		Login:        newOne("login", 20, time.Minute),
-		Account:      newOne("account", 5, time.Minute),
-		Admin:        newOne("admin", 60, time.Minute),
-		UserData:     newOne("user-data", 240, time.Minute),
+		PublicRead:     newOne("public", 120, time.Minute),
+		StreamTicket:   newOne("ticket", 120, time.Minute),
+		MediaStream:    newOne("stream", 600, time.Minute),
+		HLSSession:     newOne("hls-session", 60, time.Minute),
+		HLSSegment:     newOne("hls-segment", 1200, time.Minute),
+		Rescan:         newOne("rescan", 3, time.Minute),
+		Webhook:        newOne("webhook", 30, time.Minute),
+		Signup:         newOne("signup", 10, time.Minute),
+		Login:          newOne("login", 20, time.Minute),
+		Account:        newOne("account", 5, time.Minute),
+		Admin:          newOne("admin", 60, time.Minute),
+		UserData:       newOne("user-data", 240, time.Minute),
+		TorrentSearch:  newOne("torrent-search", 30, time.Minute),
+		DownloadCreate: newOne("download-create", 10, time.Minute),
+		DownloadRead:   newOne("download-read", 120, time.Minute),
+		DownloadWrite:  newOne("download-write", 60, time.Minute),
+		DownloadEvents: newOne("download-events", 10, time.Minute),
+		// Trending is a cheap in-memory read but gets its own 60/min bucket
+		// rather than UserData's shared 240/min, so a poller cannot spend the
+		// profile-write budget.
+		Trending: newOne("trending", 60, time.Minute),
 	}
 	if resilient, ok := window.(*cache.ResilientLimiter); ok {
 		presets.fallback = resilient

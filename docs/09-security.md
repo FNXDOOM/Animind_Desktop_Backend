@@ -128,6 +128,31 @@ image build context. The container runs as a non-root user with `ProtectSystem=s
    publish 6379. It holds cached identity and every rate-limit window: flush it and the limits
    reset, read it and you can see who is signed in.
 
+## Torrent download surface
+
+The download feature adds its own containment rules, all of which fail closed:
+
+- Every download route is behind `RequireAuth`; create and delete additionally require the
+  `can_download` entitlement (admins exempt), which the admin panel toggles per account.
+- Job ownership comes from the session on every read and write. Another user's job id answers
+  404 exactly like a missing one — the id space cannot be probed.
+- Magnets never leave the process. The search wire shape is built by a marshaler that has no
+  magnet field, and download creation references the opaque result id only; the id is a random
+  22-character value that expires with the search cache. The info hash in a result row cannot
+  authenticate anything.
+- Torznab is operator configuration and is never fetched from a client-supplied URL; the XML
+  decoder is strict and size-bounded, and only `torrent`/`item` elements are consumed.
+- Torrent entry paths are validated before any write: Windows device names and overlong
+  segments are refused outright, traversal paths and non-media extensions are skipped, the file
+  count and per-job size are capped, and free space is checked before the job starts.
+- Imports are containment-checked (source inside the job directory, destination inside the
+  library) and never overwrite an existing file; symlinks are rejected.
+- Cancellation with `deleteFiles=true` removes only the job's own directory and imported files,
+  after re-checking containment.
+- SSE connections are capped (2 per user, 100 total) and events carry state and rates — never
+  magnets or filesystem paths.
+- Logs redact `Authorization` headers, `?st=` tickets, magnets and full file paths.
+
 ## Verification performed
 
 The controls above were exercised, not merely written. Postgres 16 and ffmpeg were both brought

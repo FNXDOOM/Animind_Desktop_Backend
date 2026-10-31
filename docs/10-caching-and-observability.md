@@ -144,6 +144,10 @@ it and compose does not publish it.
 | `animind_db_connections_{total,active,idle,max}` | gauge | | pgx pool, so a queueing request is distinguishable from a slow query |
 | `animind_library_entries` | gauge | `kind` | shows, episodes, users; refreshed at most once a minute |
 | `animind_watchparty_{rooms,peers}` | gauge | | live rooms and sockets |
+| `animind_downloads_active` | gauge | | jobs in a non-terminal state plus ready/paused, from the quota's own count |
+| `animind_downloads_bytes_total` | counter | | bytes completed across all jobs |
+| `animind_downloads_failed_total` | counter | | jobs that left the state machine as failed |
+| `torrent_search_seconds` | histogram | | one /api/torrents/search, indexer fan-out included |
 | `go_*`, `process_*` | | | runtime and CPU |
 
 `route` is the chi pattern (`/api/hls/{sessionId}/{segment}`), read after the handler runs. Label
@@ -156,7 +160,9 @@ the one way a metrics endpoint becomes the outage it is monitoring.
 the Prometheus data source, so `docker compose up` ends with something on screen rather than an
 empty Grafana. Panels: uptime, 5xx rate, credential cache hit ratio, whether state is shared,
 watch parties, library size, requests per second by route, p50/p95 by route, status codes,
-denials against 429s, cache operations, local-window fallbacks, pool, process.
+denials against 429s, cache operations, local-window fallbacks, pool, process. A downloads row
+(active jobs, throughput, failures, search latency) lands together with the download metrics'
+wiring.
 
 Two readings worth knowing:
 

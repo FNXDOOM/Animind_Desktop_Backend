@@ -26,6 +26,7 @@ import (
 	"animind-backend-go/internal/cache"
 	"animind-backend-go/internal/config"
 	"animind-backend-go/internal/database"
+	"animind-backend-go/internal/downloads"
 	"animind-backend-go/internal/httpx"
 	"animind-backend-go/internal/logging"
 	"animind-backend-go/internal/media"
@@ -35,6 +36,7 @@ import (
 	"animind-backend-go/internal/scheduler"
 	"animind-backend-go/internal/storage"
 	"animind-backend-go/internal/syncplay"
+	"animind-backend-go/internal/torrent"
 )
 
 func main() {
@@ -117,19 +119,59 @@ func main() {
 		logger.Info("watch parties enabled", slog.String("path", syncplay.SocketPath))
 	}
 
+	// Torrent downloads share one event hub between the manager's publishes and
+	// the SSE handler's subscriptions; the trending counter is shared the same
+	// way, because a second instance would silently fork the counts. The engine
+	// only exists in local mode; the noop engine keeps the manager's drive loops
+	// harmless everywhere else.
+	eventHub := downloads.NewEventHub()
+	trending := torrent.NewTrending(time.Now)
+
+	var engine downloads.Engine
+	if cfg.Downloads.Enabled {
+		anacrolixEngine, err := downloads.NewAnacrolixEngine(cfg.Downloads)
+		if err != nil {
+			logger.Error("torrent engine is not usable", slog.String("error", err.Error()))
+			os.Exit(1)
+		}
+		engine = anacrolixEngine
+	} else {
+		engine = downloads.NewNoopEngine()
+	}
+	// libraryRoot must be the library root itself: DOWNLOADS_DIR is only
+	// guaranteed to live under it.
+	downloadManager := downloads.NewManager(store, engine, cfg.Downloads, cfg.Storage.LocalPath, scannerService, eventHub, nil)
+	if err := downloadManager.ResumeFromStore(ctx); err != nil {
+		logger.Warn("download resume did not finish; jobs stay as stored",
+			slog.String("error", err.Error()))
+	}
+
+	// Search needs a Torznab endpoint; without one the handler answers 501 and
+	// the service is never constructed, so no half-wired indexer exists.
+	var torrentService *torrent.Service
+	if strings.TrimSpace(cfg.Torrent.URL) != "" {
+		torrentService = torrent.NewService(
+			torrent.NewTorznabIndexer(cfg.Torrent, nil), metadataService, stateCache,
+			cfg.Torrent.CacheTTL, trending)
+	}
+
 	server := httpx.New(httpx.Deps{
-		Config:  cfg,
-		Store:   store,
-		Auth:    authService,
-		Signer:  signer,
-		Cache:   stateCache,
-		Storage: storageService,
-		Media:   ffmpeg,
-		Audio:   audioCache,
-		HLS:     hlsManager,
-		Scanner: scannerService,
-		Hub:     hub,
-		Logger:  logger,
+		Config:    cfg,
+		Store:     store,
+		Auth:      authService,
+		Signer:    signer,
+		Cache:     stateCache,
+		Storage:   storageService,
+		Media:     ffmpeg,
+		Audio:     audioCache,
+		HLS:       hlsManager,
+		Scanner:   scannerService,
+		Hub:       hub,
+		Logger:    logger,
+		Torrent:   torrentService,
+		Downloads: downloadManager,
+		Trending:  trending,
+		EventHub:  eventHub,
 	})
 
 	jobs := scheduler.New(cfg, logger, store, storageService, scannerService, hub, audioCache)
@@ -156,28 +198,38 @@ func main() {
 	case err := <-serverErrors:
 		if err != nil && !errors.Is(err, http.ErrServerClosed) {
 			logger.Error("server stopped", slog.String("error", err.Error()))
-			shutdown(hub, jobs, server, hlsManager, logger)
+			shutdown(hub, jobs, server, hlsManager, downloadManager, engine, logger)
 			os.Exit(1)
 		}
 	case <-ctx.Done():
 		logger.Info("shutdown signal received")
 	}
 
-	shutdown(hub, jobs, server, hlsManager, logger)
+	shutdown(hub, jobs, server, hlsManager, downloadManager, engine, logger)
 }
 
 // shutdown stops accepting work, then releases the resources that hold processes or sockets
 // open, in that order.
-func shutdown(hub *syncplay.Hub, jobs *scheduler.Jobs, server *httpx.Server, hls *media.HLSManager, logger *slog.Logger) {
+func shutdown(hub *syncplay.Hub, jobs *scheduler.Jobs, server *httpx.Server, hls *media.HLSManager, manager *downloads.Manager, engine downloads.Engine, logger *slog.Logger) {
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
 
 	jobs.Stop()
+	if manager != nil {
+		// Stops the drive loops; non-terminal rows survive for the next start.
+		manager.Close()
+	}
 	if hub != nil {
 		hub.CloseAll()
 	}
 	if err := server.Shutdown(ctx); err != nil {
 		logger.Warn("HTTP shutdown did not finish cleanly", slog.String("error", err.Error()))
+	}
+	if engine != nil {
+		// The torrent client holds sockets and per-job storage handles.
+		if err := engine.Close(); err != nil {
+			logger.Warn("torrent engine shutdown did not finish cleanly", slog.String("error", err.Error()))
+		}
 	}
 	if hls != nil {
 		// Every HLS session is an ffmpeg process; killing them is what prevents orphans

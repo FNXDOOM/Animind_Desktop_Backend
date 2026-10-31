@@ -18,11 +18,13 @@ import (
 	"animind-backend-go/internal/auth"
 	"animind-backend-go/internal/cache"
 	"animind-backend-go/internal/config"
+	"animind-backend-go/internal/downloads"
 	"animind-backend-go/internal/media"
 	"animind-backend-go/internal/repository"
 	"animind-backend-go/internal/scanner"
 	"animind-backend-go/internal/storage"
 	"animind-backend-go/internal/syncplay"
+	"animind-backend-go/internal/torrent"
 )
 
 // Server is the assembled HTTP API: routes, middleware and every dependency a handler
@@ -37,7 +39,8 @@ const maxJSONBody = int64(1 << 20)
 
 // Deps are the collaborators the API needs. Every one is required except the optional
 // local-mode services, which answer 400 when their mode is not active, and Cache, whose
-// absence keeps credential and rate-limit state inside this process.
+// absence keeps credential and rate-limit state inside this process. Torrent, Downloads,
+// Trending and EventHub stay nil until the deployment enables them (local storage mode).
 type Deps struct {
 	Config  *config.Config
 	Store   *repository.Store
@@ -51,6 +54,19 @@ type Deps struct {
 	Scanner *scanner.Service
 	Hub     *syncplay.Hub
 	Logger  *slog.Logger
+
+	// Torrent serves /api/torrents/search; nil (or an empty TORZNAB_URL) answers 501.
+	// The narrow interface is what the handlers consume; *torrent.Service is the
+	// production implementation.
+	Torrent torrentServiceAPI
+	// Downloads drives the torrent job state machine; the handlers answer 501 when
+	// downloads are disabled.
+	Downloads *downloads.Manager
+	// Trending is the same counter instance the Torrent service records into — a
+	// second instance would silently fork the counts.
+	Trending *torrent.Trending
+	// EventHub is the same SSE hub the Downloads manager publishes into.
+	EventHub *downloads.Hub
 }
 
 // Server hosts the API.
@@ -69,6 +85,16 @@ type Server struct {
 	limiter   *RateLimitPresets
 	logger    *slog.Logger
 	startedAt time.Time
+
+	// The download surface sits behind narrow interfaces so handler tests can
+	// fake the collaborators without a database. *torrent.Service and
+	// *downloads.Manager satisfy them as-is.
+	torrent      torrentServiceAPI
+	downloads    downloadsManagerAPI
+	eventsHub    *downloads.Hub
+	trending     *torrent.Trending
+	jobStore     downloadsJobStore
+	entitlements downloadEntitlement
 
 	// aniListHTTP is the client used by the GraphQL proxy, with a timeout long enough for a
 	// complex search but short enough to release a worker.
@@ -103,6 +129,14 @@ func New(deps Deps) *Server {
 		logger:      deps.Logger,
 		startedAt:   time.Now(),
 		aniListHTTP: &http.Client{Timeout: 15 * time.Second},
+		torrent:     deps.Torrent,
+		downloads:   deps.Downloads,
+		eventsHub:   deps.EventHub,
+		trending:    deps.Trending,
+	}
+	if deps.Store != nil {
+		s.jobStore = deps.Store
+		s.entitlements = storeEntitlements{store: deps.Store}
 	}
 	if deps.Config.Metrics.Enabled {
 		s.metrics = newMetrics(deps.Cache, deps.Hub, deps.Store, s.limiter.fallback)
@@ -230,6 +264,18 @@ func (s *Server) Router() chi.Router {
 		// Watch party lookup over HTTP, so a client can validate a code before asking the
 		// user to open the matching episode.
 		api.With(s.rate(s.limiter.PublicRead), s.RequireAuth).Get("/syncplay/rooms/{code}", s.handleRoomLookup)
+
+		// Torrent search and downloads. Both are local-storage features: in s3 mode
+		// the handlers answer 501 downloads_unavailable. "events" must be registered
+		// before "{id}" or chi captures it as a job id.
+		api.With(s.rate(s.limiter.TorrentSearch), s.RequireAuth).Get("/torrents/search", s.handleTorrentSearch)
+		api.With(s.rate(s.limiter.DownloadCreate), s.RequireAuth, MaxBody(maxJSONBody)).Post("/downloads", s.handleDownloadCreate)
+		api.With(s.rate(s.limiter.DownloadRead), s.RequireAuth).Get("/downloads", s.handleDownloadList)
+		api.With(s.rate(s.limiter.DownloadEvents), s.RequireAuth).Get("/downloads/events", s.handleDownloadEvents)
+		api.With(s.rate(s.limiter.DownloadRead), s.RequireAuth).Get("/downloads/{id}", s.handleDownloadGet)
+		api.With(s.rate(s.limiter.DownloadWrite), s.RequireAuth, MaxBody(maxJSONBody)).Patch("/downloads/{id}", s.handleDownloadPatch)
+		api.With(s.rate(s.limiter.DownloadWrite), s.RequireAuth).Delete("/downloads/{id}", s.handleDownloadDelete)
+		api.With(s.rate(s.limiter.Trending), s.RequireAuth).Get("/search/trending", s.handleSearchTrending)
 
 		// Administration.
 		api.Route("/admin", func(admin chi.Router) {
