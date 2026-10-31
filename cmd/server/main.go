@@ -146,16 +146,11 @@ func main() {
 			slog.String("error", err.Error()))
 	}
 
-	// Search needs a Torznab endpoint; without one the handler answers 501 and
-	// the service is never constructed, so no half-wired indexer exists.
-	var torrentService *torrent.Service
-	if strings.TrimSpace(cfg.Torrent.URL) != "" {
-		torrentService = torrent.NewService(
-			torrent.NewTorznabIndexer(cfg.Torrent, nil), metadataService, stateCache,
-			cfg.Torrent.CacheTTL, trending)
-	}
+	// Search needs a Torznab endpoint; without one the service is never
+	// constructed and the handler answers 501.
+	torrentService := buildTorrentService(cfg, metadataService, stateCache, trending)
 
-	server := httpx.New(httpx.Deps{
+	deps := httpx.Deps{
 		Config:    cfg,
 		Store:     store,
 		Auth:      authService,
@@ -168,11 +163,16 @@ func main() {
 		Scanner:   scannerService,
 		Hub:       hub,
 		Logger:    logger,
-		Torrent:   torrentService,
 		Downloads: downloadManager,
 		Trending:  trending,
 		EventHub:  eventHub,
-	})
+	}
+	// Only a constructed service may enter the interface: a typed nil
+	// *torrent.Service stored in Deps.Torrent would be non-nil, so the handler's
+	// 501 indexer_not_configured ruling would never fire and search would panic.
+	wireTorrent(&deps, torrentService)
+
+	server := httpx.New(deps)
 
 	jobs := scheduler.New(cfg, logger, store, storageService, scannerService, hub, audioCache)
 	jobs.Start()
@@ -276,4 +276,27 @@ func getenv(key, fallback string) string {
 		return value
 	}
 	return fallback
+}
+
+// buildTorrentService constructs the Torznab-backed search service, or nil when
+// no indexer is configured. A nil answer means "this deployment has no
+// indexer" — the caller must keep it out of the Deps.Torrent interface.
+func buildTorrentService(cfg *config.Config, metadataService *metadata.Service, stateCache cache.Store, trending *torrent.Trending) *torrent.Service {
+	if strings.TrimSpace(cfg.Torrent.URL) == "" {
+		return nil
+	}
+	return torrent.NewService(
+		torrent.NewTorznabIndexer(cfg.Torrent, nil), metadataService, stateCache,
+		cfg.Torrent.CacheTTL, trending)
+}
+
+// wireTorrent places the service in the server deps. The nil check is
+// load-bearing: any *torrent.Service — including a nil one — stored in the
+// Torrent interface is non-nil, so an unconditional assignment would defeat the
+// handler's 501 indexer_not_configured ruling.
+func wireTorrent(deps *httpx.Deps, service *torrent.Service) {
+	if service == nil {
+		return
+	}
+	deps.Torrent = service
 }

@@ -3,6 +3,7 @@ package httpx
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"net/http"
 	"net/http/httptest"
@@ -269,7 +270,6 @@ func TestDownloadCreateAndGuards(t *testing.T) {
 	})
 
 	t.Run("manager sentinels map to their codes", func(t *testing.T) {
-		existing := fmt.Errorf("%w: existing job %s", downloads.ErrDuplicate, otherJobUUID)
 		cases := []struct {
 			name     string
 			err      error
@@ -281,7 +281,10 @@ func TestDownloadCreateAndGuards(t *testing.T) {
 			{"too large", downloads.ErrTooLarge, http.StatusBadRequest, "job_too_large", ""},
 			{"quota", downloads.ErrTooManyActive, http.StatusForbidden, "download_forbidden", ""},
 			{"disabled", downloads.ErrNotEnabled, http.StatusNotImplemented, "downloads_unavailable", ""},
-			{"duplicate", existing, http.StatusConflict, "", otherJobUUID},
+			{"duplicate", &downloads.DuplicateJobError{JobID: otherJobUUID}, http.StatusConflict, "", otherJobUUID},
+			// A wrapped sentinel without the typed id still answers 409; the
+			// payload simply has no job id to offer.
+			{"duplicate without a typed id", fmt.Errorf("wrapped: %w", downloads.ErrDuplicate), http.StatusConflict, "", ""},
 		}
 		for _, tc := range cases {
 			t.Run(tc.name, func(t *testing.T) {
@@ -452,6 +455,27 @@ func TestDownloadListGetPatchDeleteAndSSE(t *testing.T) {
 		fake.selectErr = nil
 		if rec.Code != http.StatusConflict {
 			t.Fatalf("select conflict = %d, want 409", rec.Code)
+		}
+
+		// A selection the torrent cannot honour is the only user-fixable failure:
+		// 400 invalid_file_selection.
+		fake.selectErr = downloads.ErrInvalidSelection
+		rec = callAs(t, caller, srv.handleDownloadPatch, http.MethodPatch,
+			"/api/downloads/"+jobUUID, map[string]string{"id": jobUUID}, map[string]any{"fileIndexes": []int{0}})
+		fake.selectErr = nil
+		if rec.Code != http.StatusBadRequest {
+			t.Fatalf("invalid selection = %d, want 400", rec.Code)
+		}
+		assertCode(t, rec.Body.Bytes(), "invalid_file_selection")
+
+		// A server fault must never wear the 400 selection code: an unknown
+		// failure keeps its 500 class through the shared mapping.
+		fake.selectErr = errors.New("downloads: store unavailable")
+		rec = callAs(t, caller, srv.handleDownloadPatch, http.MethodPatch,
+			"/api/downloads/"+jobUUID, map[string]string{"id": jobUUID}, map[string]any{"fileIndexes": []int{0}})
+		fake.selectErr = nil
+		if rec.Code != http.StatusInternalServerError {
+			t.Fatalf("server fault on select = %d, want 500", rec.Code)
 		}
 
 		// An empty selection is a client error with its own code.
@@ -714,4 +738,114 @@ func canDownloadOf(t *testing.T, store *repository.Store, userID string) bool {
 	}
 	t.Fatalf("user %s not listed", userID)
 	return false
+}
+
+func isAdminOf(t *testing.T, store *repository.Store, userID string) bool {
+	t.Helper()
+	users, err := store.ListUsers(context.Background(), 200, 0)
+	if err != nil {
+		t.Fatalf("list users: %v", err)
+	}
+	for _, u := range users {
+		if u.ID == userID {
+			return u.IsAdmin
+		}
+	}
+	t.Fatalf("user %s not listed", userID)
+	return false
+}
+
+// TestSetAdminRequestShape pins the payload contract the review tightened:
+// is_admin is optional, so a can_download-only PATCH decodes with no is_admin
+// change at all instead of an implied false.
+func TestSetAdminRequestShape(t *testing.T) {
+	var req setAdminRequest
+	if err := json.Unmarshal([]byte(`{"can_download":true}`), &req); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	if req.IsAdmin != nil {
+		t.Fatal("a can_download-only payload must leave IsAdmin nil, not an implied false")
+	}
+	if req.CanDownload == nil || !*req.CanDownload {
+		t.Fatal("can_download must decode")
+	}
+
+	var legacy setAdminRequest
+	if err := json.Unmarshal([]byte(`{"is_admin":false}`), &legacy); err != nil {
+		t.Fatalf("decode legacy: %v", err)
+	}
+	if legacy.IsAdmin == nil || *legacy.IsAdmin {
+		t.Fatal("a legacy is_admin payload must decode as present-and-false")
+	}
+}
+
+// TestAdminPatchIsAdminOptional runs the semantics the optional is_admin buys,
+// through the real store: a can_download-only PATCH must not demote an admin
+// target, an admin may toggle their own can_download, and the legacy
+// {"is_admin": ...} flow keeps its behaviour including the self-demote guard.
+// DB-gated like every suite that writes through the repository.
+func TestAdminPatchIsAdminOptional(t *testing.T) {
+	srv, store, service := sharedHarness(t)
+	ctx := context.Background()
+
+	admin := signUpAccount(t, service)
+	adminID := meUserID(t, srv, admin)
+	if err := store.SetAdmin(ctx, adminID, true); err != nil {
+		t.Fatalf("promote admin: %v", err)
+	}
+
+	t.Run("can_download-only patch leaves is_admin untouched", func(t *testing.T) {
+		target := signUpAccount(t, service)
+		targetID := meUserID(t, srv, target)
+		if err := store.SetAdmin(ctx, targetID, true); err != nil {
+			t.Fatalf("promote target: %v", err)
+		}
+
+		rec := admin.do(t, srv, http.MethodPatch, "/api/admin/users/"+targetID, map[string]any{"can_download": true})
+		if rec.Code != http.StatusOK {
+			t.Fatalf("patch = %d %s", rec.Code, rec.Body.String())
+		}
+		if !isAdminOf(t, store, targetID) {
+			t.Error("a can_download-only PATCH demoted the admin target")
+		}
+		if !canDownloadOf(t, store, targetID) {
+			t.Error("can_download did not persist as true")
+		}
+	})
+
+	t.Run("an admin can toggle their own can_download", func(t *testing.T) {
+		rec := admin.do(t, srv, http.MethodPatch, "/api/admin/users/"+adminID, map[string]any{"can_download": false})
+		if rec.Code != http.StatusOK {
+			t.Fatalf("self patch = %d %s", rec.Code, rec.Body.String())
+		}
+		if canDownloadOf(t, store, adminID) {
+			t.Error("own can_download did not persist as false")
+		}
+		if !isAdminOf(t, store, adminID) {
+			t.Error("toggling own can_download demoted the admin")
+		}
+	})
+
+	t.Run("legacy is_admin flow is unchanged", func(t *testing.T) {
+		target := signUpAccount(t, service)
+		targetID := meUserID(t, srv, target)
+
+		rec := admin.do(t, srv, http.MethodPatch, "/api/admin/users/"+targetID, map[string]any{"is_admin": true})
+		if rec.Code != http.StatusOK {
+			t.Fatalf("promote patch = %d %s", rec.Code, rec.Body.String())
+		}
+		if !isAdminOf(t, store, targetID) {
+			t.Error("legacy is_admin promotion did not persist")
+		}
+
+		// The self-demote guard still fires when the request really changes
+		// is_admin on self.
+		rec = admin.do(t, srv, http.MethodPatch, "/api/admin/users/"+adminID, map[string]any{"is_admin": false})
+		if rec.Code != http.StatusBadRequest {
+			t.Fatalf("self demote = %d, want 400 (body %s)", rec.Code, rec.Body.String())
+		}
+		if !isAdminOf(t, store, adminID) {
+			t.Error("the self-demote guard did not hold the admin flag")
+		}
+	})
 }

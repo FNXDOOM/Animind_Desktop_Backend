@@ -563,9 +563,11 @@ func (s *Server) handleAdminUsers(w http.ResponseWriter, r *http.Request) {
 }
 
 type setAdminRequest struct {
-	IsAdmin bool `json:"is_admin"`
-	// CanDownload is optional: nil leaves the entitlement untouched, so the
+	// IsAdmin is optional: nil leaves the flag untouched, so a
+	// {"can_download": ...}-only PATCH cannot demote an admin target and the
 	// legacy {"is_admin": ...} payload keeps its exact old behaviour.
+	IsAdmin *bool `json:"is_admin"`
+	// CanDownload is optional: nil leaves the entitlement untouched.
 	CanDownload *bool `json:"can_download"`
 }
 
@@ -577,17 +579,21 @@ func (s *Server) handleAdminSetUserAdmin(w http.ResponseWriter, r *http.Request)
 	}
 	target := Param(r, "id")
 	principal := PrincipalFromContext(r.Context())
-	if principal != nil && target == principal.UserID && !req.IsAdmin {
+	// The self-demote guard fires only when this request would actually change
+	// is_admin: toggling can_download on self is legitimate.
+	if principal != nil && target == principal.UserID && req.IsAdmin != nil && !*req.IsAdmin {
 		WriteError(w, http.StatusBadRequest, "You cannot remove your own admin access.")
 		return
 	}
-	if err := s.store.SetAdmin(r.Context(), target, req.IsAdmin); err != nil {
-		if errors.Is(err, repository.ErrNotFound) {
-			WriteError(w, http.StatusNotFound, "User not found.")
+	if req.IsAdmin != nil {
+		if err := s.store.SetAdmin(r.Context(), target, *req.IsAdmin); err != nil {
+			if errors.Is(err, repository.ErrNotFound) {
+				WriteError(w, http.StatusNotFound, "User not found.")
+				return
+			}
+			s.serverError(w, "Failed to update user.", err)
 			return
 		}
-		s.serverError(w, "Failed to update user.", err)
-		return
 	}
 	if req.CanDownload != nil {
 		if err := s.store.SetCanDownload(r.Context(), target, *req.CanDownload); err != nil {

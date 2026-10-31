@@ -7,7 +7,6 @@ import (
 	"fmt"
 	"log/slog"
 	"net/http"
-	"regexp"
 	"time"
 
 	"github.com/google/uuid"
@@ -178,25 +177,20 @@ func (s *Server) writeCreateError(w http.ResponseWriter, err error) {
 		WriteErrorCode(w, http.StatusForbidden, "download_forbidden",
 			"The download quota is already in use. Cancel a job and try again.")
 	case errors.Is(err, downloads.ErrDuplicate):
+		// The typed error carries the existing job's id, so the client can open
+		// it instead of re-adding the same torrent.
+		var dup *downloads.DuplicateJobError
+		jobID := ""
+		if errors.As(err, &dup) {
+			jobID = dup.JobID
+		}
 		WriteJSON(w, http.StatusConflict, map[string]any{
 			"error":         "You already have this torrent queued or downloading.",
-			"existingJobId": existingJobIDFromDuplicate(err),
+			"existingJobId": jobID,
 		})
 	default:
 		s.serverError(w, "Could not start the download.", err)
 	}
-}
-
-// existingJobIDFromDuplicate pulls the job id the manager embeds in
-// ErrDuplicate's text ("downloads: duplicate: existing job <uuid>").
-var duplicateJobIDPattern = regexp.MustCompile(`existing job ([0-9a-fA-F-]{36})`)
-
-func existingJobIDFromDuplicate(err error) string {
-	m := duplicateJobIDPattern.FindStringSubmatch(err.Error())
-	if len(m) < 2 {
-		return ""
-	}
-	return m[1]
 }
 
 // ── List / get ───────────────────────────────────────────────────────────────
@@ -318,10 +312,11 @@ func (s *Server) handleDownloadPatch(w http.ResponseWriter, r *http.Request) {
 		}
 		updated, err := s.downloads.SelectFiles(r.Context(), job.ID, principal.UserID, isAdmin, req.FileIndexes)
 		if err != nil {
-			// The only user-fixable failure here is a selection the torrent
-			// cannot honour; everything else maps through the shared path.
-			if !errors.Is(err, repository.ErrNotFound) && !errors.Is(err, repository.ErrConflict) &&
-				!errors.Is(err, downloads.ErrForbidden) {
+			// A selection the torrent cannot honour is the only user-fixable
+			// failure here and wears 400 invalid_file_selection; everything else
+			// keeps its own class through the shared path, so a server fault
+			// never masquerades as a bad request.
+			if errors.Is(err, downloads.ErrInvalidSelection) {
 				WriteErrorCode(w, http.StatusBadRequest, "invalid_file_selection",
 					"The server could not select those files for this torrent.")
 				return

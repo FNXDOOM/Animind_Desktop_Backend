@@ -770,7 +770,7 @@ paths:
             schema:
               type: object
               properties:
-                is_admin: { type: boolean, description: Required unless can_download is sent }
+                is_admin: { type: boolean, description: Admin flag; omitted leaves it unchanged }
                 can_download: { type: boolean, description: Torrent-download entitlement; omitted leaves it unchanged }
       responses:
         '200': { description: Updated }

@@ -588,6 +588,15 @@ func TestCreateQuotaChecksRunInOrder(t *testing.T) {
 		if !strings.Contains(err.Error(), existing.ID) {
 			t.Fatalf("duplicate error %q must carry the existing job id %s", err.Error(), existing.ID)
 		}
+		// The id must be machine-readable, not regex-scraped from the text: the
+		// HTTP layer reads it through the typed error.
+		var dup *DuplicateJobError
+		if !errors.As(err, &dup) {
+			t.Fatalf("duplicate must be a *DuplicateJobError, got %T", err)
+		}
+		if dup.JobID != existing.ID {
+			t.Fatalf("DuplicateJobError.JobID = %q, want %q", dup.JobID, existing.ID)
+		}
 	})
 
 	t.Run("disabled downloads", func(t *testing.T) {
@@ -714,6 +723,76 @@ func TestCreateSingleEpisodeAutoSelects(t *testing.T) {
 	}
 	close(f.handle(id.String()).done)
 	waitFor(t, "ready", func() bool { return st.get(id.String()).State == StateReady })
+}
+
+// TestSelectFilesValidatesIndexes pins the selection validation the HTTP layer
+// renders as 400 invalid_file_selection: only a selection the torrent cannot
+// honour is ErrInvalidSelection, so a server fault can never wear that code.
+func TestSelectFilesValidatesIndexes(t *testing.T) {
+	user := uuid.New()
+	ctx := context.Background()
+
+	t.Run("malformed selections are refused without a live handle", func(t *testing.T) {
+		cases := []struct {
+			name    string
+			indexes []int
+		}{
+			{"empty selection", []int{}},
+			{"negative index", []int{-1}},
+			{"duplicate indexes", []int{0, 0}},
+		}
+		for _, tc := range cases {
+			t.Run(tc.name, func(t *testing.T) {
+				st := newFakeStore()
+				dir := t.TempDir()
+				id := uuid.New()
+				st.seed(repository.DownloadJob{ID: id.String(), UserID: user.String(), InfoHash: "eeee", State: StateAwaitingSelection})
+				m := newTestManager(t, newFakeEngine(nil), st, testConfig(dir), dir, diskOK, nil)
+
+				if _, err := m.SelectFiles(ctx, id.String(), user.String(), false, tc.indexes); !errors.Is(err, ErrInvalidSelection) {
+					t.Fatalf("want ErrInvalidSelection, got %v", err)
+				}
+				if sel := st.get(id.String()).SelectedFiles; sel != nil {
+					t.Fatalf("rejected selection persisted %v, want the row untouched", sel)
+				}
+			})
+		}
+	})
+
+	t.Run("out-of-range index is refused while the pack waits", func(t *testing.T) {
+		lib := t.TempDir()
+		dir := filepath.Join(lib, ".incoming")
+		id := uuid.New()
+		f := newFakeEngine(map[string][]EngineFile{
+			id.String(): {
+				{Index: 0, Path: "Show - 01.mkv", SizeBytes: 500},
+				{Index: 1, Path: "Show - 02.mkv", SizeBytes: 600},
+			},
+		})
+		st := newFakeStore()
+		st.queueID(id.String())
+		m := newTestManager(t, f, st, testConfig(dir), lib, diskOK, nil)
+		if _, err := m.Create(ctx, reqFor(user, "ab12", 1100)); err != nil {
+			t.Fatal(err)
+		}
+		waitFor(t, "awaiting_selection", func() bool { return st.get(id.String()).State == StateAwaitingSelection })
+
+		for _, indexes := range [][]int{{9}, {0, 9}} {
+			if _, err := m.SelectFiles(ctx, id.String(), user.String(), false, indexes); !errors.Is(err, ErrInvalidSelection) {
+				t.Fatalf("indexes %v: want ErrInvalidSelection, got %v", indexes, err)
+			}
+		}
+		if sel := st.get(id.String()).SelectedFiles; sel != nil {
+			t.Fatalf("rejected selection persisted %v, want the row untouched", sel)
+		}
+		// A valid selection still walks the pack on to downloading afterwards.
+		if _, err := m.SelectFiles(ctx, id.String(), user.String(), false, []int{0}); err != nil {
+			t.Fatalf("valid selection after rejections: %v", err)
+		}
+		if st.get(id.String()).State != StateDownloading {
+			t.Fatalf("state after valid selection = %s, want downloading", st.get(id.String()).State)
+		}
+	})
 }
 
 func TestPauseResumeAndCancel(t *testing.T) {

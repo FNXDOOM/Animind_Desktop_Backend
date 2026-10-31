@@ -37,11 +37,29 @@ var (
 	ErrDiskFull = errors.New("downloads: insufficient_disk")
 	// ErrTooLarge answers the 400 job_too_large class.
 	ErrTooLarge = errors.New("downloads: job_too_large")
-	// ErrDuplicate answers the 409 class; its text carries the existing job id.
+	// ErrDuplicate answers the 409 class; Create returns it as a
+	// *DuplicateJobError, which carries the existing job's id.
 	ErrDuplicate = errors.New("downloads: duplicate")
 	// ErrTooManyActive answers the 403 quota class, global or per user.
 	ErrTooManyActive = errors.New("downloads: too_many_active")
+	// ErrInvalidSelection answers the 400 invalid_file_selection class: the
+	// requested indexes cannot name files of this torrent. Everything else a
+	// selection touches (store, engine) is a server fault and must not wear it.
+	ErrInvalidSelection = errors.New("downloads: invalid_file_selection")
 )
+
+// DuplicateJobError reports a Create refused because the same info hash is
+// already an active job for the user. JobID names the existing job so the HTTP
+// layer can point the client at it without parsing error text.
+type DuplicateJobError struct{ JobID string }
+
+func (e *DuplicateJobError) Error() string {
+	return "downloads: duplicate: existing job " + e.JobID
+}
+
+// Is ties the typed error to the ErrDuplicate sentinel, so errors.Is keeps
+// answering the 409 class for callers that do not need the id.
+func (e *DuplicateJobError) Is(target error) bool { return target == ErrDuplicate }
 
 // Request is one validated download request; httpx resolves ResultID into the
 // magnet and title before calling.
@@ -254,7 +272,7 @@ func (m *Manager) Create(ctx context.Context, req Request) (repository.DownloadJ
 		return repository.DownloadJob{}, fmt.Errorf("downloads: dedupe check: %w", err)
 	}
 	if found {
-		return repository.DownloadJob{}, fmt.Errorf("%w: existing job %s", ErrDuplicate, existing.ID)
+		return repository.DownloadJob{}, &DuplicateJobError{JobID: existing.ID}
 	}
 
 	job, err := m.store.CreateDownloadJob(ctx, repository.DownloadJob{
@@ -412,6 +430,9 @@ func (m *Manager) SelectFiles(ctx context.Context, jobID, actorUserID string, is
 	if job.State != StateAwaitingSelection {
 		return repository.DownloadJob{}, fmt.Errorf("downloads: job %s is %s, not awaiting_selection: %w", job.ID, job.State, repository.ErrConflict)
 	}
+	if err := m.validateSelection(jobID, indexes); err != nil {
+		return repository.DownloadJob{}, err
+	}
 	if _, err := m.store.SetDownloadJobSelection(ctx, job.ID, indexes); err != nil {
 		return repository.DownloadJob{}, err
 	}
@@ -433,6 +454,41 @@ func (m *Manager) SelectFiles(ctx context.Context, jobID, actorUserID string, is
 	m.launch(j)
 	m.publish(updated)
 	return updated, nil
+}
+
+// validateSelection refuses a selection the torrent cannot honour before any
+// state is written: an empty, negative or duplicated index list is malformed,
+// and an index past the torrent's file list is out of range. All of those are
+// ErrInvalidSelection, which the HTTP layer renders as 400
+// invalid_file_selection. The range half needs a live handle, so a selection
+// racing a restart is range-checked by the engine's own Select instead. An
+// engine fault while reading the file list is not a selection problem and is
+// returned wrapped, never as the sentinel.
+func (m *Manager) validateSelection(jobID string, indexes []int) error {
+	if len(indexes) == 0 {
+		return ErrInvalidSelection
+	}
+	seen := make(map[int]bool, len(indexes))
+	for _, i := range indexes {
+		if i < 0 || seen[i] {
+			return ErrInvalidSelection
+		}
+		seen[i] = true
+	}
+	if j := m.lookup(jobID); j != nil {
+		if h := j.currentHandle(); h != nil {
+			files, err := h.Files()
+			if err != nil {
+				return fmt.Errorf("downloads: select files: %w", err)
+			}
+			for _, i := range indexes {
+				if i >= len(files) {
+					return ErrInvalidSelection
+				}
+			}
+		}
+	}
+	return nil
 }
 
 // ── startup ──────────────────────────────────────────────────────────────────
