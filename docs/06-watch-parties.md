@@ -98,10 +98,12 @@ that arrives without attribution reads as a glitch, while one that says who fell
 the group working. A member that opted out of the wait is told how far off it is and never
 steered — that is what the opt-out means.
 
-Every broadcast carries `seq` (the room's monotonic sequence number, assigned at emit time) and
-`serverTime`. A client that orders by arrival alone will apply a stale pause after the play that
-overtook it; the pair makes that detectable, and the desktop client drops anything at or below the
-last sequence number it applied.
+Every room event payload carries `seq` (the room's monotonic sequence number, assigned at emit time)
+and `serverTime`, including private corrections and denials. A client that orders by arrival alone
+will apply a stale pause after the play that overtook it; the pair makes that detectable, and the
+desktop client drops anything at or below the last sequence number it applied. `timesync_pong` is a
+separate timing event: its `serverTime` is the response timestamp used by the four-stamp estimator,
+not a room-event ordering stamp.
 
 ### Scheduled starts
 
@@ -145,7 +147,7 @@ Two independent detectors:
 ## Host roles
 
 Host-only actions are `transferHost` and `changeEpisode`; anything else a participant can do is
-accepted from anyone (dual control, as shipped). Violations answer `syncDenied` with one of three
+accepted from anyone (dual control, as shipped). Violations answer the `syncDenied` event with one of three
 reasons: `Only the current host can transfer control.`, `Target user is not in the room.`,
 `Only the host can change the episode.`
 
@@ -165,7 +167,8 @@ none — `leaveSyncPlay` just calls `disconnect()`. Adding one would require a c
 
 ## Event reference
 
-Client → server (`createRoom` and `joinRoom` are the only two that request an ack):
+Client → server (`createRoom` and `joinRoom` are the only two that request an ack; `syncDenied` is
+an event and never an ack):
 
 | Event | Payload |
 | --- | --- |
