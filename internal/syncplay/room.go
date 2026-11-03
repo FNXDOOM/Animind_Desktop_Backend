@@ -496,12 +496,23 @@ func (h *Hub) goalSecondsLocked(room *Room) float64 {
 
 // stamp gives a payload the room's next sequence number and the hub's clock, taken at emit time
 // so a packet delayed in a channel is not certified as the newer one.
-func (h *Hub) stamp(room *Room, payload stampable) {
+func (room *Room) nextStamp() (int64, int64) {
 	room.mu.Lock()
+	defer room.mu.Unlock()
 	room.seq++
-	seq, sent := room.seq, nowMillis()
-	room.mu.Unlock()
+	return room.seq, nowMillis()
+}
+
+func (h *Hub) stamp(room *Room, payload stampable) {
+	seq, sent := room.nextStamp()
 	payload.stamp(seq, sent)
+}
+
+func (room *Room) denied(reason string) *deniedPayload {
+	seq, sent := room.nextStamp()
+	payload := &deniedPayload{Reason: reason, SentAt: sent}
+	payload.stamp(seq, sent)
+	return payload
 }
 
 func (r *Room) broadcast(h *Hub, event string, payload any, exceptSocketID string) {
@@ -719,10 +730,12 @@ func (h *Hub) handlePlay(p *peer, in inbound, room *Room) {
 
 	if solo {
 		// Nothing to coordinate solo, but the start still arrives as a future instant.
-		p.Emit("syncPlay", &syncPayload{
+		payload := &syncPayload{
 			CurrentTime: currentTime, IsPlaying: true, GroupState: state,
 			SentAt: nowMillis(), ScheduledPlayAt: startAt,
-		})
+		}
+		h.stamp(room, payload)
+		p.Emit("syncPlay", payload)
 		return
 	}
 	room.initiateBufferGate(h, true)
@@ -781,10 +794,12 @@ func (h *Hub) handleSeek(p *peer, in inbound, room *Room) {
 	room.mu.Unlock()
 
 	if participants == 1 {
-		p.Emit("seek", &seekPayload{
+		payload := &seekPayload{
 			Time: req.Time, FromUserID: p.userID, GroupState: state,
 			SentAt: nowMillis(), ScheduledPlayAt: startAt,
-		})
+		}
+		h.stamp(room, payload)
+		p.Emit("seek", payload)
 		return
 	}
 	// In a group a seek is a re-gate whose target the gate announces, so nobody plays the
@@ -1002,9 +1017,7 @@ func (h *Hub) handleTransferHost(p *peer, in inbound, room *Room) {
 	room.mu.Lock()
 	if p.sid != room.hostSocketID {
 		room.mu.Unlock()
-		p.Emit("syncDenied", &deniedPayload{
-			Reason: "Only the current host can transfer control.", SentAt: nowMillis(),
-		})
+		p.Emit("syncDenied", room.denied("Only the current host can transfer control."))
 		return
 	}
 	targetSocketID, targetName := "", ""
@@ -1016,9 +1029,7 @@ func (h *Hub) handleTransferHost(p *peer, in inbound, room *Room) {
 	}
 	if targetSocketID == "" {
 		room.mu.Unlock()
-		p.Emit("syncDenied", &deniedPayload{
-			Reason: "Target user is not in the room.", SentAt: nowMillis(),
-		})
+		p.Emit("syncDenied", room.denied("Target user is not in the room."))
 		return
 	}
 	room.hostSocketID = targetSocketID
@@ -1049,7 +1060,7 @@ func (h *Hub) handleChangeEpisode(p *peer, in inbound, room *Room) {
 	}
 	episodeID := strings.TrimSpace(req.EpisodeID)
 	if episodeID == "" || !h.repo.EpisodeExists(context.Background(), episodeID) {
-		p.Emit("syncDenied", &deniedPayload{Reason: "Episode is not in the library.", SentAt: nowMillis()})
+		p.Emit("syncDenied", room.denied("Episode is not in the library."))
 		return
 	}
 	// Fetched before the lock: an episode lookup must not hold a room's mutex.
@@ -1058,7 +1069,7 @@ func (h *Hub) handleChangeEpisode(p *peer, in inbound, room *Room) {
 	room.mu.Lock()
 	if p.sid != room.hostSocketID {
 		room.mu.Unlock()
-		p.Emit("syncDenied", &deniedPayload{Reason: "Only the host can change the episode.", SentAt: nowMillis()})
+		p.Emit("syncDenied", room.denied("Only the host can change the episode."))
 		return
 	}
 	room.episodeID = episodeID
@@ -1204,6 +1215,7 @@ func (h *Hub) handleRequestSync(p *peer, room *Room) {
 		Config: h.syncConfigPointer(),
 	}
 	room.mu.Unlock()
+	h.stamp(room, &payload)
 	p.Emit("sync", payload)
 }
 
@@ -1496,22 +1508,27 @@ func (h *Hub) checkDrift(p *peer, room *Room, peerTime float64) {
 
 	action, rate, durationMS := decideDrift(peerTime, canonical,
 		h.cfg.SyncPlay.SoftSeekThreshold.Seconds()*1000,
-		h.cfg.SyncPlay.SpeedSyncMaxDrift.Seconds()*1000)
+		h.cfg.SyncPlay.SpeedSyncMaxDrift.Seconds()*1000,
+		h.cfg.SyncPlay.SlowdownRate, h.cfg.SyncPlay.SpeedupRate)
 	driftMS := (peerTime - canonical) * 1000
-	sent := nowMillis()
-
 	switch action {
 	case driftNone:
 		return
 	case driftSoftCorrect:
-		p.Emit("softCorrect", &softCorrectPayload{
+		seq, sent := room.nextStamp()
+		payload := &softCorrectPayload{
 			CurrentTime: canonical, FromUserID: hostUserID, DriftMS: driftMS, SentAt: sent,
-		})
+		}
+		payload.stamp(seq, sent)
+		p.Emit("softCorrect", payload)
 	case driftSpeedSeek:
-		p.Emit("speedSeek", &speedSeekPayload{
+		seq, sent := room.nextStamp()
+		payload := &speedSeekPayload{
 			Rate: rate, DurationMs: durationMS, TargetTime: canonical,
 			FromUserID: hostUserID, DriftMS: driftMS, SentAt: sent,
-		})
+		}
+		payload.stamp(seq, sent)
+		p.Emit("speedSeek", payload)
 	case driftRegate:
 		room.initiateBufferGate(h, true)
 	}
@@ -1542,7 +1559,7 @@ const maxSpeedSeekMS = int64(8000)
 
 // decideDrift classifies one peer against the canonical time. Times are seconds, so drift is
 // converted before the ms thresholds; duration is twice the drift to halve the error at the rate.
-func decideDrift(peerTime, canonicalTime, softThresholdMS, speedThresholdMS float64) (action driftAction, rate float64, durationMS int64) {
+func decideDrift(peerTime, canonicalTime, softThresholdMS, speedThresholdMS, slowdownRate, speedupRate float64) (action driftAction, rate float64, durationMS int64) {
 	driftMS := absFloat(peerTime-canonicalTime) * 1000
 	switch {
 	case driftMS < softThresholdMS:
@@ -1550,9 +1567,9 @@ func decideDrift(peerTime, canonicalTime, softThresholdMS, speedThresholdMS floa
 	case driftMS < softCorrectCeilingMS:
 		return driftSoftCorrect, 0, 0
 	case driftMS < speedThresholdMS:
-		rate = 0.8
+		rate = slowdownRate
 		if peerTime < canonicalTime {
-			rate = 1.5
+			rate = speedupRate
 		}
 		// Rounded rather than truncated: a drift of 0.6s is 1200ms of correction, not 1199.
 		durationMS = int64(math.Round(driftMS * 2))
@@ -1789,7 +1806,11 @@ func (h *Hub) reply(p *peer, in inbound, payload any) {
 	switch body := payload.(type) {
 	case createRoomAckPayload:
 		if !body.Success {
-			p.Emit("syncDenied", &deniedPayload{Reason: body.Error, SentAt: nowMillis()})
+			if room := h.roomFor(p); room != nil {
+				p.Emit("syncDenied", room.denied(body.Error))
+			} else {
+				p.Emit("syncDenied", &deniedPayload{Reason: body.Error, SentAt: nowMillis()})
+			}
 			return
 		}
 		// The whole ack travels, not just the code: a client that never asks for an
@@ -1797,14 +1818,22 @@ func (h *Hub) reply(p *peer, in inbound, payload any) {
 		p.Emit("roomCreated", body)
 	case joinAckPayload:
 		if !body.Success {
-			p.Emit("syncDenied", &deniedPayload{Reason: body.Error, SentAt: nowMillis()})
+			if room := h.roomFor(p); room != nil {
+				p.Emit("syncDenied", room.denied(body.Error))
+			} else {
+				p.Emit("syncDenied", &deniedPayload{Reason: body.Error, SentAt: nowMillis()})
+			}
 			return
 		}
 		p.Emit("roomJoined", body)
 	default:
-		p.Emit("syncDenied", &deniedPayload{
-			Reason: fmt.Sprintf("unhandled reply %T", body), SentAt: nowMillis(),
-		})
+		if room := h.roomFor(p); room != nil {
+			p.Emit("syncDenied", room.denied(fmt.Sprintf("unhandled reply %T", body)))
+		} else {
+			p.Emit("syncDenied", &deniedPayload{
+				Reason: fmt.Sprintf("unhandled reply %T", body), SentAt: nowMillis(),
+			})
+		}
 	}
 }
 

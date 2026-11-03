@@ -30,8 +30,8 @@ func defaultSyncPlay() config.SyncPlayConfig {
 		StartLeadCeiling:       4 * time.Second,
 		MaxReportedPing:        10 * time.Second,
 		MaxParticipants:        12,
-		SlowdownRate:           0.95,
-		SpeedupRate:            1.05,
+		SlowdownRate:           0.80,
+		SpeedupRate:            1.50,
 		CorrectionEngageDrift:  1500 * time.Millisecond,
 		CorrectionReleaseDrift: 100 * time.Millisecond,
 		FastForwardDrift:       5 * time.Second,
@@ -324,7 +324,7 @@ func TestSyncConfigReachesAClient(t *testing.T) {
 	if cfg.Gate.WaitDeadlineMs != 30000 {
 		t.Errorf("the wait deadline did not reach the client: %d", cfg.Gate.WaitDeadlineMs)
 	}
-	if cfg.Correction.SlowdownRate != 0.95 || cfg.Start.LeadMinMs != 500 {
+	if cfg.Correction.SlowdownRate != 0.80 || cfg.Start.LeadMinMs != 500 {
 		t.Errorf("thresholds are missing from the tuning block: %+v %+v", cfg.Correction, cfg.Start)
 	}
 	found := false
@@ -364,6 +364,42 @@ func TestBroadcastStampsMonotonicSeq(t *testing.T) {
 	}
 	if int64(b["serverTime"].(float64)) == 0 {
 		t.Fatal("broadcasts must carry the hub's clock for ordering")
+	}
+}
+
+func TestPrivateCorrectionAndDenialCarryRoomStamps(t *testing.T) {
+	h := newMemHub(t, nil)
+	room, peers := roomWith(h, "PRIV1", "host", "member")
+	member := record(t, peers[1])
+	room.mu.Lock()
+	room.isPlaying = true
+	room.currentTime = 100
+	room.mu.Unlock()
+
+	h.checkDrift(peers[1], room, 100.6)
+	correctionRaw, ok := member.waitFor("speedSeek", time.Second)
+	if !ok {
+		t.Fatal("no private speedSeek delivered")
+	}
+	correction := decode[map[string]any](t, correctionRaw)
+	if correction["seq"].(float64) <= 0 {
+		t.Fatal("private speedSeek must carry a room sequence")
+	}
+	if correction["serverTime"].(float64) != correction["sentAt"].(float64) {
+		t.Fatalf("private correction clocks differ: serverTime=%v sentAt=%v", correction["serverTime"], correction["sentAt"])
+	}
+
+	h.handleTransferHost(peers[1], inbound{Args: emit(t, transferHostRequest{TargetUserID: peers[0].userID})}, room)
+	deniedRaw, ok := member.waitFor("syncDenied", time.Second)
+	if !ok {
+		t.Fatal("no private syncDenied delivered")
+	}
+	denied := decode[map[string]any](t, deniedRaw)
+	if denied["seq"].(float64) <= correction["seq"].(float64) {
+		t.Fatalf("private denial seq %v must follow correction seq %v", denied["seq"], correction["seq"])
+	}
+	if denied["serverTime"].(float64) != denied["sentAt"].(float64) {
+		t.Fatalf("private denial clocks differ: serverTime=%v sentAt=%v", denied["serverTime"], denied["sentAt"])
 	}
 }
 

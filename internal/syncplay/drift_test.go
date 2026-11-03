@@ -14,6 +14,8 @@ func TestDecideDriftLadder(t *testing.T) {
 		soft   = 200.0   // SYNCPLAY_SOFT_SEEK_THRESHOLD_MS
 		speed  = 10000.0 // SYNCPLAY_SPEED_SYNC_MAX_MS
 		master = 100.0
+		slow   = 0.8
+		fast   = 1.5
 	)
 
 	cases := []struct {
@@ -35,7 +37,7 @@ func TestDecideDriftLadder(t *testing.T) {
 	}
 
 	for _, tc := range cases {
-		action, rate, duration := decideDrift(tc.peerTime, master, soft, speed)
+		action, rate, duration := decideDrift(tc.peerTime, master, soft, speed, slow, fast)
 		if action != tc.wantAction {
 			t.Errorf("%s: action = %d, want %d", tc.name, action, tc.wantAction)
 			continue
@@ -51,11 +53,22 @@ func TestDecideDriftLadder(t *testing.T) {
 	}
 }
 
+func TestDecideDriftUsesConfiguredRates(t *testing.T) {
+	_, slow, _ := decideDrift(100.6, 100, 200, 10000, 0.91, 1.27)
+	if slow != 0.91 {
+		t.Fatalf("ahead correction rate = %v, want configured slowdown 0.91", slow)
+	}
+	_, fast, _ := decideDrift(99.4, 100, 200, 10000, 0.91, 1.27)
+	if fast != 1.27 {
+		t.Fatalf("behind correction rate = %v, want configured speedup 1.27", fast)
+	}
+}
+
 func TestDecideDriftIsSymmetric(t *testing.T) {
 	// Drift in either direction costs the same; only the corrective rate differs. Ninety-one
 	// seconds off would already exceed the speed-sync window and re-gate instead.
-	behind, behindRate, behindMS := decideDrift(91, 100, 200, 10000)
-	ahead, aheadRate, aheadMS := decideDrift(109, 100, 200, 10000)
+	behind, behindRate, behindMS := decideDrift(91, 100, 200, 10000, 0.8, 1.5)
+	ahead, aheadRate, aheadMS := decideDrift(109, 100, 200, 10000, 0.8, 1.5)
 
 	if behind != ahead || behind != driftSpeedSeek {
 		t.Fatalf("actions differ: %d vs %d", behind, ahead)
@@ -71,14 +84,14 @@ func TestDecideDriftIsSymmetric(t *testing.T) {
 func TestDecideDriftHonoursConfiguredThresholds(t *testing.T) {
 	// A deployment that widens the soft threshold must suppress corrections that the default
 	// would have made, which is the point of the setting.
-	if action, _, _ := decideDrift(100.3, 100, 200, 10000); action != driftSoftCorrect {
+	if action, _, _ := decideDrift(100.3, 100, 200, 10000, 0.8, 1.5); action != driftSoftCorrect {
 		t.Errorf("default thresholds: action = %d, want softCorrect", action)
 	}
-	if action, _, _ := decideDrift(100.3, 100, 500, 10000); action != driftNone {
+	if action, _, _ := decideDrift(100.3, 100, 500, 10000, 0.8, 1.5); action != driftNone {
 		t.Errorf("widened soft threshold: action = %d, want none", action)
 	}
 	// Tightening the speed threshold turns a nudge into a re-gate.
-	if action, _, _ := decideDrift(101, 100, 200, 500); action != driftRegate {
+	if action, _, _ := decideDrift(101, 100, 200, 500, 0.8, 1.5); action != driftRegate {
 		t.Errorf("tightened speed threshold: action = %d, want re-gate", action)
 	}
 }
@@ -88,7 +101,7 @@ func TestDecideDriftDurationNeverExceedsCap(t *testing.T) {
 	// carries no duration at all. The upper bound stays under the cap (duration is twice the
 	// drift, so 4s is where the 8s ceiling starts biting).
 	for seconds := 0.6; seconds <= 3.9; seconds += 0.1 {
-		action, _, duration := decideDrift(100-seconds, 100, 200, 10000)
+		action, _, duration := decideDrift(100-seconds, 100, 200, 10000, 0.8, 1.5)
 		if action != driftSpeedSeek {
 			t.Fatalf("drift of %.1fs produced action %d, want a speed-seek", seconds, action)
 		}
@@ -106,7 +119,7 @@ func TestDecideDriftDurationNeverExceedsCap(t *testing.T) {
 	// Beyond the cap the duration stops growing, so a wild drift never plays at 1.5x for a
 	// minute; the drift itself would re-gate before that anyway.
 	for seconds := 4.0; seconds <= 9.9; seconds += 0.5 {
-		_, _, duration := decideDrift(100-seconds, 100, 200, 10000)
+		_, _, duration := decideDrift(100-seconds, 100, 200, 10000, 0.8, 1.5)
 		if duration != maxSpeedSeekMS {
 			t.Errorf("drift of %.1fs produced %dms, want the %dms cap", seconds, duration, maxSpeedSeekMS)
 		}

@@ -674,8 +674,8 @@ func (c *Config) loadSyncPlay() {
 		StartLeadCeiling:  time.Duration(getInt("SYNCPLAY_START_LEAD_MAX_MS", 4000)) * time.Millisecond,
 		MaxReportedPing:   time.Duration(getInt("SYNCPLAY_MAX_PING_MS", 10000)) * time.Millisecond,
 		// Client tunables; these defaults are the figures the improvement-plan doc cites.
-		SlowdownRate:           getFloat("SYNCPLAY_SLOWDOWN_RATE", 0.95),
-		SpeedupRate:            getFloat("SYNCPLAY_SPEEDUP_RATE", 1.05),
+		SlowdownRate:           getFloat("SYNCPLAY_SLOWDOWN_RATE", 0.80),
+		SpeedupRate:            getFloat("SYNCPLAY_SPEEDUP_RATE", 1.50),
 		CorrectionEngageDrift:  time.Duration(getInt("SYNCPLAY_CORRECTION_ENGAGE_DRIFT_MS", 1500)) * time.Millisecond,
 		CorrectionReleaseDrift: time.Duration(getInt("SYNCPLAY_CORRECTION_RELEASE_DRIFT_MS", 100)) * time.Millisecond,
 		BufferGoalFraction:     getFloat("SYNCPLAY_BUFFER_GOAL_FRACTION", 0.10),
