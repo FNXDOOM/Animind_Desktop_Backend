@@ -23,3 +23,8 @@ Thumbs.db
 
 # command
 .commmandcode/
+
+# Local verification artifacts
+/seed-fixtures/
+.commandcode/
+.torrent.db
