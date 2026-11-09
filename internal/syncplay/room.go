@@ -10,6 +10,8 @@ import (
 	"strings"
 	"sync"
 	"time"
+
+	"animind-backend-go/internal/repository"
 )
 
 // readyState values reported in the peer list.
@@ -56,6 +58,7 @@ type Participant struct {
 type Room struct {
 	code      string
 	episodeID string
+	showID    string
 
 	hostSocketID string
 	hostUserID   string
@@ -93,11 +96,12 @@ type Room struct {
 	mu        sync.Mutex
 }
 
-func newRoom(code, episodeID, hostSocketID, hostUserID, hostName string, durationSeconds float64) *Room {
+func newRoom(code, episodeID, showID, hostSocketID, hostUserID, hostName string, durationSeconds float64) *Room {
 	now := time.Now()
 	room := &Room{
 		code:             code,
 		episodeID:        episodeID,
+		showID:           showID,
 		durationSeconds:  durationSeconds,
 		hostSocketID:     hostSocketID,
 		hostUserID:       hostUserID,
@@ -537,7 +541,7 @@ func (r *Room) snapshot() RoomSnapshot {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	return RoomSnapshot{
-		Code: r.code, EpisodeID: r.episodeID, HostUserID: r.hostUserID, HostDisplayName: r.hostName,
+		Code: r.code, ShowID: r.showID, EpisodeID: r.episodeID, HostUserID: r.hostUserID, HostDisplayName: r.hostName,
 		Status: "active", GroupState: r.stateLocked(), CurrentTime: r.currentTime, IsPlaying: r.isPlaying,
 		Participants: len(r.participants),
 	}
@@ -576,8 +580,10 @@ func (h *Hub) handleCreateRoom(p *peer, in inbound, existing *Room) {
 		h.reply(p, in, createRoomAckPayload{Success: false, Error: "Episode is required."})
 		return
 	}
-	// An unknown episode would create a room nobody can join correctly.
-	if !h.repo.EpisodeExists(context.Background(), episodeID) {
+	// An unknown episode would create a room nobody can join correctly. The same lookup gives the
+	// room its parent show, which the HTTP snapshot publishes to a joiner before it opens a player.
+	episode, err := h.repo.EpisodeByID(context.Background(), episodeID)
+	if err != nil || episode == nil {
 		h.reply(p, in, createRoomAckPayload{Success: false, Error: "Episode is not in the library."})
 		return
 	}
@@ -593,7 +599,7 @@ func (h *Hub) handleCreateRoom(p *peer, in inbound, existing *Room) {
 		return
 	}
 
-	room := newRoom(code, episodeID, p.sid, p.userID, p.name, h.episodeSeconds(episodeID))
+	room := newRoom(code, episodeID, episode.ShowID, p.sid, p.userID, p.name, episodeSeconds(episode))
 	h.mu.Lock()
 	h.rooms[code] = room
 	h.mu.Unlock()
@@ -609,11 +615,10 @@ func (h *Hub) handleCreateRoom(p *peer, in inbound, existing *Room) {
 	h.logger.Info("watch party created", slog.String("room", code), slog.String("host", p.userID))
 }
 
-// episodeSeconds reads an episode's length for the scaled buffer goal. A miss is not an error:
-// an unknown length simply leaves the goal at its configured cap.
-func (h *Hub) episodeSeconds(episodeID string) float64 {
-	episode, err := h.repo.EpisodeByID(context.Background(), episodeID)
-	if err != nil || episode == nil || episode.Duration == nil || *episode.Duration <= 0 {
+// episodeSeconds reads a fetched episode's length for the scaled buffer goal. A miss is not an
+// error: an unknown length simply leaves the goal at its configured cap.
+func episodeSeconds(episode *repository.Episode) float64 {
+	if episode == nil || episode.Duration == nil || *episode.Duration <= 0 {
 		return 0
 	}
 	return float64(*episode.Duration)
@@ -1059,12 +1064,18 @@ func (h *Hub) handleChangeEpisode(p *peer, in inbound, room *Room) {
 		return
 	}
 	episodeID := strings.TrimSpace(req.EpisodeID)
-	if episodeID == "" || !h.repo.EpisodeExists(context.Background(), episodeID) {
+	if episodeID == "" {
 		p.Emit("syncDenied", room.denied("Episode is not in the library."))
 		return
 	}
-	// Fetched before the lock: an episode lookup must not hold a room's mutex.
-	duration := h.episodeSeconds(episodeID)
+	// Fetched before the lock: an episode lookup must not hold a room's mutex. The row also carries
+	// the new parent show, so the room's snapshot keeps naming the right one after a change.
+	episode, err := h.repo.EpisodeByID(context.Background(), episodeID)
+	if err != nil || episode == nil {
+		p.Emit("syncDenied", room.denied("Episode is not in the library."))
+		return
+	}
+	duration := episodeSeconds(episode)
 
 	room.mu.Lock()
 	if p.sid != room.hostSocketID {
@@ -1073,6 +1084,7 @@ func (h *Hub) handleChangeEpisode(p *peer, in inbound, room *Room) {
 		return
 	}
 	room.episodeID = episodeID
+	room.showID = episode.ShowID
 	room.durationSeconds = duration
 	room.currentTime = 0
 	room.isPlaying = false

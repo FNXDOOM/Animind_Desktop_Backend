@@ -85,7 +85,7 @@ func roomWith(h *Hub, code string, names ...string) (*Room, []*peer) {
 	for _, name := range names {
 		peers = append(peers, h.withPeer("sock-"+name, "user-"+name, name))
 	}
-	room := newRoom(code, "ep-1", peers[0].sid, peers[0].userID, peers[0].name, 1400)
+	room := newRoom(code, "ep-1", "show-1", peers[0].sid, peers[0].userID, peers[0].name, 1400)
 	h.mu.Lock()
 	h.rooms[code] = room
 	h.mu.Unlock()

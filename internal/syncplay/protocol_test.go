@@ -199,3 +199,21 @@ func TestAuthenticateRejectsUnknownToken(t *testing.T) {
 		t.Error("a token the auth service does not recognise must be refused")
 	}
 }
+
+// TestRoomSnapshotCarriesTheParentShow pins the field a cross-show joiner needs: the room lookup
+// must name the show, not only the episode, or the client has to guess from a cache it may not have.
+func TestRoomSnapshotCarriesTheParentShow(t *testing.T) {
+	h := newMemHub(t, nil)
+	room, _ := roomWith(h, "ABCDE", "host")
+	room.mu.Lock()
+	room.showID = "show-9"
+	room.mu.Unlock()
+
+	snapshot := room.snapshot()
+	if snapshot.ShowID != "show-9" {
+		t.Fatalf("snapshot showId = %q, want show-9", snapshot.ShowID)
+	}
+	if snapshot.EpisodeID != "ep-1" {
+		t.Fatalf("snapshot episodeId = %q, want ep-1", snapshot.EpisodeID)
+	}
+}

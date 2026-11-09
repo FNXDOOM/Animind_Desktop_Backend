@@ -268,7 +268,10 @@ func (h *Hub) PeerCount() int {
 // RoomSnapshot describes a room for the HTTP lookup endpoint, which lets a client validate
 // a code before it asks the user to open the matching episode.
 type RoomSnapshot struct {
-	Code            string     `json:"code"`
+	Code string `json:"code"`
+	// ShowID is the parent of EpisodeID. A joiner usually has never opened that show, so the
+	// lookup, not the client's cache, must be able to name it.
+	ShowID          string     `json:"showId"`
 	EpisodeID       string     `json:"episodeId"`
 	HostUserID      string     `json:"hostUserId"`
 	HostDisplayName string     `json:"hostDisplayName"`

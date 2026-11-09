@@ -278,6 +278,7 @@ type roomFixture struct {
 	hub     *Hub
 	server  *httptest.Server
 	store   *repository.Store
+	show    string
 	episode string
 	users   []string // session tokens, host first
 }
@@ -354,7 +355,7 @@ func newRoomFixture(t *testing.T) *roomFixture {
 	})
 
 	return &roomFixture{
-		hub: hub, server: server, store: store, episode: episode.ID,
+		hub: hub, server: server, store: store, show: show.ID, episode: episode.ID,
 		users: []string{signIn("host"), signIn("member")},
 	}
 }
@@ -403,6 +404,15 @@ func TestWatchPartyHandshakeAndGate(t *testing.T) {
 	}
 	if !ack.Success || len(ack.RoomCode) != 5 {
 		t.Fatalf("createRoom failed: %+v", ack)
+	}
+	// The lookup a joiner performs before opening a player must name the parent show, not only
+	// the episode: the joiner's cache usually has never seen that show (spec §14).
+	snapshot, ok := fixture.hub.Snapshot(ack.RoomCode)
+	if !ok || snapshot.ShowID != fixture.show {
+		t.Fatalf("room snapshot showId = %q (ok=%v), want %q", snapshot.ShowID, ok, fixture.show)
+	}
+	if snapshot.EpisodeID != fixture.episode {
+		t.Fatalf("room snapshot episodeId = %q, want %q", snapshot.EpisodeID, fixture.episode)
 	}
 
 	join := struct {
