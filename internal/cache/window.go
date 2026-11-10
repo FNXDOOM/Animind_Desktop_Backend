@@ -7,11 +7,8 @@ import (
 )
 
 // WindowLimiter is the in-process fixed window: one counter per key that resets a window
-// after the first hit.
-//
-// It is both the no-Redis store and the fallback a shared store degrades to when Redis stops
-// answering, so the two paths enforce the same rule. A window is chosen per call because the
-// API's buckets differ (3 rescans a minute against 1200 HLS segments).
+// after the first hit. It is both the no-Redis store and the fallback a shared store degrades
+// to when Redis stops answering, so both paths enforce the same rule; the window is per call.
 type WindowLimiter struct {
 	mu      sync.Mutex
 	windows map[string]*window
@@ -36,11 +33,9 @@ func NewWindowLimiter(now func() time.Time) *WindowLimiter {
 	return &WindowLimiter{windows: make(map[string]*window), now: now, pruneAfter: 5 * time.Minute}
 }
 
-// Allow records one hit and reports whether the request fits inside the window.
-//
-// The over-limit request is counted, matching how the window was enforced before: a client
-// that hammers the endpoint keeps its window pinned at the ceiling rather than getting a
-// fresh budget on each try.
+// Allow records one hit and reports whether the request fits inside the window. The
+// over-limit request is counted too, as before: a hammering client keeps its window pinned at
+// the ceiling instead of getting a fresh budget on each try.
 func (l *WindowLimiter) Allow(_ context.Context, key string, limit int, duration time.Duration) (Decision, error) {
 	l.mu.Lock()
 	defer l.mu.Unlock()
@@ -72,7 +67,7 @@ func (l *WindowLimiter) pruneLocked(now time.Time) {
 	}
 }
 
-// Hits reports how many keys currently hold a live window. It has no callers.
+// Hits reports how many keys hold a live window. It has no callers.
 func (l *WindowLimiter) Hits() int {
 	l.mu.Lock()
 	defer l.mu.Unlock()

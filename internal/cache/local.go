@@ -8,11 +8,9 @@ import (
 	"time"
 )
 
-// localStore keeps shared state in this process.
-//
-// It is what runs when no REDIS_URL is configured, so the caching code paths are exercised
-// identically with or without Redis. Everything is bounded: an entry map that grows with the
-// library would eventually cost more than the database it was meant to avoid.
+// localStore keeps shared state in this process when no REDIS_URL is configured, so the
+// caching paths run identically with or without Redis. Everything is bounded: an entry map
+// that grew with the library would cost more than the database it was meant to avoid.
 type localStore struct {
 	mu      sync.Mutex
 	entries map[string]*localEntry

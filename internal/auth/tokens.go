@@ -14,10 +14,8 @@ import (
 	"time"
 )
 
-// Token prefixes are part of the public wire format.
-//
-// The desktop player distinguishes its own access token from every other credential
-// by prefix, and the backend routes verification on that same prefix, so these values
+// Token prefixes are part of the public wire format: the desktop player distinguishes
+// its credentials and Kind() routes verification by the same prefix, so these values
 // cannot change without breaking installed clients.
 const (
 	// DesktopAccessPrefix marks a desktop access token (HMAC-signed, self-contained).
@@ -72,11 +70,9 @@ func IsDesktopAccessToken(token string) bool {
 	return strings.HasPrefix(token, DesktopAccessPrefix)
 }
 
-// Signer issues and validates the backend's own tokens.
-//
-// key is the single high-entropy secret from DESKTOP_TOKEN_SIGNING_KEY. It signs
-// desktop access tokens and playback tickets; neither is encrypted, both are
-// tamper-evident.
+// Signer issues and validates the backend's own tokens — desktop access tokens and
+// playback tickets — with the single DESKTOP_TOKEN_SIGNING_KEY secret. Payloads are
+// tamper-evident, not encrypted.
 type Signer struct {
 	key []byte
 }
@@ -96,16 +92,14 @@ type DesktopClaims struct {
 	ExpiresAt int64 // unix seconds
 }
 
-// IssueDesktopAccessToken signs a self-contained desktop access token.
-//
-// Layout, byte for byte:
+// IssueDesktopAccessToken signs a self-contained desktop access token. Layout, byte for
+// byte — installed clients parse it, so it cannot change:
 //
 //	payload = "v1." + userID + "." + sessionID + "." + expUnixSeconds
 //	token   = "adk_" + base64url(payload) + "." + base64url(HMAC-SHA256(key, payload))
 //
-// Because the payload carries the expiry, a request can be authorized without a
-// database round trip; the pinned session row is still consulted whenever immediate
-// revocation matters.
+// Carrying the expiry in the payload authorizes a request without a database read; the
+// pinned session row is still consulted when revocation must be immediate.
 func (s *Signer) IssueDesktopAccessToken(userID, sessionID string, expiresAt time.Time) string {
 	payload := strings.Join([]string{
 		accessTokenVersion,
@@ -156,10 +150,8 @@ func (s *Signer) VerifyDesktopAccessToken(token string) (*DesktopClaims, error) 
 	return &DesktopClaims{UserID: parts[1], SessionID: parts[2], ExpiresAt: exp}, nil
 }
 
-// HashToken returns the lowercase hex SHA-256 of a token.
-//
-// Tokens are stored only in this form: a database leak must not yield usable
-// credentials. Comparison happens on the hash inside the query.
+// HashToken returns the lowercase hex SHA-256 of a token. Tokens are stored and
+// compared only as this hash, so a database leak yields no usable credential.
 func HashToken(token string) string {
 	sum := sha256.Sum256([]byte(token))
 	return hex.EncodeToString(sum[:])
@@ -193,10 +185,8 @@ func NewOpaqueToken(n int) (string, error) {
 	return base64.RawURLEncoding.EncodeToString(buf), nil
 }
 
-// StreamTicketPayload is the signed body of a playback ticket.
-//
-// JSON key names are load-bearing: EpisodeID/At/CM/Exp are what an already-shipped
-// desktop parser expects to decode after base64url.
+// StreamTicketPayload is the signed body of a playback ticket. The JSON key names are
+// load-bearing: the already-shipped desktop parser decodes exactly these after base64url.
 type StreamTicketPayload struct {
 	EpisodeID string `json:"episodeId"`
 	// At is the requested audio track index, omitted when none was requested.
@@ -231,10 +221,8 @@ func (s *Signer) IssueStreamTicket(episodeID string, audioTrackIndex *int, clien
 	return encoded + "." + s.sign(encoded), nil
 }
 
-// VerifyStreamTicket validates a playback ticket for a specific episode.
-//
-// Tickets are deliberately not identity-bearing: they scope one episode and nothing
-// else, so a leaked ticket cannot browse the library.
+// VerifyStreamTicket validates a playback ticket for a specific episode. Tickets carry no
+// identity and scope one episode, so a leaked one cannot browse the library.
 func (s *Signer) VerifyStreamTicket(ticket, episodeID string) (*StreamTicketPayload, error) {
 	idx := strings.LastIndex(ticket, ".")
 	if idx <= 0 || idx == len(ticket)-1 {

@@ -1,13 +1,9 @@
 // Package cache is the shared state layer: resolved credentials, rate-limit counters and
-// upstream metadata that outlives one process.
+// upstream metadata that outlives one process. Callers get a KV, a fixed-window counter and a
+// key-naming scheme; namespaces, group indexes and the atomic Lua stay inside this package.
 //
-// It exists so the rest of the backend never speaks Redis. Callers get a KV, a fixed-window
-// counter, and a key-naming scheme; namespace prefixes, group indexes and the Lua that makes
-// a counter atomic stay in here.
-//
-// Two implementations satisfy Store: the Redis client, and an in-process store used when no
-// URL is configured. Both are correct for a single instance, so nothing has to be rewritten
-// to run without Redis.
+// The Redis client and an in-process store both satisfy Store, so nothing is rewritten to run
+// without Redis.
 package cache
 
 import (
@@ -32,10 +28,8 @@ import (
 // latency, never data.
 var ErrUnavailable = errors.New("cache: unavailable")
 
-// KV is the entry half of the store. Keys are namespaced by the implementation.
-//
-// A nil/absent entry is reported as found=false with a nil error; a non-nil error means the
-// store itself could not be consulted.
+// KV is the entry half of the store; keys are namespaced by the implementation. A missing
+// entry is found=false with a nil error — a non-nil error means the store could not be asked.
 type KV interface {
 	Get(ctx context.Context, key string) ([]byte, bool, error)
 	// Set stores value for ttl. Groups name sets the entry belongs to, so a delete by group
@@ -228,12 +222,10 @@ func SetJSON(ctx context.Context, kv KV, key string, value any, ttl time.Duratio
 
 // ── Construction ─────────────────────────────────────────────────────────────
 
-// Open connects to the configured store.
-//
-// Without REDIS_URL the in-process store is returned: the same code paths run, they just
-// stop crossing processes. With a URL that does not answer, startup fails — a half-wired
-// cache is the class of misconfiguration this backend refuses to boot on, and a Redis that
-// dies later degrades to the fallback instead of taking the API with it.
+// Open connects to the configured store. Without REDIS_URL the in-process store is returned:
+// the same code paths run, they just stop crossing processes. A URL that does not answer fails
+// startup — a half-wired cache is the misconfiguration this backend refuses to boot on — while
+// a Redis that dies later degrades to the fallback instead of taking the API with it.
 func Open(ctx context.Context, cfg config.CacheConfig, logger *slog.Logger) (Store, error) {
 	if strings.TrimSpace(cfg.URL) == "" {
 		logger.Info("cache: no REDIS_URL, keeping shared state in this process")

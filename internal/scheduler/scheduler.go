@@ -1,9 +1,8 @@
 // Package scheduler runs the recurring maintenance jobs.
 
-// Each job is independently enabled and independently guarded, and every one of them is safe
-// to run at any time: they are TTL sweeps and idempotent scans. A job that overruns its
-// interval is skipped rather than stacked, which is what keeps a slow scan from forking a
-// second one every six hours.
+// Each job is independently enabled and guarded, and safe to run at any time: they are TTL
+// sweeps and idempotent scans. One that overruns its interval is skipped rather than stacked,
+// which keeps a slow scan from forking a second run every six hours.
 package scheduler
 
 import (

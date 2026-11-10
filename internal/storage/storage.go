@@ -1,9 +1,9 @@
 // Package storage abstracts where media files live.
 //
 // Two modes exist because deployments do: an S3-compatible bucket (R2, Spaces, MinIO,
-// AWS) where playback is a redirect to a presigned URL, and a directory on the host where
-// playback is a byte-range passthrough served by this process. Callers ask for either a
-// URL or a local path and never branch on the mode themselves.
+// AWS), where playback is a redirect to a presigned URL, and a host directory, where it is
+// a byte-range passthrough served by this process. Both share these helpers; callers
+// branch on IsLocal only where a feature exists in one mode.
 package storage
 
 import (
@@ -90,10 +90,9 @@ func (s *Service) Bucket() string {
 	return s.cfg.Storage.S3.Bucket
 }
 
-// Presign produces a time-limited download URL for an object.
-//
-// The URL carries the signature, so the object store authorizes playback without this
-// process staying in the data path.
+// Presign produces a time-limited download URL for an object. The URL carries the
+// signature, so the object store authorizes playback without this process staying in the
+// data path.
 func (s *Service) Presign(ctx context.Context, key, bucket string) (string, time.Time, error) {
 	if s.presigner == nil {
 		return "", time.Time{}, errors.New("storage: presigning is unavailable in local mode")
@@ -114,12 +113,11 @@ func (s *Service) Presign(ctx context.Context, key, bucket string) (string, time
 }
 
 // LocalPath resolves a library-relative path inside the root and refuses anything that
-// escapes it. Every local-mode read goes through this, so a path stored in the database
-// can never reach /etc or a sibling mount.
-//
-// Two checks run, in this order: the lexical join, then a symlink resolution on the result.
-// Cleaning and prefix-comparing alone is not enough, because a symbolic link placed inside
-// the library points the kernel somewhere else after the check passes.
+// escapes it; every local-mode read goes through it, so a path stored in the database can
+// never reach /etc or a sibling mount. The order is load-bearing: the lexical join and
+// check first, then symlink resolution on the result, because cleaning and
+// prefix-comparing alone lets a link placed inside the library point the kernel somewhere
+// else after the check passes.
 func (s *Service) LocalPath(relative string) (string, error) {
 	root, err := filepath.Abs(s.cfg.Storage.LocalPath)
 	if err != nil {
@@ -215,10 +213,9 @@ func (s *Service) IsVideoFile(path string) bool {
 // ListVideoFiles returns every video path in the library, relative to the root in local
 // mode and as an object key in S3 mode.
 //
-// Local mode skips the audio variant cache directory and the .incoming download staging
-// directory: those are derived or incomplete artifacts, and indexing them would double the
-// library and create a feedback loop where each scan indexes the previous scan's transcodes
-// or a torrent's unfinished download.
+// Local mode skips the audio variant cache and the .incoming staging directories:
+// indexing derived or incomplete files creates a feedback loop where each scan indexes
+// the previous scan's transcodes, or a torrent that is still downloading.
 func (s *Service) ListVideoFiles(ctx context.Context) ([]string, error) {
 	if s.IsLocal() {
 		return s.listLocalVideoFiles(ctx, s.cfg.Storage.LocalPath, s.cfg.Storage.LocalPath)

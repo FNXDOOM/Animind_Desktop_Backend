@@ -1,20 +1,14 @@
-// Command animind-seed is a local torrent seeder for end-to-end verification.
-//
-// It builds a metainfo from a directory of small files, seeds it from
-// 127.0.0.1 with DHT, PEX and trackers disabled — there is no public swarm and
-// nothing leaves the loopback — and prints the magnet (with the seeder's own
-// x.pe address, BEP 9) and info hash so a verify script can drive a real
-// download job against it without any tracker infrastructure.
+// Command animind-seed is a local torrent seeder for end-to-end verification. It builds a
+// metainfo from a directory of small files and seeds it from 127.0.0.1 with DHT, PEX and
+// trackers disabled, so nothing leaves the loopback, then prints the magnet (carrying the
+// seeder's own x.pe address, BEP 9) and the info hash — enough for a verify script to drive a
+// real download job with no tracker infrastructure. It keeps seeding until SIGINT or SIGTERM.
 //
 // Usage:
 //
 //	animind-seed -dir ./fixture-content [-port 6881] [-json]
 //
-// With -json the only stdout output is one line:
-//
-//	{"magnet":"magnet:?xt=urn:btih:...","infoHash":"..."}
-//
-// The process keeps running (seeding) until it receives SIGINT/SIGTERM.
+// With -json stdout is one line: {"magnet":"magnet:?xt=urn:btih:...","infoHash":"..."}.
 package main
 
 import (

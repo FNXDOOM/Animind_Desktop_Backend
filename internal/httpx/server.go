@@ -37,10 +37,9 @@ const SessionCookieName = "animind_session"
 // maxJSONBody bounds one request body.
 const maxJSONBody = int64(1 << 20)
 
-// Deps are the collaborators the API needs. Every one is required except the optional
-// local-mode services, which answer 400 when their mode is not active, and Cache, whose
-// absence keeps credential and rate-limit state inside this process. Torrent, Downloads,
-// Trending and EventHub stay nil until the deployment enables them (local storage mode).
+// Deps are the collaborators the API needs; each field's own comment carries what happens
+// when it is nil. A nil Cache keeps rate-limit windows inside this process rather than in a
+// shared store.
 type Deps struct {
 	Config  *config.Config
 	Store   *repository.Store
@@ -146,11 +145,9 @@ func New(deps Deps) *Server {
 	return s
 }
 
-// credential extracts the bearer token, falling back to the session cookie.
-//
-// The site may authenticate either way: a bearer header for API calls made from JS, and an
-// HttpOnly cookie where the SPA must not hold the token at all. The desktop player only ever
-// sends the header.
+// credential extracts the bearer token, falling back to the session cookie. The cookie exists
+// because an SPA must sometimes not hold the token at all; the desktop player only ever sends
+// the header.
 func credential(r *http.Request) string {
 	if token := BearerToken(r); token != "" {
 		return token
@@ -168,10 +165,9 @@ func (s *Server) rate(limiter *RateLimiter) func(http.Handler) http.Handler {
 
 // Router builds the chi route table.
 //
-// Route paths and JSON shapes are unchanged from the Node backend wherever a shipped client
-// parses them, so the existing desktop player and site work against this API without an
-// update. The added /api/auth/* and /api/me/* routes are what replace Clerk and the browser's
-// direct database access.
+// Per-route limiters are applied here, ahead of the auth handlers they protect. Paths and JSON
+// shapes are unchanged from the Node backend wherever a shipped client parses them, and
+// /api/auth/* plus /api/me/* replace Clerk and the browser's direct database access.
 func (s *Server) Router() chi.Router {
 	r := chi.NewRouter()
 
@@ -390,8 +386,8 @@ func (s *Server) requirePrincipal(w http.ResponseWriter, r *http.Request) (*auth
 
 // setSessionCookie installs the browser session cookie.
 //
-// HttpOnly keeps the token out of page scripts, so an XSS in the site cannot read it; the
-// SPA that prefers a bearer header receives it in the login response instead.
+// HttpOnly keeps the token out of page scripts, so an XSS in the site cannot read it; callers
+// that use a bearer header get the token in the login response body instead.
 func (s *Server) setSessionCookie(w http.ResponseWriter, token string, expiresAt time.Time, remember bool) {
 	http.SetCookie(w, &http.Cookie{
 		Name:     SessionCookieName,
@@ -426,9 +422,9 @@ func parsePositiveInt(raw string, fallback int) int {
 
 // serveLocalFile writes a local media file honouring a single HTTP range request.
 //
-// Range support is what makes seeking work in both the browser player and mpv, and chunk
-// capping keeps one connection from holding a worker for the whole file. A client that asks
-// past the end gets 416 with the total size so it can restart its request.
+// Range support is what makes seeking work in both the browser player and mpv, and the chunk
+// cap keeps one connection from holding a worker for the whole file. A request past the end
+// gets 416 with the total size so the client can restart.
 func serveLocalFile(w http.ResponseWriter, r *http.Request, file io.ReadSeeker, size int64, mimeType string, chunkSize int64, cacheable bool) {
 	header := w.Header()
 	header.Set("Content-Type", mimeType)

@@ -14,9 +14,8 @@ import (
 	"animind-backend-go/internal/torrent"
 )
 
-// Handlers for the torrent search surface: /api/torrents/search and
-// /api/search/trending. Both are session routes; search additionally refuses
-// when the deployment has no Torznab endpoint or runs in s3 mode, where
+// Torrent search surface: /api/torrents/search and /api/search/trending, both session
+// routes. Search also refuses where no Torznab endpoint is configured or in s3 mode, where
 // nothing torrent-related operates.
 
 // torrentServiceAPI is the narrow seam the HTTP layer needs from the torrent
@@ -144,10 +143,9 @@ func optionalIntParam(params url.Values, key string) (*int, error) {
 
 // ── Trending ─────────────────────────────────────────────────────────────────
 
-// handleSearchTrending returns the most-recorded normalized queries of the
-// last seven days. The counter stores query text only — no user identity is
-// recorded anywhere in the search pipeline (spec §7.3) — so there is nothing
-// per-user to filter on here.
+// handleSearchTrending returns the most-recorded normalized queries of the last seven days.
+// The counter holds query text only, with no user identity anywhere in the search pipeline
+// (spec §7.3), so there is nothing per-user to filter here.
 func (s *Server) handleSearchTrending(w http.ResponseWriter, r *http.Request) {
 	top := []string{}
 	if s.trending != nil {

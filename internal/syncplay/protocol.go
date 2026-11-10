@@ -1,9 +1,7 @@
-// Package syncplay implements watch parties: shared playback on a server-authoritative clock.
-// The Socket.IO v4 protocol is hand-rolled here because the deployed socket.io-client needs
-// Engine.IO framing over both WebSocket and long-polling, and only the subset this feature uses
-// is worth maintaining. Room state lives in memory, since live playback is pointless to persist
-// per heartbeat; the database keeps only a best-effort audit trail, so a write failure warns
-// rather than stops the party.
+// Package syncplay runs watch parties on a server-authoritative clock. Socket.IO v4 is
+// hand-rolled because the deployed client needs Engine.IO framing over both WebSocket and
+// long-polling. Room state is in memory, since live playback is pointless to persist; the
+// database keeps a best-effort audit trail, so a failed write warns instead of stopping it.
 package syncplay
 
 import (
@@ -534,10 +532,9 @@ func (h *Hub) handleSocketPacket(p *peer, body string) bool {
 	case sioDisconnect:
 		return false
 	case sioEvent:
-		// Socket.IO application events are valid only after the CONNECT packet has been
-		// authenticated. Ignore pre-auth events rather than changing the deployed wire
-		// protocol with an extra application response; the client can still authenticate
-		// the session normally afterward.
+		// Application events are valid only after the CONNECT packet authenticates. Pre-auth
+		// events are ignored, not answered, to leave the deployed wire protocol untouched;
+		// the client can still authenticate normally afterward.
 		if !p.authenticated.Load() {
 			h.logger.Debug("ignoring socket event before authentication", slog.String("sid", p.sid))
 			return true

@@ -1,12 +1,9 @@
-// Package config loads and validates every runtime setting from the environment.
+// Package config loads and validates every runtime setting from the environment, so the same
+// binary runs locally, in Docker or on a VPS. Names are inherited from the original Node
+// backend wherever the meaning is identical, which lets an existing deployment keep its .env.
 //
-// The backend is configured exclusively through environment variables so the same
-// binary can run locally, in Docker, or on a VPS. Names are inherited from the
-// original Node backend wherever the meaning is identical, which lets an existing
-// deployment keep its .env file. Variables that only existed because of Clerk or
-// Supabase-hosted auth are gone; DATABASE_URL and the GOOGLE_/AUTH_ keys replace them.
-//
-// Load fails fast: required keys are checked at startup rather than on first use.
+// Load fails fast: required keys are checked at startup rather than on first use. Clerk- and
+// Supabase-only variables are gone, replaced by DATABASE_URL and the GOOGLE_/AUTH_ keys.
 package config
 
 import (
@@ -79,12 +76,10 @@ type DatabaseConfig struct {
 	AutoMigrate bool
 }
 
-// AuthConfig controls the built-in authentication system.
-//
-// There is no third-party identity provider: passwords are hashed with argon2id,
-// web sessions are opaque bearer tokens stored hashed, and desktop access tokens
-// are HMAC-signed self-contained tokens that are additionally pinned in the
-// database so they can be revoked instantly.
+// AuthConfig controls the built-in authentication system: no hosted identity provider is
+// involved. Passwords use argon2id, web sessions are opaque bearer tokens stored hashed, and
+// desktop access tokens are HMAC-signed and self-contained but also pinned in the database,
+// so they can be revoked instantly.
 type AuthConfig struct {
 	// TokenSigningKey signs desktop access tokens. Required, high entropy.
 	TokenSigningKey string

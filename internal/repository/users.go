@@ -1,12 +1,9 @@
-// Package repository contains every SQL statement the backend runs.
+// Package repository contains every SQL statement the backend runs. Scoping a method by the
+// authenticated user id is the authorization mechanism: there is no client-side key and no
+// row-level-security policy to rely on.
 //
-// Each method is scoped by the authenticated user id when the data is
-// user-owned; that scoping is the authorization mechanism, because there is no
-// client-side key and no row-level-security policy relying on an external JWT.
-//
-// IDs are read with an explicit ::text cast and written with an explicit ::uuid
-// cast. That keeps Go strings on both ends and avoids depending on the driver's
-// UUID codec.
+// IDs are read with an explicit ::text cast and written with ::uuid, keeping Go strings on
+// both ends and avoiding the driver's UUID codec.
 package repository
 
 import (
@@ -336,10 +333,8 @@ func (s *Store) CreateWebSession(ctx context.Context, userID, tokenHash, deviceN
 		userID, tokenHash, deviceName, userAgent, ip, rememberMe, expiresAt))
 }
 
-// ActiveWebSession loads a live session by token hash.
-//
-// The WHERE clause is the whole authorization decision for a session token: revoked or
-// expired rows are simply not found.
+// ActiveWebSession loads a live session by token hash. The WHERE clause is the whole
+// authorization decision for a session token: revoked or expired rows are not found.
 func (s *Store) ActiveWebSession(ctx context.Context, tokenHash string) (*WebSession, error) {
 	return scanWebSession(s.pool.QueryRow(ctx, `
 		select `+webSessionColumns+` from animind_web_sessions

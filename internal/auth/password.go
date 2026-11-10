@@ -1,17 +1,16 @@
-// Package auth implements the backend's own authentication: password hashing,
-// token issuance and verification, and the session lifecycle for both clients.
+// Package auth implements the backend's own authentication: password hashing, token
+// issuance and verification, and the session lifecycle for both clients.
 //
-// Two token families exist because the two clients have different needs:
-//
-//   - Desktop (adk_/adr_): a short-lived HMAC-signed access token that can be
-//     verified without a database read, paired with a rotating opaque refresh token.
-//     Both are pinned in desktop_auth_sessions so revocation is instant. This format
-//     is wire-compatible with the Qt desktop player already in use.
+// Two token families, because the two clients need different things:
+//   - Desktop (adk_/adr_): an HMAC-signed access token verifiable without a database
+//     read, paired with a rotating opaque refresh token. Both are pinned in
+//     desktop_auth_sessions, so revocation is instant, and the format is what the
+//     shipped Qt player parses.
 //   - Web (as_): an opaque bearer token for the site, stored only as a SHA-256 hash,
 //     with sliding expiry and a remember-me lifetime.
 //
-// Passwords use argon2id and are encoded in the PHC string format so parameters can
-// be raised later without a migration. Verification is constant-time throughout.
+// Passwords use argon2id in the PHC string format so parameters can be raised later
+// without a migration. Verification is constant-time throughout.
 package auth
 
 import (
@@ -57,8 +56,8 @@ func DefaultArgon2Params() Argon2Params {
 //
 //	argon2id$v=19$m=<memory>,t=<time>,p=<threads>$<b64 salt>$<b64 hash>
 //
-// The salt is 16 fresh random bytes. Randomness here means two users with the same
-// password share no comparable bytes in the database.
+// The 16 fresh salt bytes keep two users with the same password from sharing
+// comparable bytes in the database.
 func HashPassword(password string, params Argon2Params) (string, error) {
 	if err := ValidatePasswordStrength(password); err != nil {
 		return "", err
@@ -79,9 +78,8 @@ func HashPassword(password string, params Argon2Params) (string, error) {
 }
 
 // VerifyPassword checks a password against a stored PHC argon2id hash in constant time.
-//
-// It re-derives using the parameters embedded in the hash, so hashes created under
-// older (weaker) settings keep working after the configured defaults are raised.
+// It re-derives using the parameters embedded in the hash, so hashes made under older,
+// weaker settings keep working after the configured defaults are raised.
 func VerifyPassword(password, stored string) (needsRehash bool, err error) {
 	params, salt, hash, err := parseArgon2Hash(stored)
 	if err != nil {

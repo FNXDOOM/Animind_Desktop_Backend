@@ -19,14 +19,11 @@ import (
 
 // Browser-safe audio variants.
 //
-// A browser can only play AAC or MP3 from an MP4, while most releases carry Opus or
-// Vorbis. Rather than transcode on every request, the first playback of a track produces
-// a cached M4A-compatible remux that later requests reuse, and a scan can pre-build them.
-//
-// Layout: <library>/.animind-audio-cache/<episodeID>/a<index>-<mode>-<hash>.mp4 plus a
-// metadata.json describing which source each cached file came from. The signature ties a
-// variant to the source file's size and mtime, so a replaced episode cannot serve a stale
-// audio track.
+// A browser plays only AAC or MP3 from an MP4 while most releases carry Opus or Vorbis, so
+// the first playback of a track builds a cached remux that later requests reuse; a scan can
+// pre-build them. Variants live at <library>/.animind-audio-cache/<episodeID>/
+// a<index>-<mode>-<hash>.mp4 beside a metadata.json, and the hash covers the source file's
+// size and mtime, so a replaced episode cannot serve a stale audio track.
 
 // AudioTrack describes one audio stream and its playback requirements.
 type AudioTrack struct {
@@ -349,11 +346,10 @@ type CacheCleanupResult struct {
 	PrunedEntries int
 }
 
-// CleanupByTTL deletes cached variants nobody played recently and rewrites the index so it
-// never points at a removed file. Empty episode directories are removed.
-//
-// This is what keeps a long-running library from accumulating a transcode of every audio
-// track in the catalogue.
+// CleanupByTTL deletes cached variants nobody played recently, rewrites the index so it
+// never points at a removed file, and drops empty episode directories. This is what stops
+// a long-running library from accumulating a transcode of every audio track in the
+// catalogue.
 func (a *AudioCache) CleanupByTTL(ttl time.Duration) (CacheCleanupResult, error) {
 	var result CacheCleanupResult
 	if a.cacheDisabled() {

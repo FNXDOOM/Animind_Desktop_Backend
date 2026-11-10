@@ -1,9 +1,8 @@
 // Package httpx is the HTTP edge: routing, middleware, and handlers.
 //
-// It owns every status code and JSON shape the site and the desktop player parse. Error
-// bodies always use {"error": "..."} (with optional extra keys) because both clients read
-// that field, and validation failures additionally set "details" or "fields" where a
-// form can show them.
+// It owns every status code and JSON shape the site and the desktop player parse. Error bodies
+// always use {"error": "..."}, plus "code" when clients branch on the failure and "details"
+// when a reason is safe to expose.
 package httpx
 
 import (
@@ -100,10 +99,8 @@ func QueryInt(r *http.Request, key string, fallback, min, max int) int {
 // Param returns a path segment, or "" when absent.
 func Param(r *http.Request, key string) string { return chi.URLParam(r, key) }
 
-// BearerToken extracts the credential from an Authorization header.
-//
-// The desktop player only ever sends "Authorization: Bearer <token>", and the site does
-// the same, so no other scheme is accepted.
+// BearerToken extracts the credential from an Authorization header, accepting no other scheme
+// because both clients send exactly "Authorization: Bearer <token>".
 func BearerToken(r *http.Request) string {
 	header := r.Header.Get("Authorization")
 	if header == "" {
@@ -118,10 +115,9 @@ func BearerToken(r *http.Request) string {
 
 // ClientHint reports whether the caller is the native desktop player.
 //
-// Detection prefers the explicit clientType query parameter, because the player sends its
-// media requests (and its mpv playback requests) with different user agents than its API
-// calls. Both "desktop" and "native" name the same mode, which is the spelling the site and
-// the desktop player each send today. The header sniff covers the historical values.
+// The clientType query parameter wins because the player's media and mpv requests carry
+// different user agents than its API calls, and "desktop" and "native" are the two spellings
+// its clients send today. The header sniff covers the historical values.
 func ClientHint(r *http.Request) string {
 	switch value := strings.ToLower(r.URL.Query().Get("clientType")); value {
 	case "native", "desktop":
@@ -145,11 +141,9 @@ func ClientHint(r *http.Request) string {
 // IsNativeClient reports whether the caller is the desktop player.
 func IsNativeClient(r *http.Request) bool { return ClientHint(r) == "native" }
 
-// ClientIP resolves the requesting address for rate limiting.
-//
-// X-Forwarded-For is trusted only when the deployment declares it sits behind a proxy
-// (TRUST_PROXY_HEADERS=true); otherwise a client could forge the header and buy itself an
-// unlimited bucket.
+// ClientIP resolves the requesting address for rate limiting. X-Forwarded-For is trusted only
+// when the deployment declares a proxy (TRUST_PROXY_HEADERS=true); otherwise a client could
+// forge the header and buy itself an unlimited bucket.
 func ClientIP(r *http.Request, trustProxy bool) string {
 	if trustProxy {
 		if xf := r.Header.Get("X-Forwarded-For"); xf != "" {

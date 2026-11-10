@@ -12,10 +12,9 @@ import (
 	"animind-backend-go/internal/config"
 )
 
-// redisStore is the cross-process implementation.
-//
-// Every method bounds itself: this sits in front of authentication, so a Redis that stops
-// answering must cost one short timeout and then be ignored, not stall the request.
+// redisStore is the cross-process implementation. Every method bounds itself: this sits in
+// front of authentication, so a Redis that stops answering must cost one short timeout and
+// then be ignored, not stall the request.
 type redisStore struct {
 	client  *redis.Client
 	ns      string

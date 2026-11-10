@@ -49,11 +49,9 @@ func scanEpisode(row scanner) (*Episode, error) {
 	return &e, nil
 }
 
-// ListShows returns the catalog page plus the unpaginated total.
-//
-// search matches title, studio or synopsis; genre filters the genres array. Both are
-// optional. The dedupe-by-identity pass the original backend performed in the handler
-// is reproduced by the HTTP layer, not here, so the raw total stays honest.
+// ListShows returns the catalog page plus the unpaginated total. search matches title, studio
+// or synopsis and genre filters the genres array; both are optional. The dedupe-by-identity
+// pass belongs to the HTTP layer, not here, so the raw total stays honest.
 func (s *Store) ListShows(ctx context.Context, limit, offset int, search, genre string) ([]Show, int64, error) {
 	var total int64
 	if err := s.pool.QueryRow(ctx, `select count(*) from shows`).Scan(&total); err != nil {
@@ -114,10 +112,9 @@ func (s *Store) ShowByIDText(ctx context.Context, id string) (*Show, error) {
 	return s.ShowByID(ctx, id)
 }
 
-// EpisodesForShow returns every episode of a show ordered for playback.
-//
-// The limit is deliberately high: a long-running series must not be silently
-// truncated the way a 1000-row default page did in the original backend.
+// EpisodesForShow returns every episode of a show ordered for playback. The 10000 limit is
+// deliberate: a long-running series must not be silently truncated the way the original
+// backend's 1000-row default page did.
 func (s *Store) EpisodesForShow(ctx context.Context, showID string) ([]Episode, error) {
 	rows, err := s.pool.Query(ctx, `
 		select `+episodeColumns+` from episodes

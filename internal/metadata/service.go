@@ -1,9 +1,6 @@
-// Package metadata resolves a release title into catalog information.
-//
-// AniList is tried first because it carries artwork, trailers and an id the library can
-// dedupe against. MyAnimeList is the fallback for when AniList throttles or has no match.
-// Results are cached per title and de-duplicated across concurrent lookups, because a scan
-// of a hundred episodes of one series must not send a hundred identical requests.
+// Package metadata resolves a release title into catalog information. AniList is first, for
+// its artwork, trailer and dedupe id, with MyAnimeList covering a miss or throttle. Lookups
+// are cached per title and shared across concurrent ones, so a scan asks providers once.
 package metadata
 
 import (
@@ -96,12 +93,9 @@ func New(cfg *config.Config, stateCache cache.Store, logger *slog.Logger) *Servi
 	}
 }
 
-// Fetch resolves a title, returning nil when no provider recognizes it. A nil result is
-// not an error: the scanner then keeps the folder name as the title.
-//
-// Two caches sit in front of the providers. The local map makes one scan cheap; the shared
-// store makes the *next* scan cheap, which is what a restart in the middle of a hundred-
-// episode library used to throw away along with AniList's throttle budget.
+// Fetch resolves a title; a nil result is not an error, it means no provider matched, and
+// the scanner then keeps the folder name as the title. The local map makes one scan cheap,
+// the shared store the next one, so a restart keeps its answers and its throttle budget.
 func (s *Service) Fetch(ctx context.Context, title string) (*Metadata, error) {
 	key := NormalizeTitleKey(title)
 	if key == "" {
@@ -333,10 +327,9 @@ func NormalizeTitleKey(title string) string {
 
 var tagPattern = regexp.MustCompile(`<[^>]*>`)
 
-// StripHTML removes markup from a provider description.
-//
-// AniList sends HTML even with asHtml:false in some fields, and the library stores plain
-// text that both clients render directly, so tags must not survive the import.
+// StripHTML removes markup from a provider description: AniList sends HTML even with
+// asHtml:false in some fields, and the library stores plain text that both clients render
+// directly, so tags must not survive the import.
 func StripHTML(text string) string {
 	if text == "" {
 		return ""

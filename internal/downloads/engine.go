@@ -2,12 +2,8 @@
 // manager. The manager only sees the Engine/TorrentHandle interfaces here; the
 // anacrolix adapter behind them is free to change as upstream drifts.
 //
-// Upstream API notes (github.com/anacrolix/torrent v1.61.0, checked via go doc):
-// one Client serves all jobs and each torrent is given its own storage root
-// (AddTorrentOpts.Storage, closed by upstream on Drop and Client.Close), so all
-// data still lands under <Dir>/<jobID>. Names that moved since the v1 sketch:
-// SetBytesCompletedCallback is gone (Stats polls BytesCompleted instead),
-// Verify maps to VerifyDataContext, and Client.Close returns []error.
+// One upstream client serves all jobs; each torrent gets its own storage root
+// under <Dir>/<jobID>, which upstream closes on Drop and Client.Close.
 package downloads
 
 import (

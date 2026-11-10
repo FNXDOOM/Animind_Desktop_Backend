@@ -15,14 +15,13 @@ import (
 
 // Subtitle handling.
 //
-// Extracted subtitles live next to the video in a canonical tree:
+// Subtitles are extracted once at scan time into a canonical tree, so playback never pays
+// for an ffmpeg run and a re-scan does not redo the work:
 //
 //	<Show>/Subtitles/Episode 05/English.vtt
 //	<Show>/Subtitles/Season 03/Episode 05/English.vtt   (season > 1)
 //
-// Writing them once at scan time means playback never pays for an ffmpeg run, and the
-// layout is stable enough that a re-scan does not redo work. SRT sidecars written by hand
-// beside the video are still read, and converted on the way out.
+// Hand-written SRT sidecars next to the video are still read, and converted on the way out.
 
 // SubtitleTrack is one usable subtitle for a client.
 type SubtitleTrack struct {
@@ -139,11 +138,9 @@ func (f *FFmpeg) ExtractEmbeddedSubtitles(ctx context.Context, store *storage.Se
 	return nil
 }
 
-// writeSubtitleVTT renders one stream to a WebVTT file.
-//
-// ASS and SSA go through the in-process converter: ffmpeg's own ASS-to-VTT path keeps
-// sign and karaoke lines, which are the ones that clutter an episode. Everything else uses
-// ffmpeg's webvtt muxer.
+// writeSubtitleVTT renders one stream to a WebVTT file. ASS and SSA use the in-process
+// converter because ffmpeg's own ASS-to-VTT path keeps sign and karaoke lines, which
+// clutter an episode; everything else uses ffmpeg's webvtt muxer.
 func (f *FFmpeg) writeSubtitleVTT(ctx context.Context, videoPath string, stream Stream, outPath string) error {
 	switch strings.ToLower(stream.Codec) {
 	case "ass", "ssa":
@@ -342,10 +339,8 @@ func StripExtensionFromName(name string) string {
 	return name
 }
 
-// ConvertSRTToVTT turns an SRT document into WebVTT.
-//
-// The two formats differ only in the header, the comma-vs-dot separator in timestamps, and
-// the presence of cue index lines.
+// ConvertSRTToVTT turns an SRT document into WebVTT. The two formats differ only in the
+// header, the comma-vs-dot timestamp separator, and the cue index lines.
 func ConvertSRTToVTT(srt string) string {
 	normalized := strings.ReplaceAll(srt, "\r\n", "\n")
 	var out strings.Builder
@@ -375,11 +370,10 @@ var (
 	punctuationPattern = regexp.MustCompile(`^[\s\W]+$`)
 )
 
-// ConvertAssToVTT renders ASS/SSA dialogue into WebVTT.
-//
-// Only the [Events] section is read, using its own Format line to locate the fields, since
-// column order is not fixed across release groups. Drawing commands, override blocks and
-// blacklisted styles are dropped, and consecutive duplicate cues collapse.
+// ConvertAssToVTT renders ASS/SSA dialogue into WebVTT. Only [Events] lines are read, and
+// the section's own Format line locates the fields because column order is not fixed
+// across release groups. Drawing commands, override blocks and blacklisted styles are
+// dropped, and consecutive duplicate cues collapse.
 func ConvertAssToVTT(ass string) string {
 	lines := strings.Split(strings.ReplaceAll(ass, "\r\n", "\n"), "\n")
 

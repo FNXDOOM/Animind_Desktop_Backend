@@ -1,7 +1,6 @@
-// Package logging configures the process-wide structured logger.
-//
-// Logs are the only operational surface this backend has (it serves no frontend), so every
-// entry is structured JSON in production and human-readable text in development.
+// Package logging configures the process-wide structured logger. Logs are the only
+// operational surface this backend has (it serves no frontend), so entries are structured JSON
+// in production and human-readable text in development.
 package logging
 
 import (

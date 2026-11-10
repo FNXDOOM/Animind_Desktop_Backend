@@ -16,12 +16,9 @@ import (
 	"animind-backend-go/internal/storage"
 )
 
-// Playback endpoints.
-//
-// Two credentials unlock a media request: a session or desktop bearer token, or a signed
-// playback ticket in the query string. The ticket exists because neither a <video> element
-// nor mpv can attach an Authorization header, and it is scoped to one episode and one
-// expiry rather than reusing an account credential in a URL that outlives the request.
+// Playback endpoints. A request unlocks with a session or desktop bearer token, or a signed
+// playback ticket in the query string: neither a <video> element nor mpv can attach an
+// Authorization header, and a ticket is scoped to one episode, not to an account credential.
 
 // streamTicketResponse is what both clients read before asking for bytes.
 type streamTicketResponse struct {
@@ -90,10 +87,8 @@ func (s *Server) handleStreamTicket(w http.ResponseWriter, r *http.Request) {
 	})
 }
 
-// hlsRequiredFor reports whether a browser needs the HLS path for this file.
-//
-// The container decision belongs to the media package; the mode decision belongs here: in S3
-// mode the presigned URL is always used directly, whatever the container.
+// hlsRequiredFor reports whether a browser needs the HLS path: the container decision is the
+// media package's, the mode decision ours, since S3 mode always uses the presigned URL.
 func (s *Server) hlsRequiredFor(episode *repository.Episode) bool {
 	return s.cfg.IsLocal() && !media.BrowserCanProgressivePlay(episode.FilePath)
 }
@@ -343,10 +338,8 @@ type hlsSessionResponse struct {
 	PlaylistURL string `json:"playlistUrl"`
 }
 
-// handleCreateHLSSession starts an on-demand remux for a local file.
-//
-// audioTrackIndex is optional: the site sends no key at all on first play, which means the
-// first audio stream.
+// handleCreateHLSSession starts an on-demand remux for a local file. audioTrackIndex is
+// optional: the site sends no key at all on first play, which means the first audio stream.
 func (s *Server) handleCreateHLSSession(w http.ResponseWriter, r *http.Request) {
 	if !s.cfg.IsLocal() {
 		WriteError(w, http.StatusBadRequest, "HLS sessions are only available in local storage mode.")

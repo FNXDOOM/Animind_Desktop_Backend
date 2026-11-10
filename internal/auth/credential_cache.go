@@ -9,15 +9,12 @@ import (
 	"animind-backend-go/internal/config"
 )
 
-// credentialCache resolves a token from shared state instead of the database.
+// credentialCache resolves a token from shared state instead of the database: every
+// authenticated request used to cost two indexed SELECTs, session row then user row.
 //
-// A browser or player authenticates on every request, and each resolution was two indexed
-// SELECTs — session row, then user row. That made authorization the most common query in the
-// deployment and the first thing a socket connect waits on.
-//
-// Entries are keyed by the same SHA-256 hash the database stores, so a cache key reveals
-// nothing about the token it stands for, and they are written into the owner's invalidation
-// group so revocation does not need to know the key it is revoking.
+// Entries are keyed by the SHA-256 hash the database stores, so a key reveals nothing
+// about its token, and sit in the owner's invalidation group so revocation does not
+// need to know the key it is revoking.
 type credentialCache struct {
 	store  cache.Store
 	ttl    time.Duration
@@ -90,15 +87,13 @@ func (c *credentialCache) remember(ctx context.Context, key string, p *Principal
 	}
 }
 
-// invalidateUser drops every credential resolution for one account.
+// invalidateUser drops every credential resolution for one account. Revocations,
+// password changes and privilege writes all go through here because the group is the only
+// handle those paths have: a session revoked by row id says nothing about the token hash
+// its cache entry was keyed by.
 //
-// Every revocation, password change and privilege write goes through here because the group
-// is the only handle that exists on those paths: a session revoked by row id says nothing
-// about the token hash its cache entry was keyed by.
-//
-// What it cannot erase is an entry written by a resolution that was already in flight when
-// the revocation landed. That race costs at most the cache TTL of a stale credential, which
-// is why the TTL is short; the alternative is a version round trip on every request.
+// It cannot erase an entry written by a resolution already in flight when the revocation
+// landed. That race costs at most the cache TTL, which is why the TTL is short.
 func (c *credentialCache) invalidateUser(ctx context.Context, userID string) {
 	if userID == "" {
 		return

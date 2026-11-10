@@ -36,14 +36,10 @@ var (
 	_ TorrentHandle = (*anacrolixHandle)(nil)
 )
 
-// AnacrolixEngine adapts github.com/anacrolix/torrent to Engine.
-//
-// One client serves every job: upstream (v1.61.0) takes per-torrent storage via
-// AddTorrentOpts.Storage, so each torrent gets a storage root under
-// <Dir>/<jobID> and the client-level DataDir is never used for job data. A
-// torrent is keyed upstream by infohash, so a second live job for the same
-// infohash (e.g. two users, same torrent) is refused rather than silently
-// sharing another job's storage root.
+// AnacrolixEngine adapts github.com/anacrolix/torrent to Engine: one client
+// for every job, each torrent storing under <Dir>/<jobID> via its own
+// AddTorrentOpts.Storage, never the client DataDir. Upstream keys torrents by
+// infohash, so a second live job for the same hash is refused, not shared.
 type AnacrolixEngine struct {
 	cfg config.DownloadsConfig
 	cli *torrent.Client
@@ -52,10 +48,9 @@ type AnacrolixEngine struct {
 	jobs map[uuid.UUID]*anacrolixHandle
 }
 
-// NewAnacrolixEngine builds the client. DHT/PEX/UTP come from cfg; UPnP/NAT
-// port mapping is hard-disabled because the engine must never punch holes in
-// the operator's network. The client still binds local TCP/UDP ports even with
-// discovery disabled.
+// NewAnacrolixEngine builds the client from cfg's DHT/PEX/UTP knobs. UPnP/NAT
+// port mapping is hard-disabled — the engine must never punch holes in the
+// operator's network — though local TCP/UDP ports are still bound.
 func NewAnacrolixEngine(cfg config.DownloadsConfig) (*AnacrolixEngine, error) {
 	cli, err := torrent.NewClient(newClientConfig(cfg))
 	if err != nil {
@@ -64,11 +59,8 @@ func NewAnacrolixEngine(cfg config.DownloadsConfig) (*AnacrolixEngine, error) {
 	return &AnacrolixEngine{cfg: cfg, cli: cli, jobs: map[uuid.UUID]*anacrolixHandle{}}, nil
 }
 
-// newClientConfig builds the client configuration. Extracted from
-// NewAnacrolixEngine so tests can assert the config contract without
-// constructing a client (which binds ports). Upstream's torrent.NewClient
-// starts a UPnP/NAT-PMP forwardPort goroutine whenever NoDefaultPortForwarding
-// is false (the default), so it is always set here.
+// newClientConfig builds the client configuration, split out so tests can
+// assert the config contract without constructing a client, which binds ports.
 func newClientConfig(cfg config.DownloadsConfig) *torrent.ClientConfig {
 	cliConf := torrent.NewDefaultClientConfig()
 	cliConf.DataDir = cfg.Dir
@@ -79,12 +71,9 @@ func newClientConfig(cfg config.DownloadsConfig) *torrent.ClientConfig {
 	// No port mapping: without this upstream launches go cl.forwardPort() and
 	// may add a UPnP/NAT-PMP mapping on the operator's router.
 	cliConf.NoDefaultPortForwarding = true
-	// Empty host = wildcard per socket network: upstream also opens tcp6, and a
-	// literal "0.0.0.0" fails that listen on dual-stack hosts.
-	// An ephemeral port can land in a Windows excluded-port range and kill startup
-	// (measured: udp4 :64437 was forbidden); the operator pins one with
-	// DOWNLOADS_LISTEN_ADDR when this host needs it. An unset address keeps the
-	// upstream ":0" behaviour, which is also what a zero-value config wants.
+	// Empty host = wildcard per network: "0.0.0.0" fails upstream's tcp6 listen
+	// on dual-stack hosts. Ephemeral ports can land in a Windows excluded range
+	// and kill startup (measured: udp4 :64437), hence DOWNLOADS_LISTEN_ADDR.
 	addr := cfg.ListenAddr
 	if addr == "" {
 		addr = ":0"
@@ -226,12 +215,9 @@ func newAnacrolixHandle(e *AnacrolixEngine, jobID uuid.UUID, dir string, t *torr
 	return h
 }
 
-// engineFileElement is the minimal view of an upstream file that the EngineFile
-// mapping needs. Upstream's *torrent.File satisfies it; the indirection exists
-// because File has only unexported fields and no constructor (and its
-// BytesCompleted requires a live client), so tests exercise the sort and the
-// mapping with synthetic files through this seam instead of building File
-// values directly.
+// engineFileElement is the minimal upstream-file view the EngineFile mapping
+// needs: torrent.File has unexported fields, no constructor, and its
+// BytesCompleted needs a live client, so tests use synthetic files here.
 type engineFileElement interface {
 	Path() string
 	Length() int64
@@ -247,14 +233,10 @@ func sortFilesByPath[T engineFileElement](files []T) {
 	})
 }
 
-// engineFiles maps upstream files (in the handle's sorted order) to EngineFiles.
-// Path is the job-directory-relative path: upstream's storage layout puts every
-// file under the torrent's own name directory, which is what File.Path()
-// carries ("path components including the directory name"). DisplayPath() would
-// omit that name for directory torrents, and nothing built from it — import
-// source paths, containment checks — would ever find a real file on disk.
-// filepath.Clean normalizes upstream's '/'-joined components to the platform
-// separator and defends against malformed metainfo paths.
+// engineFiles maps upstream files, in the handle's sorted order, to
+// EngineFiles. Path(), not DisplayPath(): DisplayPath drops the torrent-name
+// directory upstream stores files under, so import paths would not resolve on
+// disk. Clean matches the platform separator and guards malformed metainfo.
 func engineFiles[T engineFileElement](files []T) []EngineFile {
 	out := make([]EngineFile, 0, len(files))
 	for i, f := range files {
@@ -378,10 +360,9 @@ func (h *anacrolixHandle) Drop(deleteFiles bool) error {
 	return nil
 }
 
-// Done closes its channel once every selected byte has been downloaded. The
-// watcher is one-shot and stops silently if the torrent (or client) is closed.
-// With no selection yet it never fires; BytesMissing alone cannot be used
-// because upstream counts unselected files as missing too.
+// Done closes its channel once every selected byte is downloaded; with no
+// selection it never fires. The watcher is one-shot and stops silently if the
+// torrent closes. BytesMissing is unusable — upstream counts unselected files.
 func (h *anacrolixHandle) Done() <-chan struct{} {
 	h.doneOnce.Do(func() {
 		h.done = make(chan struct{})

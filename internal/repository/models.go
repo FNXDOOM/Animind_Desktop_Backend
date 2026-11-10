@@ -98,10 +98,8 @@ type LinkedIdentity struct {
 	AvatarURL      string `json:"avatar_url"`
 }
 
-// Show is a series row in the indexed library.
-//
-// Field names match the JSON keys both clients already parse, so no renaming
-// happens at the HTTP edge.
+// Show is a series row in the indexed library. Field names match the JSON keys both clients
+// already parse, so nothing is renamed at the HTTP edge.
 type Show struct {
 	ID               string    `json:"id"`
 	Title            string    `json:"title"`

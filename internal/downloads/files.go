@@ -16,10 +16,8 @@ import (
 var subtitleExts = []string{".srt", ".ass", ".ssa", ".vtt", ".sub"}
 
 // videoExtensions mirrors config.ScannerConfig's VIDEO_EXTENSIONS default
-// (lowercase, no dot). DownloadsConfig does not carry the scanner's env-tuned
-// list, so the allowlist is pinned to the same defaults; if the operator
-// overrides VIDEO_EXTENSIONS, Task 10's wiring can thread the configured list
-// through here.
+// (lowercase, no dot): DownloadsConfig carries no env-tuned list, so the
+// allowlist is pinned to the same defaults the scanner ships with.
 var videoExtensions = []string{"mkv", "mp4", "avi", "webm", "m4v"}
 
 var videoExtensionSet = extensionSet(videoExtensions)

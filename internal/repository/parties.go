@@ -5,12 +5,10 @@ import (
 	"time"
 )
 
-// Watch party persistence.
-//
-// The socket layer holds the authoritative live state; these rows exist so a room can
-// be looked up by code over HTTP, so a restart does not leave "active" rooms forever,
-// and so the cleanup job has something to delete. A write failure here must never fail
-// a join, which is why the syncplay handlers treat these errors as warnings.
+// Watch party persistence. The socket layer holds the authoritative live state; these rows
+// exist so a room can be looked up by code over HTTP, so a restart does not leave rooms
+// active forever, and so the cleanup job has something to delete. Write failures here are
+// logged as warnings by the syncplay handlers and never fail the operation.
 
 const partyColumns = `
 	id, host_user_id::text, host_name, episode_id::text, status, created_at, updated_at, ended_at`

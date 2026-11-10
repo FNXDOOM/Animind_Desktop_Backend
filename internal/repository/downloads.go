@@ -10,16 +10,12 @@ import (
 	"github.com/jackc/pgx/v5"
 )
 
-// Torrent download jobs: one row per user-initiated download, driven through its
-// state machine by internal/downloads.
+// Torrent download jobs: one row per user-initiated download, driven through its state
+// machine by internal/downloads. Every read and write is scoped by user_id except the admin
+// helpers, which pass all=true explicitly; a list with neither an owner nor all=true is empty.
 //
-// Every read and write is scoped by user_id except the admin/global helpers, which
-// take an explicit nil-user "all" decision from the caller; a list without an owner
-// and without all=true returns nothing rather than everything.
-//
-// The non-terminal state set below is also the WHERE clause of the partial unique
-// index uq_download_jobs_active_hash: failed and cancelled rows leave the index, so
-// a torrent can be retried after a terminal state.
+// This state set is also the WHERE clause of uq_download_jobs_active_hash: terminal rows
+// leave the index, so a torrent can be retried after a failure or a cancel.
 const activeStates = `'queued','fetching_metadata','awaiting_selection','downloading','verifying','importing','ready','paused'`
 
 // DownloadJob is one download_jobs row. IDs are strings cast with ::text/::uuid,
@@ -165,10 +161,9 @@ func (s *Store) ListDownloadJobs(ctx context.Context, userID *string, all bool, 
 	return out, rows.Err()
 }
 
-// TransitionDownloadJob moves a job from one state to another as a compare-and-set:
-// when the row is no longer in the expected state (a user paused or cancelled while the
-// worker worked) it matches nothing and ErrConflict is returned instead of clobbering
-// the newer state.
+// TransitionDownloadJob moves a job between states as a compare-and-set: if the row has
+// already left `from` (a user paused or cancelled while the worker ran) it matches nothing
+// and ErrConflict is returned instead of clobbering the newer state.
 func (s *Store) TransitionDownloadJob(ctx context.Context, id, from, to string) (DownloadJob, error) {
 	rows, err := s.pool.Query(ctx, `
 		update download_jobs set state = $3, updated_at = now()

@@ -20,10 +20,8 @@ import (
 )
 
 // Catalog, administration and diagnostics.
-//
-// The catalog is intentionally public: both clients render the library before sign-in. It
-// exposes only what a card or detail page shows, never a file path or bucket name, which is
-// why Episode rows drop those fields at the JSON edge.
+// The catalog is intentionally public: both clients render it before sign-in. Cards and
+// detail rows never carry a file path or bucket name.
 
 // showListItem is one catalog card.
 type showListItem struct {
@@ -75,11 +73,8 @@ func (s *Server) handleHealth(w http.ResponseWriter, r *http.Request) {
 	WriteJSON(w, http.StatusOK, response)
 }
 
-// handleListShows returns a page of the catalog.
-//
-// Duplicate identities are collapsed the way the original backend did, on AniList id when
-// present and normalized title otherwise, keeping the richer row. That is a display
-// safeguard: the scanner is the place a duplicate should never have been created.
+// handleListShows returns a page of the catalog, duplicate series collapsed the way the
+// original backend did.
 func (s *Server) handleListShows(w http.ResponseWriter, r *http.Request) {
 	limit := QueryInt(r, "limit", 50, 1, 200)
 	offset := QueryInt(r, "offset", 0, 0, 1_000_000)
@@ -107,14 +102,9 @@ func (s *Server) handleListShows(w http.ResponseWriter, r *http.Request) {
 	})
 }
 
-// dedupeShows collapses rows that describe the same series, keeping the richer one and
-// preserving the incoming (title-ordered) sequence.
-//
-// Two passes, because a library accumulates duplicates two ways: the same external entry
-// imported under two spellings of its title (caught by the AniList id), and the same title
-// indexed twice with only one of them enriched (caught by the normalized title). The scanner
-// is where a duplicate should never have been created; this is the display safeguard that keeps
-// the grid from showing the same card twice regardless of how the rows got that way.
+// dedupeShows collapses rows describing the same series, keeping the richer one and the
+// incoming title order. Duplicates arrive two ways, one AniList id under two title spellings
+// and one title indexed twice, so two passes run; the scanner is where they never appear.
 func dedupeShows(shows []repository.Show) []repository.Show {
 	type entry struct {
 		show repository.Show
@@ -190,11 +180,9 @@ type episodeListItem struct {
 	CreatedAt     time.Time `json:"created_at"`
 }
 
-// handleShowByID returns one show with its episodes.
-//
-// Episodes are de-duplicated on (season, content type, episode number) and ordered, and a
-// fractional episode number keeps its fraction: a special labelled 5.5 must not merge into
-// episode 5.
+// handleShowByID returns one show with its episodes, de-duplicated on (season, content type,
+// episode number): a fractional number keeps its fraction, so a special labelled 5.5 must not
+// merge into episode 5.
 func (s *Server) handleShowByID(w http.ResponseWriter, r *http.Request) {
 	id := Param(r, "id")
 	show, err := s.store.ShowByIDText(r.Context(), id)
@@ -267,12 +255,9 @@ func normalizeSeason(value int) int {
 	return value
 }
 
-// handleAniListProxy forwards a read-only GraphQL document to AniList.
-//
-// The site needs AniList's search and detail operations, which a browser cannot call
-// directly because AniList sends no CORS headers. Only queries are accepted: a mutation or
-// subscription in a proxied document would let a visitor write to someone else's AniList
-// account using a token this server never holds.
+// handleAniListProxy forwards a read-only GraphQL document to AniList, which a browser
+// cannot call directly because AniList sends no CORS headers. Only queries are accepted: a
+// mutation here could write to an AniList account, which this server holds no token for.
 func (s *Server) handleAniListProxy(w http.ResponseWriter, r *http.Request) {
 	var body struct {
 		Query     string          `json:"query"`
@@ -420,10 +405,9 @@ func isReadOnlyGraphQL(query string) bool {
 	return !strings.Contains(lowered, "mutation") && !strings.Contains(lowered, "subscription")
 }
 
-// handleStorageWebhook triggers a scan when the object store reports a new file.
-//
-// It answers before scanning: a bucket that waits on a scan would retry the notification,
-// and scans are serialized anyway.
+// handleStorageWebhook triggers a scan when the object store reports a new file. It answers
+// before scanning: a bucket waiting on a scan would retry the notification, and scans are
+// serialized anyway.
 func (s *Server) handleStorageWebhook(w http.ResponseWriter, r *http.Request) {
 	secret := r.Header.Get("x-webhook-secret")
 	// Constant-time comparison: this is a shared secret, and a byte-at-a-time mismatch would
@@ -547,10 +531,8 @@ func (s *Server) handleAdminScan(w http.ResponseWriter, r *http.Request) {
 	WriteJSON(w, http.StatusOK, result)
 }
 
-// handleAdminUsers lists accounts.
-//
-// This replaces the old profile-row list: every account appears, including ones that never
-// opened the site, because the user table is now the only source of truth for admins.
+// handleAdminUsers lists accounts from the user table, so an account that never opened the
+// site appears too; it replaces the old profile-row list.
 func (s *Server) handleAdminUsers(w http.ResponseWriter, r *http.Request) {
 	limit := QueryInt(r, "limit", 100, 1, 200)
 	offset := QueryInt(r, "offset", 0, 0, 100_000)

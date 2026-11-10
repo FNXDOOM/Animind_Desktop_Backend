@@ -31,9 +31,8 @@ func PrincipalFromContext(ctx context.Context) *auth.Principal {
 }
 
 // RequireAuth resolves the bearer credential and stops the request when it is missing or
-// invalid. Responses deliberately echo the original backend's wording: the desktop player
-// treats 401 as a hard stop with no retry, so the message is the only diagnostic a user
-// ever sees.
+// invalid. The wording echoes the original backend because the desktop player treats 401 as a
+// hard stop with no retry, so the message is the only diagnostic a user ever sees.
 func (s *Server) RequireAuth(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		token := credential(r)
@@ -70,11 +69,9 @@ func (s *Server) RequireAdmin(next http.Handler) http.Handler {
 	})
 }
 
-// CORS answers the site and the desktop player.
-//
-// The player sends no Origin at all on its Qt network calls, and a missing Origin must
-// stay allowed, otherwise every desktop request would fail preflight-free but be rejected
-// by an over-equal check here.
+// CORS answers the site and the desktop player. The player's Qt calls send no Origin at all,
+// and a missing Origin has to stay allowed, since an over-equal check would reject every
+// desktop request.
 func (s *Server) CORS(next http.Handler) http.Handler {
 	allowedHeaders := "Content-Type, Authorization, x-webhook-secret, Accept, Range"
 	methods := "GET, POST, PATCH, PUT, DELETE, OPTIONS"

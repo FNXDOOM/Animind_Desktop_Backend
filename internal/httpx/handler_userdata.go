@@ -13,12 +13,9 @@ import (
 	"animind-backend-go/internal/repository"
 )
 
-// User-owned data endpoints.
-//
-// The site used to write its watchlist and progress rows straight to the database with an
-// externally issued JWT, and the desktop player used to talk to a REST gateway. Both now
-// come through here, which is where the ownership check lives: every statement is filtered
-// by the session's user id, never by an id the client supplied.
+// User-owned data endpoints, replacing the site's old direct database writes with an
+// externally issued JWT. The ownership check lives here: every statement filters on the
+// session's user id, never an id the request supplied.
 
 // watchlistItemResponse is a saved show. anime_data is the exact object the client stored,
 // which is what its cards are built from.
@@ -37,10 +34,8 @@ var watchlistStatuses = map[string]bool{
 	"Watching": true, "Completed": true, "Plan to Watch": true, "Dropped": true,
 }
 
-// normalizeWatchlistStatus validates a status and applies the default.
-//
-// It is a pure function so the whitelist and the default can be tested without a database or
-// a session: this is the rule that decides whether a show shows up under "Watching".
+// normalizeWatchlistStatus validates a status and applies the default. It is a pure function
+// so the whitelist and the default can be tested without a database or a session.
 func normalizeWatchlistStatus(raw string) (string, error) {
 	status := strings.TrimSpace(raw)
 	if status == "" {
@@ -263,11 +258,9 @@ func (s *Server) handleDeleteWatchlist(w http.ResponseWriter, r *http.Request) {
 	WriteJSON(w, http.StatusOK, map[string]bool{"success": true})
 }
 
-// handleGetProgress returns one resume position.
-//
-// episode_index is the client's positional index into its episode list. It is stored as-is
-// for compatibility with rows the site already has; prefer the per-episode history endpoint
-// for new clients, which keys on a show title instead.
+// handleGetProgress returns one resume position. episode_index is the client's positional
+// index into its own episode list, stored as-is for compatibility with the site's existing
+// rows; new clients should prefer the history endpoint, which keys on a show title.
 func (s *Server) handleGetProgress(w http.ResponseWriter, r *http.Request) {
 	principal, ok := s.requirePrincipal(w, r)
 	if !ok {

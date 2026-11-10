@@ -1,9 +1,6 @@
-// Package scanner indexes the media library: it discovers files, turns release filenames
-// into show and episode records, and prunes rows whose file disappeared.
-//
-// Parsing is deterministic and ordered: the folder path is tried first because a release
-// group's filename is far more reliable than a bare episode number, and an LLM guess is
-// used only when nothing matched and the operator opted in.
+// Package scanner indexes the media library: discovers files, turns release filenames into
+// show and episode records, and prunes rows whose file disappeared. Parsing is ordered and
+// deterministic: the folder path wins over a bare filename, and the LLM runs only if opted in.
 package scanner
 
 import (
@@ -87,11 +84,9 @@ func stripTrailingNoise(name string) string {
 	return strings.TrimSpace(out)
 }
 
-// CleanFolderTitle reduces a release directory name to a show title.
-//
-// "Re.ZERO.Starting.Life.in.Another.World.S03.1080p.BluRay.Opus.2.0.x265-Headpatter"
-// becomes "Re ZERO Starting Life in Another World": the season marker, the quality and
-// codec run, and the trailing release group are all cut.
+// CleanFolderTitle reduces a release directory to a show title by cutting the season marker,
+// the quality/codec run and the trailing release group: "Show.S01.1080p.BluRay.x265-Group"
+// becomes "Show".
 func CleanFolderTitle(folderName string) string {
 	out := dotUnderscorePattern.ReplaceAllString(folderName, " ")
 	out = folderSeasonPattern.ReplaceAllString(out, "")
@@ -121,10 +116,8 @@ func extractEpisode(name string) (title string, episode float64, season *int, ok
 	return "", 0, nil, false
 }
 
-// ExtractEpisodeByStrongPatterns picks an episode number out of a longer string, where
-// title and language tokens interleave. Patterns run in order: SxxEyy, "Ep yy", then a
-// dash-separated number that stands alone.
-//
+// ExtractEpisodeByStrongPatterns picks an episode number from a string where title and
+// language tokens interleave, trying SxxEyy, then "Ep yy", then a standalone dash number.
 // Exported for the parser tests; the scan path goes through ParseAnimeFilename.
 func ExtractEpisodeByStrongPatterns(name string) (float64, bool) {
 	strong := []*regexp.Regexp{
@@ -218,9 +211,8 @@ func ParseAnimeFilename(filename string) *Parsed {
 }
 
 // ParseFolderPath resolves a full library-relative path into a show, season and episode.
-//
-// Folder titles win over filename titles: "Frieren/Season 1/S01E01.mkv" names the show
-// "Frieren", not the empty title that "S01E01" would produce.
+// Folder titles win over filename titles: "Frieren/Season 1/S01E01.mkv" is "Frieren", not
+// the empty title "S01E01" alone would produce.
 func ParseFolderPath(relativePath string) *Parsed {
 	normalized := strings.ReplaceAll(relativePath, "\\", "/")
 	parts := strings.Split(normalized, "/")
@@ -299,10 +291,9 @@ func intPointer(raw string) *int {
 // ref builds a pointer to a value, for optional ReleaseSpec fields.
 func ref[T any](v T) *T { return &v }
 
-// ReleaseSpec is the technical profile of one release name: every field the download
-// pipeline needs to compare a torrent against the library's quality preferences. A field the
-// name never tags stays nil, empty or false — nothing is inferred from neighbours, so
-// "Hi10P" alone is a bit depth and never a video codec.
+// ReleaseSpec is the technical profile of one release name: the fields the download
+// pipeline compares against the library's quality preferences. Untagged fields stay nil,
+// empty or false — nothing is inferred from neighbours, so "Hi10P" is a bit depth only.
 type ReleaseSpec struct {
 	Resolution   *int
 	Source       *string
@@ -342,13 +333,9 @@ var (
 	subsPattern  = regexp.MustCompile(`(?i)\b(Multi(?:ple)?[ -]?Sub(?:title)?s?|Soft[ -]?Subs?|Hard[ -]?Subs?|No[ -]?Subs?)\b`)
 	hdrPattern   = regexp.MustCompile(`(?i)\b(HDR(?:10\+?)?|Dolby Vision|DV)\b`)
 	episodeRange = regexp.MustCompile(`(?i)(?:e|ep\.?|\s-\s|\s)(\d{1,4})\s*(?:-|~|–|to)\s*e?(\d{1,4})\b`)
-	// ParseAnimeFilename reads a batch's range end as its episode and leaves the range start
-	// behind in the title. The leftover tail depends on the separator: dash ranges delegate
-	// "Show - 01" (separator + start), while "~" and "to" ranges delegate "Show - 01 ~" /
-	// "Show - 01 to" (start + separator). The trim removes both shapes — an optional leading
-	// dash, the start number, then an optional trailing separator — anchored to the title's
-	// end at a word boundary before the tail's whitespace so numbers inside the show name
-	// itself survive.
+	// ParseAnimeFilename takes a batch's range end as its episode and leaves the start in the
+	// title, with or without a trailing separator: "Show - 01", "Show - 01 ~", "Show - 01 to".
+	// The trim is anchored to the title's end so numbers inside the show name survive.
 	batchRangeTailPattern = regexp.MustCompile(`(?i)(?:^|\b)\s*(?:[-–]\s*)?\d{1,4}\s*(?:[-–~]|\bto\b)?\s*$`)
 	batchWord             = regexp.MustCompile(`(?i)\b(batch|complete)\b`)
 )
@@ -366,13 +353,9 @@ var trailingTagTokens = map[string]bool{
 	"x265": true, "alac": true,
 }
 
-// ParseRelease reads the technical tags out of a release name.
-//
-// Tags are matched after the leading "[Group]" marker is removed but while bracketed and
-// parenthesised sections stay intact: release names carry "(1080p)", "[Dual Audio]" and
-// CRC hashes inside those sections, and a full noise strip would delete exactly what this
-// function is asked to read. Dots and underscores become spaces first so dotted names like
-// "Show.1080p.WEB-DL.H.264" tokenize like spaced ones.
+// ParseRelease reads the technical tags out of a release name. Tags are matched after the
+// leading "[Group]" marker is removed but with bracket and parenthesised sections intact,
+// since "(1080p)" and "[Dual Audio]" are tags a noise strip would erase; dots become spaces.
 func ParseRelease(raw string) ReleaseSpec {
 	stripped := StripExtension(raw)
 	body, group := stripGroupTag(stripped)
@@ -414,11 +397,8 @@ func ParseRelease(raw string) ReleaseSpec {
 }
 
 // ParseTorrentTitle resolves a torrent name into its content identity and technical spec.
-// ParseAnimeFilename stays the only source of show, season and episode; the range check
-// runs afterwards because "Show - 01-12" parses as episode 12 there, and a batch's first
-// episode is the more useful reading for the download pipeline. Once the range is
-// confirmed, the start number and its separator are trimmed from the delegated title for
-// every range shape: "Show - 01", "Show - 01 ~" and "Show - 01 to" all clean to "Show".
+// ParseAnimeFilename owns show, season and episode, and the range check runs after it:
+// "Show - 01-12" parses as episode 12 there, but a batch's start serves the pipeline better.
 func ParseTorrentTitle(raw string) TorrentTitle {
 	stripped := StripExtension(raw)
 	spec := ParseRelease(raw)

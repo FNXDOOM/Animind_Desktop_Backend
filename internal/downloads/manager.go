@@ -105,10 +105,8 @@ type scanRunner interface {
 var _ scanRunner = (*scanner.Service)(nil)
 
 // Observer is the metric seam between the manager and the process's Prometheus
-// registry (spec §7.10). The HTTP wiring hands over the httpx metrics set, which
-// owns the animind_downloads_* collectors; a missing observer disables every
-// hook. All methods are called from drive goroutines, so implementations must
-// be cheap and non-blocking.
+// registry (spec §7.10). A missing observer disables every hook, and all
+// methods run from drive goroutines, so they must be cheap and non-blocking.
 type Observer interface {
 	// ActiveJobs records the CountActiveDownloadJobs(nil) snapshot taken each
 	// progress ticker pass (and for free from Create's own quota check).
@@ -132,10 +130,9 @@ type Manager struct {
 	store  store
 	engine Engine
 	cfg    config.DownloadsConfig
-	// libraryRoot is the real library root the importer builds destinations in
-	// and removeImported checks containment against. Task 1 only pins
-	// DOWNLOADS_DIR somewhere under it, so it is threaded, never derived from
-	// cfg.Dir; an empty root fails imports closed.
+	// libraryRoot is the real library root, threaded rather than derived from
+	// cfg.Dir: Task 1 only pins DOWNLOADS_DIR somewhere under it. An empty root
+	// fails imports closed.
 	libraryRoot string
 	scanner     scanRunner
 	shows       showResolver // show_id lookups; nil when the store can't answer them
@@ -211,11 +208,9 @@ type jobRun struct {
 	userID string
 	magnet string
 
-	// metricLast is the previous reading's BytesDone, used to keep the downloads
-	// bytes counter a delta rather than a cumulative re-add. metricInit marks
-	// the baseline as taken: true from construction for fresh jobs (count from
-	// zero), false for adopted runs so the first reading seeds instead. Both
-	// are guarded by mu: two drive generations can overlap briefly.
+	// metricLast keeps the bytes counter a delta, not a cumulative re-add;
+	// metricInit is true for fresh jobs (count from zero), false for adopted
+	// runs (first reading seeds). Both are under mu: drive generations overlap.
 	metricLast int64
 	metricInit bool
 
@@ -344,10 +339,9 @@ func (m *Manager) Create(ctx context.Context, req Request) (repository.DownloadJ
 	if err != nil {
 		return job, fmt.Errorf("downloads: job id %q: %w", job.ID, err)
 	}
-	// A job created in this process counts from zero: every byte the engine
-	// reports from here on was downloaded here, however fast the swarm fills
-	// the selection. Only adopted (post-restart) runs seed their baseline at
-	// the first reading instead — their pre-existing data predates us.
+	// A job created here counts from zero: every byte the engine reports from
+	// now on was downloaded here. Adopted (post-restart) runs seed their
+	// baseline at the first reading instead — their data predates us.
 	m.launch(m.register(&jobRun{
 		id: id, userID: job.UserID, magnet: magnetFor(req.Magnet, job),
 		metricInit: true, metricLast: 0,
@@ -439,11 +433,9 @@ func (m *Manager) runFor(job repository.DownloadJob) (*jobRun, error) {
 	return m.register(&jobRun{id: id, userID: job.UserID, magnet: magnetFor("", job)}), nil
 }
 
-// resumeTarget picks the state a paused row returns to. Rows with a stored
-// selection replay it into downloading; selection-less rows (packs paused
-// while awaiting_selection) go back to awaiting_selection — resuming them
-// into downloading would strand them there, since Done() only fires for
-// selected bytes and the row could never leave.
+// resumeTarget sends a paused row to downloading when it has a stored
+// selection and back to awaiting_selection without one: in downloading a
+// selection-less row would strand, since Done() only fires for selected bytes.
 func resumeTarget(job repository.DownloadJob) string {
 	if len(job.SelectedFiles) > 0 {
 		return StateDownloading
@@ -521,14 +513,9 @@ func (m *Manager) SelectFiles(ctx context.Context, jobID, actorUserID string, is
 	return updated, nil
 }
 
-// validateSelection refuses a selection the torrent cannot honour before any
-// state is written: an empty, negative or duplicated index list is malformed,
-// and an index past the torrent's file list is out of range. All of those are
-// ErrInvalidSelection, which the HTTP layer renders as 400
-// invalid_file_selection. The range half needs a live handle, so a selection
-// racing a restart is range-checked by the engine's own Select instead. An
-// engine fault while reading the file list is not a selection problem and is
-// returned wrapped, never as the sentinel.
+// validateSelection refuses an unfulfillable selection as ErrInvalidSelection
+// before any state is written; range checks need a live handle, so a selection
+// racing a restart falls to the engine's Select. An engine fault is not one.
 func (m *Manager) validateSelection(jobID string, indexes []int) error {
 	if len(indexes) == 0 {
 		return ErrInvalidSelection
@@ -558,11 +545,9 @@ func (m *Manager) validateSelection(jobID string, indexes []int) error {
 
 // ── startup ──────────────────────────────────────────────────────────────────
 
-// ResumeFromStore re-drives every non-terminal row after a restart: paused
-// rows are CASed to their selection-aware target first (selection ->
-// downloading, none -> awaiting_selection), everything else re-enters at its
-// own state. Ready rows are left alone. The CAS lives here, not in the drive
-// loop, so no drive generation can ever un-pause a row on its own.
+// ResumeFromStore re-drives resumable rows: paused ones are CASed to their
+// selection-aware target, the rest re-enter at their own state, ready is left
+// alone. The CAS lives here so no drive loop can un-pause a row on its own.
 func (m *Manager) ResumeFromStore(ctx context.Context) error {
 	jobs, err := m.store.ListResumableDownloadJobs(ctx)
 	if err != nil {
@@ -652,10 +637,8 @@ func (m *Manager) drive(ctx context.Context, j *jobRun) {
 			if !m.watch(ctx, j, job) {
 				return
 			}
-			// Final accounting: the last progress tick may predate the torrent's
-			// final bytes, and a job that finishes inside one tick interval never
-			// ticks at all. Read the engine once more so bytes_total ends at the
-			// job's full size.
+			// A job finishing inside one tick interval never ticks at all, so read
+			// the engine once more to land bytes_total on the job's full size.
 			if h := j.currentHandle(); h != nil {
 				m.observeProgress(j, h.Stats())
 			}
@@ -704,11 +687,9 @@ func (m *Manager) drive(ctx context.Context, j *jobRun) {
 			return // terminal: the drive loop's work is done
 
 		default:
-			// Terminal, paused, or unknown. A paused row leaves paused only
-			// through the explicit resume paths (Resume, ResumeFromStore): a
-			// drive generation that merely observes paused — e.g. one
-			// scheduled after the user's Pause CAS but before its stop — must
-			// not un-pause the job underneath the user.
+			// Terminal, paused, or unknown. Only Resume/ResumeFromStore leave
+			// paused: a generation observing paused (after the CAS, before its
+			// stop) must not un-pause the job underneath the user.
 			return
 		}
 	}
@@ -736,10 +717,9 @@ func (m *Manager) watch(ctx context.Context, j *jobRun, job repository.DownloadJ
 	if !ok {
 		return false
 	}
-	// Seed the bytes counter's baseline for an adopted (post-restart) run at
-	// the start of the downloading phase: bytes the engine already had on disk
-	// were not downloaded by this process and must not enter bytes_total. Fresh
-	// jobs construct their baseline at zero and count from their first reading.
+	// Seed the adopted (post-restart) run's baseline here, at downloading
+	// entry: bytes already on disk were not downloaded by this process and must
+	// not enter bytes_total.
 	m.observeProgress(j, h.Stats())
 	ticker := time.NewTicker(m.tick)
 	defer ticker.Stop()
@@ -813,14 +793,9 @@ func (m *Manager) failJob(ctx context.Context, j *jobRun, from, code string) {
 	m.publish(job)
 }
 
-// stopTransfers stops a terminal row's torrent from moving data in either
-// direction. The engine's Pause routes through upstream's DisallowDataUpload
-// and DisallowDataDownload — exactly the "stops uploading and downloading at
-// terminal states" the docs promise — and it keeps the torrent registered so
-// the row's one remaining action, Cancel, still owns the single Drop. Drop here
-// instead would close the per-job storage twice and lean on upstream's
-// idempotency. A row without a handle (a metadata timeout, or anything resumed
-// after a restart) holds no live torrent in this process and needs no action.
+// stopTransfers halts a terminal row's torrent in both directions. Pause (not
+// Drop) keeps it registered so Cancel owns the single Drop and per-job storage
+// is not closed twice; a row without a handle has no live torrent here.
 func (m *Manager) stopTransfers(j *jobRun) {
 	h := j.currentHandle()
 	if h == nil {
@@ -846,10 +821,9 @@ func codeFor(err error) string {
 
 // ── metrics hooks ────────────────────────────────────────────────────────────
 
-// observeProgress turns one engine reading into the bytes_total delta. The
-// first reading of a drive generation seeds the baseline instead of counting:
-// it is taken at downloading-phase entry, so a resumed job's pre-existing data
-// is never re-counted, while every byte this phase completes is.
+// observeProgress turns one engine reading into the bytes_total delta. A
+// generation's first reading seeds the baseline instead of counting, so a
+// resumed job's pre-existing data is never re-counted.
 func (m *Manager) observeProgress(j *jobRun, st Stats) {
 	o := m.obs()
 	if o == nil {
@@ -867,10 +841,9 @@ func (m *Manager) observeProgress(j *jobRun, st Stats) {
 	}
 }
 
-// observeActive publishes the active-job gauge from the same count the quota
-// checks use. One query per active job per tick is the price of reading the
-// truth from the store rather than guessing from memory; at the configured
-// scale (a couple of jobs, a 500 ms tick) that is noise.
+// observeActive publishes the active-job gauge from the quota's own count.
+// One store query per job per tick beats guessing from memory and is noise at
+// this scale (a couple of jobs, a 500 ms tick).
 func (m *Manager) observeActive(ctx context.Context) {
 	o := m.obs()
 	if o == nil {

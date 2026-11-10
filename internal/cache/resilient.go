@@ -13,11 +13,9 @@ type FallbackCounter interface {
 	Fallbacks() uint64
 }
 
-// ResilientLimiter keeps rate limiting alive when the shared store cannot be reached.
-//
-// The trade is deliberate: a Redis outage degrades to per-process counting, which over-admits
-// rather than locking every client out of an API that is otherwise healthy. Callers that got
-// a verdict from the shared store are unaffected.
+// ResilientLimiter keeps rate limiting alive when the shared store cannot be reached. The
+// trade is deliberate: a Redis outage degrades to per-process counting, which over-admits
+// rather than locking every client out of an API that is otherwise healthy.
 type ResilientLimiter struct {
 	shared   Limiter
 	local    Limiter

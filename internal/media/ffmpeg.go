@@ -1,9 +1,8 @@
 // Package media wraps the ffmpeg toolchain: stream probing, subtitle extraction,
 // browser-safe audio variants, and on-demand HLS sessions.
 //
-// Every function here runs an external process, so each one takes a context with a
-// timeout and treats a tool failure as a degraded result rather than a fatal error. A
-// library scan must still record episodes when ffmpeg is missing.
+// Every function runs an external process with its own timeout, and a tool failure is a
+// degraded result rather than a fatal one: a scan still records episodes without ffmpeg.
 package media
 
 import (
@@ -48,11 +47,10 @@ type Stream struct {
 	Tags     map[string]string
 }
 
-// probeOutput models the subset of ffprobe's JSON we read.
-//
-// The field types matter more than they look: ffprobe reports `disposition` flags and
-// `bit_rate` as numbers, not booleans or strings, so a mismatched type fails the whole
-// decode and every probe comes back empty. TestProbeDecodesRealFFprobeJSON pins this.
+// probeOutput models the subset of ffprobe's JSON we read. The types are load-bearing:
+// ffprobe reports `disposition` flags and `bit_rate` as numbers, not booleans or strings,
+// and one mismatch fails the whole decode so every probe comes back empty. See
+// TestProbeDecodesRealFFprobeJSON.
 type probeOutput struct {
 	Streams []struct {
 		Index       int               `json:"index"`
@@ -222,10 +220,9 @@ func (f *FFmpeg) toolError(tool string, err error, stderr []byte) error {
 }
 
 // BrowserCanProgressivePlay reports whether a browser can play this container without a
-// remux. Everything else needs an HLS session, or a native player that demuxes the file itself.
-//
-// This sits beside the codec tables because container legality and codec legality are one
-// decision about one file, and the streaming handler must not re-derive either of them.
+// remux; everything else needs an HLS session or a native player that demuxes the file
+// itself. It sits beside the codec tables because container legality and codec legality are
+// one decision about one file, which the streaming handler must not re-derive.
 func BrowserCanProgressivePlay(path string) bool {
 	switch ExtensionOf(path) {
 	case "mp4", "m4v", "webm":

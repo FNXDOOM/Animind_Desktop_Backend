@@ -15,14 +15,11 @@ import (
 	"animind-backend-go/internal/config"
 )
 
-// Google sign-in, implemented directly against Google's OAuth 2.0 endpoints.
+// Google sign-in, spoken directly to Google's OAuth 2.0 endpoints because a hosted
+// identity provider would break this backend's no-third-party rule.
 //
-// The original backend delegated this to a hosted auth service. Speaking OAuth
-// ourselves keeps the "no third-party identity provider" rule while still letting site
-// users click "continue with Google".
-//
-// Accounts are matched by Google subject first and email second, so a user who signed
-// up with a password and later clicks Google gets one account rather than two.
+// Accounts match on Google subject first and email second, so a user who signed up with
+// a password and later clicks Google gets one account rather than two.
 
 const (
 	googleAuthEndpoint     = "https://accounts.google.com/o/oauth2/v2/auth"
@@ -73,10 +70,8 @@ func NewGoogle(cfg *config.Config, logger *slog.Logger) *Google {
 	}
 }
 
-// AuthURL builds the redirect target for the browser.
-//
-// prompt=select_account matches the behaviour users expect from a "continue with Google"
-// button: an already-signed-in browser still offers the account picker.
+// AuthURL builds the redirect target for the browser. prompt=select_account keeps the
+// account picker offered to a browser that is already signed in to Google.
 func (g *Google) AuthURL(state string) string {
 	params := url.Values{}
 	params.Set("client_id", g.ClientID)

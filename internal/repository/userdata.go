@@ -5,12 +5,9 @@ import (
 	"encoding/json"
 )
 
-// User-owned viewing data: watchlist, resume progress, continue-watching history and
-// player preferences.
-//
-// Every statement here is filtered by user_id with no exception: ownership is enforced
-// in SQL rather than by a check in the handler, so a forgotten guard cannot expose
-// another account's rows.
+// User-owned viewing data: watchlist, resume progress, continue-watching history and player
+// preferences. Ownership is enforced in SQL, not in the handler — every statement here is
+// filtered by the session's user_id, so a forgotten guard cannot expose another account.
 
 // ListWatchlist returns a user's saved shows, newest first, with the stored anime
 // payload intact.
@@ -116,9 +113,7 @@ func (s *Store) SaveProgress(ctx context.Context, userID, animeID string, episod
 	return err
 }
 
-// RecentProgress lists the shows a user has been watching, newest first.
-//
-// The site previously had no resume rail because no such query existed; this backs
+// RecentProgress lists the shows a user has been watching, newest first. It backs
 // GET /api/me/progress/recent.
 func (s *Store) RecentProgress(ctx context.Context, userID string, limit int) ([]ProgressItem, error) {
 	rows, err := s.pool.Query(ctx, `

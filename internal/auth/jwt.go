@@ -11,17 +11,14 @@ import (
 	"time"
 )
 
-// Minimal HS256 JWT support.
+// Minimal HS256 JWT support. The shipped desktop player decodes the bridge credential
+// itself, reading sub, sid and exp, so anything it cannot parse as three dot-separated
+// base64url segments breaks sign-in for installed clients — the format stays even though
+// the issuer is now this backend.
 //
-// A JWT is needed for exactly one reason: the shipped desktop player decodes the
-// credential handed to it by the browser bridge before exchanging it, reading the
-// claims sub, sid and exp. Anything it cannot parse as three dot-separated base64url
-// segments breaks sign-in for existing installs, so the format is kept while the
-// issuer becomes this backend.
-//
-// This is deliberately not a general JWT library: one algorithm, no "none", and the
-// audience and issuer are fixed so a token minted for one purpose cannot be replayed
-// against another.
+// Deliberately not a general JWT library: one algorithm, no "none", and a required
+// audience (plus an issuer where the caller supplies one) so a token minted for one
+// purpose cannot be replayed against another.
 
 // BridgeAudience is the aud claim identifying a desktop handoff token.
 const BridgeAudience = "animind-desktop-bridge"
@@ -29,10 +26,8 @@ const BridgeAudience = "animind-desktop-bridge"
 // OAuthStateAudience is the aud claim identifying a browser OAuth state token.
 const OAuthStateAudience = "animind-oauth-state"
 
-// BridgeClaims is the payload of a desktop handoff token.
-//
-// JSON keys match what the desktop client reads: sub for the user id, sid for the
-// session id, exp for the expiry in seconds, plus email for display.
+// BridgeClaims is the payload of a desktop handoff token. The JSON keys are the ones the
+// desktop client reads: sub for the user id, sid for the session id, exp for expiry.
 type BridgeClaims struct {
 	Issuer    string `json:"iss"`
 	Subject   string `json:"sub"`
@@ -66,11 +61,9 @@ func (s *Signer) SignBridgeToken(claims BridgeClaims) (string, error) {
 	return signingInput + "." + base64URLEncode(hmacSHA256([]byte(signingInput), s.key)), nil
 }
 
-// VerifyBridgeToken validates a desktop handoff token and returns its claims.
-//
-// The signature is checked before the payload is decoded, and the algorithm header is
-// required to be HS256: an attacker-supplied alg of "none" would otherwise present an
-// unsigned token as valid.
+// VerifyBridgeToken validates a desktop handoff token and returns its claims. The header
+// must say HS256 — an attacker-supplied alg of "none" would otherwise pass — and the
+// signature is checked before the payload is decoded.
 func (s *Signer) VerifyBridgeToken(token string) (*BridgeClaims, error) {
 	return s.verifyBridgeToken(token, BridgeAudience, "")
 }

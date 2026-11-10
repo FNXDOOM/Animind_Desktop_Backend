@@ -18,11 +18,9 @@ import (
 	"animind-backend-go/internal/syncplay"
 )
 
-// The Prometheus listener: what the Grafana dashboard reads.
-//
-// It answers on its own port rather than under /api so it never shares a route table with the
-// public API. It is unauthenticated, which is only safe because nothing reaches it from
-// outside: nginx does not proxy it and the compose stack does not publish it.
+// The Prometheus listener: what the Grafana dashboard reads. It answers on its own port so it
+// never shares a route table with the public API, and it is unauthenticated — safe only
+// because nginx does not proxy it and compose does not publish it.
 
 const (
 	metricsNamespace = "animind"
@@ -200,12 +198,10 @@ func (c *cacheCollector) Collect(ch chan<- prometheus.Metric) {
 
 // observeRequests labels each request with the matched route pattern.
 //
-// Reading the pattern after the handler runs is what makes this work: chi fills it in while
-// routing, so a middleware that sampled it on entry would label everything "unmatched".
-//
-// For the watch-party socket the recorded duration is the upgrade, not the connection's life:
-// the hub hijacks and returns. The gauge and histogram are therefore about request handling,
-// and `animind_watchparty_peers` is the one to watch for long-lived sockets.
+// The pattern is read after the handler runs because chi fills it in while routing; sampling it
+// on entry would label everything "unmatched". A watch-party socket records the upgrade, not
+// the connection's life, since the hub hijacks and returns — for long-lived sockets read
+// `animind_watchparty_peers` instead.
 func (s *Server) observeRequests(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if s.metrics == nil {

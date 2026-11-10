@@ -14,11 +14,9 @@ import (
 
 const googleStateCookieName = "animind_google_state"
 
-// Authentication endpoints.
-//
-// The site authenticates with a session cookie or a bearer session token; the desktop
-// player authenticates with a HMAC access token it obtains by exchanging a web credential.
-// Passwords never appear in a URL, a log line, or a response body.
+// Authentication endpoints. The site uses a session cookie or a bearer session token; the
+// desktop player a HMAC access token exchanged for a web credential. Passwords never appear
+// in a URL, a log line, or a response body.
 
 // sessionResponse is the credential a browser receives.
 type sessionResponse struct {
@@ -88,11 +86,9 @@ func (s *Server) handleLogin(w http.ResponseWriter, r *http.Request) {
 	})
 }
 
-// handleLogout revokes the caller's session, then clears the cookie.
-//
-// The route sits outside RequireAuth on purpose — logging out with an expired or missing
-// credential must still succeed — so the credential is resolved here. Before that was not the
-// case, and a bearer session survived logout with its row still live until it expired.
+// handleLogout revokes the caller's session, then clears the cookie. It sits outside
+// RequireAuth on purpose, so the credential is resolved here and logout still succeeds with
+// an expired or missing one; a bearer session used to survive logout until it expired.
 func (s *Server) handleLogout(w http.ResponseWriter, r *http.Request) {
 	principal := PrincipalFromContext(r.Context())
 	if principal == nil {
@@ -157,11 +153,9 @@ type forgotPasswordRequest struct {
 	Email string `json:"email"`
 }
 
-// handleForgotPassword answers identically whether or not the address exists, so the
-// endpoint cannot be used to enumerate accounts.
-//
-// No reset credential is written to logs. Delivery belongs to the mail or account-recovery
-// integration, and a log sink must never become a password-reset credential store.
+// handleForgotPassword answers identically whether or not the address exists, so the endpoint
+// cannot enumerate accounts. Only a token hash is logged: delivery belongs to the recovery
+// integration, and a log sink must never become a credential store.
 func (s *Server) handleForgotPassword(w http.ResponseWriter, r *http.Request) {
 	var req forgotPasswordRequest
 	if err := DecodeJSON(r, &req); err != nil {
@@ -206,10 +200,9 @@ func (s *Server) handleResetPassword(w http.ResponseWriter, r *http.Request) {
 
 // ── Google sign-in ───────────────────────────────────────────────────────────
 
-// handleGoogleURL returns the provider redirect for the site to navigate to.
-//
-// The state parameter is a signed, single-use value binding this browser to the callback,
-// which is what stops a forged callback from logging someone into another account.
+// handleGoogleURL returns the provider redirect for the site to navigate to. The state is a
+// signed, single-use value binding this browser to the callback, which stops a forged
+// callback from logging someone into another account.
 func (s *Server) handleGoogleURL(w http.ResponseWriter, r *http.Request) {
 	if !s.auth.GoogleEnabled() {
 		WriteErrorCode(w, http.StatusNotImplemented, "oauth_not_configured",
@@ -236,9 +229,8 @@ func (s *Server) handleGoogleURL(w http.ResponseWriter, r *http.Request) {
 }
 
 // handleGoogleStart is the browser-facing entry point: it sets the nonce cookie and redirects
-// straight to the provider, so a native client's Custom Tab completes the same flow a web page
-// does. Calling google/url from inside an app cannot work, because the cookie would be written to
-// the app's cookie jar rather than the browser that later receives the callback.
+// to the provider, so a native client's Custom Tab completes the web flow. google/url from
+// inside an app cannot work: its cookie never reaches the callback browser's jar.
 func (s *Server) handleGoogleStart(w http.ResponseWriter, r *http.Request) {
 	if !s.auth.GoogleEnabled() {
 		WriteErrorCode(w, http.StatusNotImplemented, "oauth_not_configured",
@@ -426,11 +418,9 @@ type desktopExchangeRequest struct {
 	DeviceName string `json:"deviceName"`
 }
 
-// handleDesktopExchange pairs a desktop player with a signed-in account.
-//
-// The credential presented is whatever the browser handoff delivered: the site's session
-// token or the bridge JWT from POST /api/auth/desktop/bridge-token. Both are issued by this
-// backend, so the exchange proves control of a logged-in browser.
+// handleDesktopExchange pairs a desktop player with a signed-in account. The credential is
+// either the site's session token or the bridge JWT from /api/auth/desktop/bridge-token;
+// both are issued by this backend, so the exchange proves control of a logged-in browser.
 func (s *Server) handleDesktopExchange(w http.ResponseWriter, r *http.Request) {
 	bearer := credential(r)
 	if bearer == "" {
@@ -501,10 +491,8 @@ func (s *Server) handleDesktopRevoke(w http.ResponseWriter, r *http.Request) {
 }
 
 // handleBridgeToken mints the credential a signed-in browser hands to a desktop player over
-// its loopback callback.
-//
-// The desktop decodes this as a JWT and reads sub, sid and exp, so the claims carry them;
-// it then posts the same value to /api/auth/desktop/exchange.
+// its loopback callback. The desktop decodes it as a JWT and reads sub, sid and exp, then
+// posts the same value to /api/auth/desktop/exchange.
 func (s *Server) handleBridgeToken(w http.ResponseWriter, r *http.Request) {
 	principal, ok := s.requirePrincipal(w, r)
 	if !ok {

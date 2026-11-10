@@ -130,12 +130,9 @@ func normalizeQuery(q string) string {
 	return strings.Join(strings.Fields(q), " ")
 }
 
-// planQueries builds the concurrent run. Variants come from the metadata catalog (primary
-// title, then alternates); they are deduped case-insensitively, and a variant that is q in
-// provider casing stands in for q instead of running beside it — sending both would spend
-// one of the three calls on the same query. The stand-in is moved to the front of the run
-// so the three-query cap can never truncate it away: a long variant list must not leave the
-// user's query unexecuted. A metadata miss never fails the search.
+// planQueries builds the run: q plus metadata-catalog variants (primary title, then
+// alternates), deduped case-insensitively. A variant equal to q stands in for it and leads
+// the run, so the three-call cap cannot drop the user's query; a metadata miss never fails.
 func (s *Service) planQueries(ctx context.Context, q string) []string {
 	variants := s.titleVariants(ctx, q)
 	seen := make(map[string]bool, len(variants))
@@ -392,10 +389,9 @@ func optString(v *string) string {
 
 // ── Wire shape ───────────────────────────────────────────────────────────────────
 
-// wireResult is the HTTP shape of one search hit. Result's marshal goes through it so a
-// magnet can never reach the wire — the client re-attaches via the opaque id and the
-// download flow reads the magnet back from the cache. Field names are camelCase, matching
-// the brief's "queryUsed".
+// wireResult is the HTTP shape of one search hit, camelCase as the API contract requires.
+// Result's marshal goes through it so a magnet never reaches the wire: the client keeps
+// only the opaque id, and the download flow reads the magnet back from the cache.
 type wireResult struct {
 	ID          string     `json:"id"`
 	InfoHash    string     `json:"infoHash"`

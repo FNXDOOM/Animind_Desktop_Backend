@@ -7,12 +7,9 @@ import (
 	"time"
 )
 
-// Desktop session storage.
-//
-// A desktop credential pair is pinned in one row so that:
-//   - an access token can be checked against revocation without decoding twice,
-//   - a refresh token rotates in place, invalidating the previous one,
-//   - the row carries the device labels the desktop app reports.
+// Desktop session storage. One row pins the whole credential pair so an access token can be
+// checked against revocation without decoding it twice, a refresh token rotates in place and
+// invalidates its predecessor, and the device labels the desktop app reports travel with it.
 
 const desktopSessionColumns = `
 	id::text, user_id::text, session_id, device_id, device_name,
@@ -150,10 +147,9 @@ func (s *Store) ListDesktopSessions(ctx context.Context, userID string) ([]Deskt
 	return out, rows.Err()
 }
 
-// CleanupDesktopSessions deletes every revoked row and every row whose refresh token
-// expired before the cutoff. Revoked sessions carry no future value, so age does not
-// gate their removal; the retention window only protects recently expired ones from a
-// race with an in-flight refresh.
+// CleanupDesktopSessions deletes every revoked row and every refresh token expired before
+// the cutoff. Revoked rows carry no future value, so age does not gate them; the retention
+// window only protects a recently expired session from an in-flight refresh.
 func (s *Store) CleanupDesktopSessions(ctx context.Context, expiredBefore time.Time) (int64, error) {
 	tag, err := s.pool.Exec(ctx, `
 		delete from desktop_auth_sessions

@@ -18,12 +18,9 @@ import (
 	"animind-backend-go/internal/storage"
 )
 
-// Service indexes the library.
-//
-// A scan must be safe to run at any time: it is triggered by cron, by the admin button, by
-// a storage webhook, and on startup in some deployments. Every write is an upsert and the
-// prune step is derived from the current listing, so two overlapping scans converge rather
-// than fight.
+// Service indexes the library. A scan must be safe to trigger at any time — cron, the admin
+// button, a storage webhook, and on startup in some deployments — since every write is an
+// upsert and the prune step derives from the current listing; Run still allows only one.
 type Service struct {
 	cfg     *config.Config
 	repo    *repository.Store
@@ -249,10 +246,8 @@ func (s *Service) PrewarmTargets() []media.PrewarmTarget {
 }
 
 // resolveShow finds the catalog row for a title or creates it, enriched with metadata.
-//
-// Matching order: exact title, then external id once metadata is known, then the provider's
-// canonical title, then a scored fuzzy match. Fuzzy scoring is what keeps "Re:Zero" and
-// "Re Zero" on one show.
+// Matching order: exact title, external id, provider canonical title, then — only when no
+// provider answered — a scored fuzzy match, which keeps "Re:Zero" and "Re Zero" on one show.
 func (s *Service) resolveShow(ctx context.Context, title string) (string, error) {
 	trimmed := strings.TrimSpace(title)
 

@@ -1,13 +1,10 @@
-// Command server runs the AniMind backend.
+// Command server runs the AniMind backend: the API for the desktop player and the website —
+// indexing, playback, user data, watch parties and administration. It serves no frontend
+// assets and is configured entirely through environment variables.
 //
-// It is the API for the desktop player and the website: library indexing, playback, user
-// data, watch parties and administration. It serves no frontend assets, holds no browser
-// code, and is configured entirely through environment variables.
-//
-// Startup order is deliberate: configuration, then the database and its migrations, then the
-// services that read from it, then the socket hub, then the HTTP server. Anything that can
-// fail permanently fails before the listener opens, so a half-configured server never accepts
-// traffic.
+// Startup order is deliberate: configuration, the database and its migrations, the services
+// that read from it, the socket hub, then HTTP. Anything that can fail permanently fails
+// before the listener opens, so a half-configured server never accepts traffic.
 package main
 
 import (
@@ -119,11 +116,9 @@ func main() {
 		logger.Info("watch parties enabled", slog.String("path", syncplay.SocketPath))
 	}
 
-	// Torrent downloads share one event hub between the manager's publishes and
-	// the SSE handler's subscriptions; the trending counter is shared the same
-	// way, because a second instance would silently fork the counts. The engine
-	// only exists in local mode; the noop engine keeps the manager's drive loops
-	// harmless everywhere else.
+	// The manager's publishes and the SSE handler's subscriptions share one event hub, and
+	// trending is shared the same way: a second instance would silently fork the counts. The
+	// real engine exists only in local mode; noop keeps the manager's drive loops harmless.
 	eventHub := downloads.NewEventHub()
 	trending := torrent.NewTrending(time.Now)
 
@@ -167,9 +162,7 @@ func main() {
 		Trending:  trending,
 		EventHub:  eventHub,
 	}
-	// Only a constructed service may enter the interface: a typed nil
-	// *torrent.Service stored in Deps.Torrent would be non-nil, so the handler's
-	// 501 indexer_not_configured ruling would never fire and search would panic.
+	// A typed-nil service here would defeat the handler's 501 ruling; see wireTorrent.
 	wireTorrent(&deps, torrentService)
 
 	server := httpx.New(deps)
@@ -220,10 +213,8 @@ func shutdown(hub *syncplay.Hub, jobs *scheduler.Jobs, server *httpx.Server, hls
 		manager.Close()
 	}
 	if eventHub != nil {
-		// Closing the SSE subscribers ends their handlers; without this,
-		// server.Shutdown would block on every live stream for its whole
-		// 30 s window, because Shutdown waits for connections to go idle
-		// rather than cutting them.
+		// Closing the SSE subscribers ends their handlers; Shutdown waits for connections to go
+		// idle rather than cutting them, so live streams would block it for its whole 30 s.
 		eventHub.Close()
 	}
 	if hub != nil {
@@ -297,10 +288,9 @@ func buildTorrentService(cfg *config.Config, metadataService *metadata.Service, 
 		cfg.Torrent.CacheTTL, trending)
 }
 
-// wireTorrent places the service in the server deps. The nil check is
-// load-bearing: any *torrent.Service — including a nil one — stored in the
-// Torrent interface is non-nil, so an unconditional assignment would defeat the
-// handler's 501 indexer_not_configured ruling.
+// wireTorrent places the service in the server deps. The nil check is load-bearing: a nil
+// *torrent.Service stored in the Torrent interface is still non-nil, so an unconditional
+// assignment would silence the handler's 501 ruling and make search panic.
 func wireTorrent(deps *httpx.Deps, service *torrent.Service) {
 	if service == nil {
 		return

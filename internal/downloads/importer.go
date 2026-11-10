@@ -36,10 +36,9 @@ var (
 	errNoLibraryRoot = errors.New("downloads: library root not configured")
 )
 
-// showResolver answers the two lookups behind show_id resolution: an episode
-// that already indexes an imported path wins, then a case-insensitive title
-// match. *repository.Store supplies the title lookup through dbStore; the
-// in-memory test fake provides both.
+// showResolver answers the two lookups behind show_id resolution, in order:
+// an episode that already indexes an imported path wins, then a
+// case-insensitive title match.
 type showResolver interface {
 	ShowByEpisodePath(ctx context.Context, path string) (string, bool, error)
 	ShowByTitle(ctx context.Context, title string) (*repository.Show, error)
@@ -87,10 +86,9 @@ func sanitizeTitle(title string) string {
 // retry; cron and webhook scans are exactly the ErrAlreadyRunning case.
 const defaultScanSettle = 30 * time.Second
 
-// runScan triggers one library scan, honoring the spec's retry rule: when a
-// scan is already running, wait one settle window and retry exactly once — a
-// second refusal fails the import. The scanner exposes no completion signal,
-// so the settle window is the wait.
+// runScan triggers one library scan: when a scan is already running, wait one
+// settle window and retry exactly once, a second refusal failing the import.
+// The scanner exposes no completion signal, so the settle window is the wait.
 func (m *Manager) runScan(ctx context.Context) error {
 	_, err := m.scanner.Run(ctx)
 	if !errors.Is(err, scanner.ErrAlreadyRunning) {
@@ -109,13 +107,9 @@ func (m *Manager) runScan(ctx context.Context) error {
 	return err
 }
 
-// importJob moves the selected files into the library under
-// <library>/<Show>/Season NN, rescans, and records the import result.
-//
-// The library root arrives through the constructor: Task 1 only pins
-// DOWNLOADS_DIR somewhere under it (equal or nested both allowed), so the
-// root is never guessed from DOWNLOADS_DIR here — an unconfigured root fails
-// the import instead.
+// importJob moves the selected files into <library>/<Show>/Season NN, rescans
+// and records the result. The library root comes from the constructor, never
+// guessed from DOWNLOADS_DIR — Task 1 only guarantees it lies under the root.
 func (m *Manager) importJob(ctx context.Context, job repository.DownloadJob, files []EngineFile, selected []int) (Imported, error) {
 	if m.libraryRoot == "" {
 		return Imported{}, errNoLibraryRoot
@@ -215,12 +209,9 @@ func (m *Manager) resolveShow(ctx context.Context, paths []string, show string) 
 	return &id
 }
 
-// ensureSourceInsideJobDir is the import-time symlink defense: EvalSymlinks
-// resolves every component of src, and the result must stay under the resolved
-// job directory — a symlinked entry pointing outside would otherwise move the
-// link or copy its target's content into the library. Sources that no longer
-// exist are not checked here: moveInto decides whether that is an
-// already-imported resume or a genuine failure.
+// ensureSourceInsideJobDir is the import-time symlink defense: every src
+// component resolves, via EvalSymlinks, inside the resolved job dir — else a
+// link would move, or have its target copied, into the library.
 func ensureSourceInsideJobDir(jobDir, src string) error {
 	resJobDir, err := filepath.EvalSymlinks(jobDir)
 	if err != nil {
@@ -242,13 +233,10 @@ func ensureSourceInsideJobDir(jobDir, src string) error {
 	return nil
 }
 
-// moveInto lands one file inside dstDir without ever overwriting: an existing
-// destination whose source is still on disk is the spec's import_conflict,
-// while an existing destination whose source is gone is the shape a crash
-// between the final move and SetDownloadJobImportResult leaves behind — the
-// re-driven import treats it as already-imported and succeeds untouched.
-// Rename first — the download root and the library share a volume by config —
-// falling back to copy+delete for the day they don't share one.
+// moveInto lands one file without ever overwriting. A present dst with src
+// still on disk is import_conflict; dst alone is the shape a crash between the
+// last move and SetDownloadJobImportResult leaves, so it reads as
+// already-imported. Rename first — the roots share a volume by config.
 func moveInto(dstDir, src string) (string, error) {
 	dst := filepath.Join(dstDir, filepath.Base(src))
 	if _, err := os.Lstat(dst); err == nil {
@@ -331,9 +319,8 @@ func (m *Manager) removeImported(ctx context.Context, paths []string) error {
 }
 
 // containedInLibrary reports whether path sits under root and still resolves
-// there once symlinks are followed; a link pointing outside is rejected rather
-// than followed. A missing path counts as contained: removal of it is a no-op,
-// not an escape.
+// there after symlinks are followed; a link out is rejected, not followed. A
+// missing path counts as contained — removing it is a no-op, not an escape.
 func containedInLibrary(root, path string) (bool, error) {
 	absRoot, err := filepath.Abs(root)
 	if err != nil {

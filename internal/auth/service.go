@@ -17,10 +17,7 @@ import (
 )
 
 // Service is the whole authentication surface: accounts, credentials and sessions.
-//
-// Nothing here knows about HTTP. Handlers translate these results into status codes and
-// JSON, which keeps the security decisions in one place and unit-testable without a
-// server.
+// Knowing nothing about HTTP keeps every security decision in one testable place.
 type Service struct {
 	store  *repository.Store
 	signer *Signer
@@ -146,11 +143,9 @@ const touchInterval = time.Minute
 
 // ── Password accounts ────────────────────────────────────────────────────────
 
-// SignUp creates a password account and signs it in.
-//
-// Email addresses are unique after normalization, and the password is hashed with
-// argon2id before anything else happens, so a rejected insert cannot leave a plaintext
-// credential behind.
+// SignUp creates a password account and signs it in. Uniqueness is on the normalized
+// email, and the hash is derived before the insert so a rejected row cannot leave a
+// plaintext credential behind.
 func (s *Service) SignUp(ctx context.Context, rawEmail, password, rawUsername string) (*LoginResult, error) {
 	if !s.cfg.Auth.AllowSignup {
 		return nil, ErrSignupDisabled
@@ -187,11 +182,9 @@ func (s *Service) SignUp(ctx context.Context, rawEmail, password, rawUsername st
 	return s.SignInUser(ctx, user.ID, "web", false)
 }
 
-// Login verifies a password and starts a web session.
-//
-// The failure path still runs argon2id (via the stored hash of a placeholder) when the
-// account does not exist, so response time does not disclose whether an email is
-// registered.
+// Login verifies a password and starts a web session. An unknown email still pays for
+// an argon2id run (burnTime), so response time does not disclose whether the account
+// is registered.
 func (s *Service) Login(ctx context.Context, rawEmail, password string) (*LoginResult, error) {
 	email := NormalizeEmail(rawEmail)
 	if err := ValidateEmail(email); err != nil || password == "" {
@@ -243,10 +236,9 @@ func (s *Service) Login(ctx context.Context, rawEmail, password string) (*LoginR
 	return s.SignInUser(ctx, user.ID, "web", false)
 }
 
-// loginFailureKey is intentionally based on the normalized account and the
-// server-observed source, not on an account-wide database row. A failed login
-// can therefore slow one attacker without creating an unauthenticated account
-// lockout denial of service for every other browser.
+// loginFailureKey scopes lockouts to the normalized account plus the server-observed
+// source instead of an account-wide row, so a failed login slows one attacker without
+// locking every other browser out of that account.
 func (s *Service) loginFailureKey(ctx context.Context, email string) string {
 	source := loginSource(ctx)
 	if source == "" || s.loginLimiter == nil {
@@ -282,9 +274,7 @@ func (s *Service) clearLoginFailures(ctx context.Context, email string) {
 }
 
 // SignInUser opens a web session for an existing account and returns its token.
-//
-// deviceName labels the session in the security screen, and rememberMe extends its
-// lifetime to the configured "stay signed in" window.
+// rememberMe extends its lifetime to the configured "stay signed in" window.
 func (s *Service) SignInUser(ctx context.Context, userID, deviceName string, rememberMe bool) (*LoginResult, error) {
 	user, err := s.store.UserByID(ctx, userID)
 	if err != nil {
@@ -309,11 +299,8 @@ func (s *Service) SignInUser(ctx context.Context, userID, deviceName string, rem
 
 // ── Credential verification ──────────────────────────────────────────────────
 
-// Authenticate resolves any bearer credential to a principal.
-//
-// Desktop tokens are verified by signature first and then against their pinned row, so
-// a forged token is rejected without a database query and a revoked one is rejected with
-// a query. Site sessions are always a single indexed lookup.
+// Authenticate resolves any bearer credential to a principal. Web sessions hit their
+// indexed row directly; desktop tokens are signature-checked before theirs.
 func (s *Service) Authenticate(ctx context.Context, token string) (*Principal, error) {
 	token = strings.TrimSpace(token)
 	if token == "" {
@@ -331,8 +318,7 @@ func (s *Service) Authenticate(ctx context.Context, token string) (*Principal, e
 }
 
 func (s *Service) authenticateDesktop(ctx context.Context, token string) (*Principal, error) {
-	// Signature first: it is stateless, so a forged token is rejected without touching the
-	// database or the cache at all.
+	// Stateless signature first: a forged token is rejected without a cache or database read.
 	claims, err := s.signer.VerifyDesktopAccessToken(token)
 	if err != nil {
 		return nil, ErrTokenInvalid
@@ -406,11 +392,9 @@ func (s *Service) authenticateWeb(ctx context.Context, token string) (*Principal
 	return principal, nil
 }
 
-// Logout revokes the calling session. Desktop callers use the revoke endpoint instead.
-//
-// Eviction covers the whole account rather than one session: the revoke is keyed by row id,
-// which says nothing about the token hash the cache entry was named for. Cost is a few extra
-// database reads on the user's other devices, never a stale credential.
+// Logout revokes the calling web session; desktop callers use the revoke endpoint.
+// Eviction is account-wide because the revoke is keyed by row id, which says nothing
+// about the token hash the cache entry is named for — extra reads, never stale access.
 func (s *Service) Logout(ctx context.Context, p *Principal) error {
 	if !p.IsWeb() || p.WebSessionRowID == "" {
 		return nil
@@ -422,10 +406,8 @@ func (s *Service) Logout(ctx context.Context, p *Principal) error {
 	return nil
 }
 
-// RevokeSession revokes one credential by id, whichever family it belongs to.
-//
-// Both ids are primary keys of rows owned by the caller, and the user filter is applied in
-// SQL by both repository methods, so an id belonging to another account revokes nothing.
+// RevokeSession revokes one credential by id, whichever family it belongs to. Both
+// repository methods filter by user in SQL, so another account's id revokes nothing.
 func (s *Service) RevokeSession(ctx context.Context, userID, id string) (bool, error) {
 	desktop, err := s.store.RevokeDesktopSessionByID(ctx, id, userID)
 	if err != nil {
@@ -456,11 +438,8 @@ func (s *Service) LogoutEverywhere(ctx context.Context, userID, exceptRowID stri
 
 // ── Desktop sessions ─────────────────────────────────────────────────────────
 
-// DesktopExchange trades a web credential for the desktop pair.
-//
-// Accepted inputs are the caller's site session token or a bridge JWT minted by
-// BridgeToken; both resolve to an account, and the resulting session is labeled with
-// the device the desktop player reports.
+// DesktopExchange trades a web credential for the desktop pair. It accepts the
+// caller's site session token or a bridge JWT minted by BridgeToken.
 func (s *Service) DesktopExchange(ctx context.Context, bearer, deviceID, deviceName string) (*DesktopTokens, error) {
 	principal, err := s.Authenticate(ctx, bearer)
 	if err != nil {
@@ -507,10 +486,8 @@ func (s *Service) issueDesktopSession(ctx context.Context, userID, deviceID, dev
 	}, nil
 }
 
-// DesktopRefresh rotates a session's credentials.
-//
-// The presented refresh token stops working as part of the same statement, so a stolen
-// token can only be used once.
+// DesktopRefresh rotates a session's credentials. The presented refresh token dies in
+// the same statement, so a stolen one can only be used once.
 func (s *Service) DesktopRefresh(ctx context.Context, refreshToken string) (*DesktopTokens, error) {
 	refreshToken = strings.TrimSpace(refreshToken)
 	if !strings.HasPrefix(refreshToken, DesktopRefreshPrefix) {
@@ -552,12 +529,9 @@ func (s *Service) DesktopRefresh(ctx context.Context, refreshToken string) (*Des
 	}, nil
 }
 
-// DesktopRevoke signs a device out using either half of its credential pair. It reports
-// whether any row matched, so the handler can answer 404 rather than pretending.
-//
-// Each branch learns the account it is revoking before it revokes: an access token carries
-// its owner in its own signature, and a refresh token's owner is on the row. Without that
-// identity the cached resolution would stay usable until its TTL expired.
+// DesktopRevoke signs a device out from either half of its credential pair, reporting
+// whether a row matched so the handler can answer 404. Each branch learns the owner
+// first: without the user id the cached resolution stays usable until its TTL expires.
 func (s *Service) DesktopRevoke(ctx context.Context, refreshToken, accessToken string) (bool, error) {
 	revoked := false
 	if refreshToken = strings.TrimSpace(refreshToken); refreshToken != "" {
@@ -596,10 +570,7 @@ func (s *Service) DesktopRevoke(ctx context.Context, refreshToken, accessToken s
 }
 
 // BridgeToken mints the short-lived JWT the site hands to a desktop player over the
-// loopback callback.
-//
-// It is signed by this backend, carries the session id the desktop expects, and lives
-// for well under a minute because it is exchanged immediately.
+// loopback callback. It is exchanged immediately, so it lives only 60 seconds.
 func (s *Service) BridgeToken(ctx context.Context, p *Principal) (string, error) {
 	token, err := s.signer.SignBridgeToken(BridgeClaims{
 		Issuer:    s.cfg.PublicIssuer(),
@@ -655,10 +626,9 @@ func IsSafeImageURL(raw string) bool {
 	return parsed.Scheme == "http" || parsed.Scheme == "https"
 }
 
-// ChangeEmail moves an account to a new address after re-authenticating with the current
-// password. Every other web session is revoked, because changing the address of record is the
-// first step of taking an account over; keepSessionID is the caller's own row. No verification
-// mail is sent; the operator decides how recovery mail is delivered.
+// ChangeEmail moves an account to a new address after re-checking the password, and
+// revokes every other web session because the address of record is the first step of a
+// takeover. keepSessionID is the caller's own row; no verification mail is sent.
 func (s *Service) ChangeEmail(ctx context.Context, userID, keepSessionID, newEmail, currentPassword string) (*repository.PublicUser, error) {
 	user, err := s.store.UserByID(ctx, userID)
 	if err != nil {
@@ -730,10 +700,9 @@ func (s *Service) ChangePassword(ctx context.Context, userID, currentPassword, n
 	return nil
 }
 
-// RequestPasswordReset pins a single-use token for an existing account.
-//
-// It reports whether an account matched so the caller can log that, but the HTTP layer
-// must answer identically either way to avoid confirming addresses.
+// RequestPasswordReset pins a single-use token for an existing account. found is for
+// logs only; the HTTP layer must answer identically either way so a request cannot
+// confirm that an address is registered.
 func (s *Service) RequestPasswordReset(ctx context.Context, rawEmail string) (token string, found bool, err error) {
 	email := NormalizeEmail(rawEmail)
 	user, lookupErr := s.store.UserByEmailNormalized(ctx, email)

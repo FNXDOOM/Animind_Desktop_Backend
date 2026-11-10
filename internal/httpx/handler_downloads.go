@@ -16,11 +16,9 @@ import (
 	"animind-backend-go/internal/repository"
 )
 
-// Handlers for the download surface: create, list, get, patch, delete and the
-// SSE stream. Every route requires a session; create and delete additionally
-// require the can_download entitlement (admins exempt). Job ids that belong to
-// another user answer 404 like a missing row, so the id space cannot be
-// probed; the manager enforces ownership again behind the handlers.
+// Download surface: create, list, get, patch, delete and the SSE stream. Every route needs a
+// session; create and delete also need the can_download entitlement, admins exempt. A foreign
+// job id answers 404 like a missing row, so the id space cannot be probed.
 
 // downloadsManagerAPI is the narrow seam the download handlers need from the
 // job manager; *downloads.Manager satisfies it as-is.
@@ -44,10 +42,9 @@ type downloadsJobStore interface {
 
 var _ downloadsJobStore = (*repository.Store)(nil)
 
-// downloadEntitlement answers whether one account may start (and delete)
-// torrent downloads. The store exposes can_download only through the admin
-// listing today, so the production adapter pages it; a dedicated one-row read
-// on the store can replace the adapter without the handlers noticing.
+// downloadEntitlement answers whether one account may start (and delete) torrent downloads.
+// The store exposes can_download only through the admin listing, so the adapter pages it; a
+// one-row read on the store could replace the adapter without the handlers noticing.
 type downloadEntitlement interface {
 	CanDownload(ctx context.Context, userID string) (bool, error)
 }
@@ -127,10 +124,9 @@ func (s *Server) handleDownloadCreate(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 	}
-	// Entitlement first (it must not leak indexer configuration to rejected
-	// callers), then the nil-service guard: without TORZNAB_URL there is no
-	// result index to resolve against, and an entitled create must answer 501
-	// rather than panic on the nil seam.
+	// Entitlement first, so a rejected caller never learns the indexer configuration; then
+	// the nil guard: with no TORZNAB_URL there is no result index to resolve, and an
+	// entitled create must answer 501 instead of panicking on the nil seam.
 	if s.torrent == nil {
 		WriteErrorCode(w, http.StatusNotImplemented, "indexer_not_configured",
 			"No Torznab indexer is configured on this server.")
@@ -321,10 +317,9 @@ func (s *Server) handleDownloadPatch(w http.ResponseWriter, r *http.Request) {
 		}
 		updated, err := s.downloads.SelectFiles(r.Context(), job.ID, principal.UserID, isAdmin, req.FileIndexes)
 		if err != nil {
-			// A selection the torrent cannot honour is the only user-fixable
-			// failure here and wears 400 invalid_file_selection; everything else
-			// keeps its own class through the shared path, so a server fault
-			// never masquerades as a bad request.
+			// A selection the torrent cannot honour is the only user-fixable failure here, so
+			// it wears 400 invalid_file_selection; everything else keeps its own class and a
+			// server fault never masquerades as a bad request.
 			if errors.Is(err, downloads.ErrInvalidSelection) {
 				WriteErrorCode(w, http.StatusBadRequest, "invalid_file_selection",
 					"The server could not select those files for this torrent.")
@@ -343,10 +338,9 @@ func (s *Server) handleDownloadPatch(w http.ResponseWriter, r *http.Request) {
 	}
 }
 
-// writeJobActionError maps manager action failures onto responses. ErrForbidden
-// keeps its 403 class even though ownership was already checked: the manager is
-// the authority, and a 403 here can only mean its check saw something the row
-// read did not.
+// writeJobActionError maps manager action failures onto responses. ErrForbidden keeps its 403
+// even though ownership was already checked: the manager is the authority, and a 403 here can
+// only mean its check saw something the row read did not.
 func (s *Server) writeJobActionError(w http.ResponseWriter, err error) {
 	switch {
 	case errors.Is(err, repository.ErrNotFound):
@@ -435,11 +429,9 @@ func parseBoolParam(r *http.Request, key string) bool {
 
 // ── SSE ──────────────────────────────────────────────────────────────────────
 
-// handleDownloadEvents streams the user's job events: a snapshot of the last
-// known state per job on connect, then live frames, with a comment heartbeat
-// every 15 s so intermediaries do not close the stream. The subscription is
-// removed on disconnect through cancel, which also closes the channel and ends
-// the receive loop.
+// handleDownloadEvents streams the user's job events: a snapshot of the last known state per
+// job, then live frames, with a comment heartbeat every 15 s so intermediaries do not close
+// the stream. Disconnect cancels the subscription, which closes the channel.
 func (s *Server) handleDownloadEvents(w http.ResponseWriter, r *http.Request) {
 	if s.downloadsUnavailable(w) {
 		return

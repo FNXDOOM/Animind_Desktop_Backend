@@ -22,12 +22,10 @@ import (
 
 // On-demand HLS sessions.
 //
-// A browser cannot play a Matroska file, so an MKV is remuxed into MPEG-TS segments by
-// ffmpeg while the viewer watches. Video is always copied; audio is copied only when its
-// codec is legal in MPEG-TS, otherwise it becomes AAC. Sessions are capped, evicted least
-// recently used first, and expire when idle, because each one is an OS process.
-//
-// Native clients never reach this path: the desktop player demuxes the source itself.
+// Browsers cannot play Matroska, so ffmpeg remuxes to MPEG-TS while the viewer watches:
+// video is always copied, audio only when its codec is legal in MPEG-TS, otherwise AAC.
+// Each session is an OS process, hence the cap with LRU eviction and idle expiry. Native
+// clients demux the source themselves and never reach this path.
 
 // HLS session limits and identifiers.
 var (
@@ -121,10 +119,9 @@ func (m *HLSManager) Stop() {
 	m.DestroyAll(ctx)
 }
 
-// Create starts a session and returns its id plus the playlist URL to fetch.
-//
-// It blocks until the first segment exists: handing a client a playlist URL that yields
-// nothing would look like a broken player rather than a slow start.
+// Create starts a session and returns its id plus the playlist URL to fetch. It blocks
+// until the first segment exists: an empty playlist reads as a broken player rather than
+// a slow start.
 func (m *HLSManager) Create(ctx context.Context, sourcePath, episodeID string, audioTrackIndex int, startTime float64) (string, string, error) {
 	if m.cfg.Storage.Mode != config.StorageLocal {
 		return "", "", ErrNotLocalMode
@@ -155,6 +152,8 @@ func (m *HLSManager) Create(ctx context.Context, sourcePath, episodeID string, a
 	segmentPattern := filepath.Join(dir, segmentNamePatternF)
 	args := m.buildArgs(ctx, sourcePath, audioTrackIndex, startTime, playlist, segmentPattern)
 
+	// exec.Command, not CommandContext: the request ctx is cancelled once Create returns,
+	// and only Destroy, Seek and the idle sweep are meant to stop the remux.
 	cmd := exec.Command(m.ffmpeg.Binary(), args...)
 	cmd.Stderr = newLogPipe(m.logger, id)
 	if err := cmd.Start(); err != nil {
@@ -289,11 +288,9 @@ func (m *HLSManager) evictIfNeeded(ctx context.Context) error {
 	return nil
 }
 
-// Playlist returns the rewritten playlist text for a session.
-//
-// ffmpeg writes absolute segment paths into the playlist. A client would resolve those
-// against its own host, so each line is reduced to its file name and served from this
-// server's segment route instead.
+// Playlist returns the rewritten playlist text for a session. ffmpeg writes absolute
+// segment paths, which a client would resolve against its own host, so each line is
+// reduced to its file name and served from this server's segment route.
 func (m *HLSManager) Playlist(ctx context.Context, id string) (string, error) {
 	entry, err := m.touch(id)
 	if err != nil {
@@ -324,10 +321,9 @@ func (m *HLSManager) Playlist(ctx context.Context, id string) (string, error) {
 	return out.String(), nil
 }
 
-// SegmentPath validates a segment name and returns its on-disk path.
-//
-// The name is matched against a strict pattern rather than cleaned and joined: this route
-// is reachable with only a session id, so a traversal attempt must fail closed.
+// SegmentPath validates a segment name and returns its on-disk path. The route is
+// reachable with only a session id, so the name is matched against a strict pattern
+// rather than cleaned and joined: a traversal attempt must fail closed.
 func (m *HLSManager) SegmentPath(id, segmentName string) (string, error) {
 	entry, err := m.touch(id)
 	if err != nil {
@@ -344,10 +340,9 @@ func (m *HLSManager) SegmentPath(id, segmentName string) (string, error) {
 	return path, nil
 }
 
-// Seek restarts the session at a new start time.
-//
-// ffmpeg has no in-place seek for an event-type playlist, so the process is killed, its
-// output removed, and a new one started from the requested offset.
+// Seek restarts the session at a new start time. ffmpeg has no in-place seek for an
+// event-type playlist, so the process is killed, its output removed, and a new one
+// started from the requested offset.
 func (m *HLSManager) Seek(ctx context.Context, id string, timeSeconds float64) error {
 	m.mu.Lock()
 	entry := m.sessions[id]
