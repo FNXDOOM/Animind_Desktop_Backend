@@ -96,11 +96,9 @@ func selectableExt(path string) bool {
 	return selectableExtensions[strings.TrimPrefix(strings.ToLower(filepath.Ext(path)), ".")]
 }
 
-// SelectableFiles returns the indexes worth importing: the allowlisted entries
-// that stay inside the torrent root, keeping the largest MaxFiles by size and
-// reporting the survivors in ascending index order. Device names and overlong
-// paths error out — they must never touch disk — while traversal paths and
-// unknown extensions are merely skipped. A non-positive MaxFiles means no cap.
+// SelectableFiles returns the allowlisted entries inside the torrent root,
+// keeping the largest MaxFiles by size (non-positive = no cap) in ascending
+// index order. Device names and overlong paths error; junk is merely skipped.
 func SelectableFiles(files []EngineFile, cfg config.DownloadsConfig) ([]int, error) {
 	type candidate struct {
 		index int
