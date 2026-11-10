@@ -672,8 +672,11 @@ func TestCreateHappyPathWalksTheStates(t *testing.T) {
 	// Done fires only after Select: the walk continues to ready
 	close(f.handle(id.String()).done)
 	waitFor(t, "ready", func() bool { return st.get(id.String()).State == StateReady })
-	if f.verifyOps[id.String()] != 1 {
-		t.Fatalf("Verify called %d times, want 1", f.verifyOps[id.String()])
+	f.mu.Lock()
+	verifyCalls := f.verifyOps[id.String()]
+	f.mu.Unlock()
+	if verifyCalls != 1 {
+		t.Fatalf("Verify called %d times, want 1", verifyCalls)
 	}
 	// the importer stamps completed_at and save_path on its way to ready
 	if c := st.get(id.String()).CompletedAt; c == nil {
@@ -829,7 +832,11 @@ func TestPauseResumeAndCancel(t *testing.T) {
 	if paused.State != StatePaused {
 		t.Fatalf("paused state = %s", paused.State)
 	}
-	waitFor(t, "engine paused", func() bool { return f.pauseOps[id.String()] == 1 })
+	waitFor(t, "engine paused", func() bool {
+		f.mu.Lock()
+		defer f.mu.Unlock()
+		return f.pauseOps[id.String()] == 1
+	})
 
 	resumed, err := m.Resume(ctx, id.String(), user.String(), false)
 	if err != nil {
@@ -838,7 +845,11 @@ func TestPauseResumeAndCancel(t *testing.T) {
 	if resumed.State != StateDownloading {
 		t.Fatalf("resumed state = %s, want downloading", resumed.State)
 	}
-	waitFor(t, "engine resumed", func() bool { return f.resumeOps[id.String()] == 1 })
+	waitFor(t, "engine resumed", func() bool {
+		f.mu.Lock()
+		defer f.mu.Unlock()
+		return f.resumeOps[id.String()] == 1
+	})
 
 	close(f.handle(id.String()).done)
 	waitFor(t, "ready after resume", func() bool { return st.get(id.String()).State == StateReady })
@@ -857,8 +868,15 @@ func TestPauseResumeAndCancel(t *testing.T) {
 	if _, err := st.GetDownloadJob(ctx, id.String()); !errors.Is(err, repository.ErrNotFound) {
 		t.Fatalf("ready row survived cancel: %v", err)
 	}
-	if !f.drops[id.String()] {
-		t.Fatalf("engine Drop(true) not recorded: %v", f.drops)
+	f.mu.Lock()
+	dropped := f.drops[id.String()]
+	recorded := map[string]bool{}
+	for k, v := range f.drops {
+		recorded[k] = v
+	}
+	f.mu.Unlock()
+	if !dropped {
+		t.Fatalf("engine Drop(true) not recorded: %v", recorded)
 	}
 	if _, err := os.Stat(jobDir); !os.IsNotExist(err) {
 		t.Fatalf("job dir survived cancel: %v", err)
@@ -872,8 +890,11 @@ func TestPauseResumeAndCancel(t *testing.T) {
 	if got := st.get(id2.String()).State; got != StateCancelled {
 		t.Fatalf("cancelled state = %s, want cancelled", got)
 	}
-	if dropped, ok := f.drops[id2.String()]; !ok || dropped {
-		t.Fatalf("engine drop for id2 = %v, %v; want false", dropped, ok)
+	f.mu.Lock()
+	drop2, has2 := f.drops[id2.String()]
+	f.mu.Unlock()
+	if !has2 || drop2 {
+		t.Fatalf("engine drop for id2 = %v, %v; want false", drop2, has2)
 	}
 
 	// cancel a queued row that never reached the engine (post-restart shape)
@@ -1196,7 +1217,11 @@ func TestTerminalRowsStopTheTorrent(t *testing.T) {
 		waitFor(t, "downloading", func() bool { return st.get(id.String()).State == StateDownloading })
 		close(f.handle(id.String()).done)
 		waitFor(t, "ready", func() bool { return st.get(id.String()).State == StateReady })
-		waitFor(t, "torrent stopped at ready", func() bool { return f.pauseOps[id.String()] == 1 })
+		waitFor(t, "torrent stopped at ready", func() bool {
+			f.mu.Lock()
+			defer f.mu.Unlock()
+			return f.pauseOps[id.String()] == 1
+		})
 	})
 
 	t.Run("failure after metadata stops the torrent", func(t *testing.T) {
@@ -1214,7 +1239,11 @@ func TestTerminalRowsStopTheTorrent(t *testing.T) {
 			t.Fatal(err)
 		}
 		waitFor(t, "failed", func() bool { return st.get(id.String()).State == StateFailed })
-		waitFor(t, "torrent stopped at failed", func() bool { return f.pauseOps[id.String()] == 1 })
+		waitFor(t, "torrent stopped at failed", func() bool {
+			f.mu.Lock()
+			defer f.mu.Unlock()
+			return f.pauseOps[id.String()] == 1
+		})
 	})
 
 	t.Run("metadata timeout has nothing to stop", func(t *testing.T) {
@@ -1232,7 +1261,10 @@ func TestTerminalRowsStopTheTorrent(t *testing.T) {
 			t.Fatal(err)
 		}
 		waitFor(t, "failed", func() bool { return st.get(id.String()).State == StateFailed })
-		if got := f.pauseOps[id.String()]; got != 0 {
+		f.mu.Lock()
+		got := f.pauseOps[id.String()]
+		f.mu.Unlock()
+		if got != 0 {
 			t.Fatalf("pauseOps = %d, want 0 (no handle exists after a metadata timeout)", got)
 		}
 	})

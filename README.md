@@ -286,9 +286,6 @@ Report vulnerabilities through GitHub's private advisory form, described in
 - `make lint` reports 61 findings (34 unchecked errors, 13 staticcheck, 14 dead symbols).
   They are listed and prioritised in [.golangci.yml](.golangci.yml). CI does not gate on the
   linter yet, because a gate that is permanently red teaches nobody anything.
-- `go test -race ./internal/downloads` fails. Four races sit in the test helper `waitFor`
-  (`manager_test.go:436`) reading a map while the scenario goroutine writes it. It is test
-  code, not the engine, and it predates the current CI.
 - `GET /api/shows` reports a `total` from an unfiltered `count(*)` while the page itself
   applies the search and genre filters, so the number disagrees with the list.
 - Torrent search and downloads are **local-mode features**. In `s3` mode those routes answer

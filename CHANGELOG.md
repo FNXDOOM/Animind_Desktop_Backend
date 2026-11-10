@@ -35,6 +35,10 @@ reconstructed from 60 commits afterwards.
 
 ### Fixed
 
+- `go test -race` failed in `internal/downloads`: eight assertions read the fake engine's
+  call-count maps without taking the mutex that the manager's own goroutine writes them
+  under. Every reported race was on a test double's own map, not on engine state. The whole
+  repository is now race-clean, and CI runs it that way.
 - Torrent clients can pin their listen address; port mapping is disabled.
 - Torrents at terminal states stop, and seeding knobs are clamped.
 - SSE subscribers close on shutdown.
