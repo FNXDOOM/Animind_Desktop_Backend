@@ -1,0 +1,61 @@
+name: Feature request
+description: Propose a change, including one you intend to build
+labels: [enhancement]
+body:
+  - type: markdown
+    attributes:
+      value: >
+        For anything that changes a route, a payload field or the watch-party protocol:
+        please open the discussion before you write the code. Those shapes are consumed by
+        shipped clients, and an unannounced change is a broken player somewhere.
+
+  - type: textarea
+    id: problem
+    attributes:
+      label: What is hard or impossible today
+      description: >
+        The situation and what you had to do instead. A concrete constraint is much easier
+        to design against than a general wish.
+    validations:
+      required: true
+
+  - type: textarea
+    id: proposal
+    attributes:
+      label: What you would like instead
+      description: Expected behaviour, and the API surface you imagine if there is one.
+    validations:
+      required: true
+
+  - type: dropdown
+    id: area
+    attributes:
+      label: Which part does this touch
+      options:
+        - auth
+        - library scanning
+        - playback and streaming
+        - watch parties
+        - downloads and torrent search
+        - metrics and observability
+        - configuration and deployment
+        - something else
+    validations:
+      required: true
+
+  - type: textarea
+    id: alternatives
+    attributes:
+      label: Alternatives you considered
+      description: Including the status quo, and why it is not good enough.
+
+  - type: dropdown
+    id: volunteering
+    attributes:
+      label: Are you going to build this?
+      options:
+        - Yes, I will send a pull request
+        - I would like to, with some guidance
+        - No, describing it for others
+    validations:
+      required: true

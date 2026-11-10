@@ -1,0 +1,35 @@
+version: "2"
+
+# Configuration for `make lint`.
+#
+# The linters below are the golangci-lint default set, kept deliberately: they are the
+# ones that catch real defects rather than style preferences.
+#
+# As of writing this configuration the repository reports 61 findings (34 errcheck,
+# 13 staticcheck, 14 unused). They are NOT ignored here, and CI does not run this linter
+# yet. Gating on it today would mean either a permanently red pipeline or a green one
+# that lies, and the second is worse than the first. Clear the backlog, then move the
+# job into .github/workflows/ci.yml.
+#
+# Work through them in this order, cheapest and safest first:
+#
+#   1. unused      - dead symbols. Deleting them cannot change behaviour, though a few
+#                    (protocol.go's ackMu, pollMu, inbox) look like the remnants of the
+#                    polling transport rather than accidents, so confirm intent first.
+#   2. staticcheck - likely bugs, small and local.
+#   3. errcheck    - unchecked returns. These need judgement: some deserve handling,
+#                    others deserve an explicit `_ =` to record that ignoring is chosen.
+#                    Blanket-ignoring them would silence the check that found them.
+
+linters:
+  default: standard
+  exclusions:
+    generated: lax
+    rules:
+      # Test helpers are allowed to hold things for readability rather than use them.
+      - path: _test\.go
+        linters: [unused]
+
+run:
+  timeout: 10m
+  tests: true

@@ -1,0 +1,124 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+# A superseded run on the same ref is not worth two sets of containers.
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  check:
+    name: Format, build, vet
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-go@v5
+        with:
+          # Read the version from go.mod rather than duplicating it here, so the
+          # toolchain cannot silently drift from what the module requires.
+          go-version-file: go.mod
+          cache: true
+
+      - name: Check formatting
+        run: |
+          unformatted=$(gofmt -l cmd internal)
+          if [ -n "$unformatted" ]; then
+            echo "These files are not gofmt-clean:"
+            echo "$unformatted"
+            gofmt -l -d cmd internal
+            exit 1
+          fi
+
+      - name: Check module tidiness
+        run: |
+          go mod tidy
+          git diff --exit-code go.mod go.sum || {
+            echo "go.mod or go.sum is not what 'go mod tidy' produces."; exit 1; }
+
+      - name: Build
+        run: go build -trimpath ./...
+
+      - name: Vet
+        run: go vet ./...
+
+  test:
+    name: Test (Postgres and Redis)
+    runs-on: ubuntu-latest
+    # The interesting suites skip silently without these, which would make a green run
+    # mean nothing. Services here are the point of the job.
+    services:
+      postgres:
+        image: postgres:16-alpine
+        env:
+          POSTGRES_USER: animind
+          POSTGRES_PASSWORD: animind
+          POSTGRES_DB: animind
+        ports: ['5432:5432']
+        options: >-
+          --health-cmd pg_isready
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 20
+      redis:
+        image: redis:7-alpine
+        ports: ['6379:6379']
+        options: >-
+          --health-cmd "redis-cli ping"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 20
+    env:
+      POSTGRES_TEST_DATABASE_URL: postgres://animind:animind@localhost:5432/animind?sslmode=disable
+      REDIS_TEST_URL: redis://localhost:6379/9
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+          cache: true
+
+      - name: Install ffmpeg
+        run: sudo apt-get update && sudo apt-get install -y --no-install-recommends ffmpeg
+
+      # -p 1 because the database-backed suites share tables; in parallel they delete
+      # rows out from under each other and the failures look like eviction bugs.
+      - name: Test with race detector
+        run: go test -count=1 -p 1 -race ./...
+
+      - name: Coverage summary
+        run: |
+          go test -count=1 -p 1 -coverprofile=coverage.out -covermode=atomic ./...
+          go tool cover -func=coverage.out | tail -1
+
+      - name: Fail if a suite skipped for a missing service
+        # Guards the failure mode this project has actually hit: a suite that skips
+        # is reported as passing. If Postgres or Redis is unreachable the integration
+        # tests skip, and the job would otherwise go green having tested less.
+        run: |
+          out=$(go test -count=1 -p 1 -v ./internal/repository ./internal/auth 2>&1 || true)
+          if echo "$out" | grep -qE 'SKIP.*(postgres|database|redis)'; then
+            echo "An integration suite skipped despite services being configured:"
+            echo "$out" | grep -E 'SKIP'
+            exit 1
+          fi
+          echo "$out" | grep -cE '^--- PASS' >/dev/null
+
+  docker:
+    name: Docker build
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Build the image
+        run: docker build -t animind:ci .
+      - name: Report the image size
+        run: docker images animind:ci --format '{{.Size}}'

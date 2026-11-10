@@ -1,4 +1,4 @@
-.PHONY: help build run test vet fmt tidy clean migrate docker-up docker-down docker-logs cover test-cache
+.PHONY: help build run test vet fmt lint tidy clean migrate docker-up docker-down docker-logs cover test-cache
 
 BINARY ?= build/animind-server
 GO     ?= go
@@ -34,6 +34,9 @@ vet: ## Run go vet
 
 fmt: ## Format all Go source
 	$(GO) fmt ./...
+
+lint: ## Run golangci-lint (61 findings are known and not yet gated in CI; see .golangci.yml)
+	golangci-lint run ./...
 
 tidy: ## Sync go.mod and go.sum
 	$(GO) mod tidy

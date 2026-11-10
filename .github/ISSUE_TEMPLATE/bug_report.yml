@@ -1,0 +1,75 @@
+name: Bug report
+description: Something does not behave as documented
+labels: [bug]
+body:
+  - type: markdown
+    attributes:
+      value: >
+        Which storage mode you are in matters more than any other detail here: `local` and
+        `s3` differ in subtitles, audio variants, HLS and transcoding, and three features
+        only exist in one of them.
+
+  - type: dropdown
+    id: mode
+    attributes:
+      label: Storage mode
+      options: [local, s3, not sure]
+    validations:
+      required: true
+
+  - type: textarea
+    id: what
+    attributes:
+      label: What happened
+      description: The observed behaviour, and the documented behaviour it contradicts.
+    validations:
+      required: true
+
+  - type: textarea
+    id: expected
+    attributes:
+      label: What you expected instead
+    validations:
+      required: true
+
+  - type: textarea
+    id: steps
+    attributes:
+      label: Steps to reproduce
+      description: >
+        Include the request (method, path, and any query parameters other than a real
+        `st=` ticket), and the state of the library or job involved. A sequence that fails
+        once in five is still worth posting.
+      placeholder: |
+        1. Go to ...
+        2. Request ...
+        3. See ...
+    validations:
+      required: true
+
+  - type: textarea
+    id: logs
+    attributes:
+      label: Relevant server logs
+      description: >
+        Paste the JSON or text log lines. Redact tokens: `st=`, `adk_`, `adr_` and `as_`
+        values are credentials and a playback ticket is usable by anyone who has it for the
+        rest of its lifetime.
+      render: shell
+
+  - type: input
+    id: version
+    attributes:
+      label: Commit or version
+      description: >
+        `git rev-parse --short HEAD`, or the image tag. "latest" is not enough when a
+        regression is in question.
+
+  - type: textarea
+    id: env
+    attributes:
+      label: Environment
+      description: >
+        OS and Go version, Postgres version, whether Redis is configured, and how you are
+        reaching the API (directly, through nginx, something else). Never paste a
+        `DATABASE_URL`, a signing key or a webhook secret here.

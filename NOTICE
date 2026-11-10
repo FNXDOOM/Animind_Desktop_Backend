@@ -1,0 +1,95 @@
+AniMind Backend (Go)
+Copyright (c) 2026 Nikhil (FNXDOOM)
+
+This product includes software developed as part of the AniMind project,
+licensed under the MIT License (see LICENSE).
+
+────────────────────────────────────────────────────────────────────────────
+THIRD-PARTY COMPONENTS
+────────────────────────────────────────────────────────────────────────────
+
+This program links against 118 Go modules listed in go.mod and go.sum. Every
+one is used under the terms of its own licence, and none of them is GPL or
+LGPL — the build therefore remains compatible with the MIT licence chosen for
+this work.
+
+The full, authoritative list with versions is go.mod; do not maintain a second
+copy here. What follows records only the components that carry an obligation
+beyond "keep the notice".
+
+────────────────────────────────────────────────────────────────────────────
+Mozilla Public License 2.0 — covered files
+────────────────────────────────────────────────────────────────────────────
+
+The BitTorrent implementation is MPL-2.0 software. MPL is file-level copyleft:
+these modules' own source files stay under MPL-2.0 even though the surrounding
+work is MIT, and recipients must be able to obtain that source.
+
+  github.com/anacrolix/torrent
+  github.com/anacrolix/dht/v2
+  github.com/anacrolix/generics
+  github.com/anacrolix/log
+  github.com/anacrolix/mmsg
+  github.com/anacrolix/multiless
+  github.com/anacrolix/sync
+  github.com/anacrolix/upnp
+  github.com/anacrolix/utp
+
+Upstream: https://github.com/anacrolix/torrent
+Licence text: https://www.mozilla.org/en-US/MPL/2.0/
+
+If you distribute this program as a compiled binary, MPL-2.0 §3.3 requires you
+to inform recipients how to obtain the source of these files. `go mod download`
+reproduces them; stating that in your product's notices satisfies the obligation.
+
+If you modify those modules' own files, those modifications must be released
+under MPL-2.0. Modifying anything in this repository is governed by MIT alone.
+
+────────────────────────────────────────────────────────────────────────────
+Apache License 2.0 — components
+────────────────────────────────────────────────────────────────────────────
+
+  github.com/aws/aws-sdk-go-v2 (and its service, config, credentials and
+      internal submodules)
+  github.com/prometheus/client_golang
+  github.com/RoaringBitmap/roaring
+
+Apache-2.0 §4 requires that a distributed work carry a NOTICE listing these
+components and their licence. You may add your own notices to this file's
+appendix; you may not remove theirs.
+
+────────────────────────────────────────────────────────────────────────────
+BSD / MIT / ISC licensed components
+────────────────────────────────────────────────────────────────────────────
+
+The remainder — go-chi/chi, jackc/pgx, robfig/cron, gorilla/websocket,
+redis/go-redis, google/uuid, golang.org/x/{crypto,sync,sys,text,time},
+pkg/errors, davecgh/go-spew, zombiezen.com/go/sqlite,
+go-llsqlite/crawshaw and others — are under MIT, revised BSD, original BSD or
+ISC terms. Each is permissive; the requirement is only that its copyright and
+permission notice travel with the code, which `go mod vendor` preserves.
+
+────────────────────────────────────────────────────────────────────────────
+OPEN LICENSING QUESTION — please resolve before a public release
+────────────────────────────────────────────────────────────────────────────
+
+  github.com/go-llsqlite/adapter  v0.0.0-20230927005056-7f5ce7f0c916
+
+Its module in the Go proxy contains no LICENSE, LICENCE or COPYING file, and
+none is declared in its README. Absent an explicit grant, that is *all rights
+reserved* by default, and redistribution of a binary containing it is not
+clearly licensed.
+
+It is an indirect dependency reached through the SQLite bindings used by the
+torrent metadata store, and the module is seven small files. Options, in order
+of preference:
+
+  1. Check the repository's history or open an issue asking the author to add a
+     licence file. This is the correct fix.
+  2. Pin a newer version, if one exists that carries a licence.
+  3. Drop the code path that needs SQLite, if that is separable.
+
+Until then this file records the gap rather than implying the dependency is
+clean. Note that this is a practical observation about the packaging, not a
+legal opinion; if you intend to distribute this commercially, have someone
+qualified look at it.
