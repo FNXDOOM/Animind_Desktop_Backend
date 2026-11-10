@@ -81,7 +81,15 @@ func newClientConfig(cfg config.DownloadsConfig) *torrent.ClientConfig {
 	cliConf.NoDefaultPortForwarding = true
 	// Empty host = wildcard per socket network: upstream also opens tcp6, and a
 	// literal "0.0.0.0" fails that listen on dual-stack hosts.
-	cliConf.SetListenAddr(":0")
+	// An ephemeral port can land in a Windows excluded-port range and kill startup
+	// (measured: udp4 :64437 was forbidden); the operator pins one with
+	// DOWNLOADS_LISTEN_ADDR when this host needs it. An unset address keeps the
+	// upstream ":0" behaviour, which is also what a zero-value config wants.
+	addr := cfg.ListenAddr
+	if addr == "" {
+		addr = ":0"
+	}
+	cliConf.SetListenAddr(addr)
 	// Seeding continues after completion; the manager stops it at the
 	// configured ratio/minutes.
 	cliConf.Seed = true

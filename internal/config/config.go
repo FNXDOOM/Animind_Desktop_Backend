@@ -223,6 +223,9 @@ type DownloadsConfig struct {
 	UTP         bool
 	// MaxFiles caps entries extracted from a single torrent.
 	MaxFiles int
+	// ListenAddr is the torrent client's UDP listen address; ":0" picks an
+	// ephemeral port, which Windows may have placed inside an excluded range.
+	ListenAddr string
 	// Enabled mirrors Storage.Mode == local.
 	Enabled bool
 }
@@ -572,6 +575,7 @@ func (c *Config) loadDownloads() error {
 		PEX:              getBool("DOWNLOADS_PEX", true),
 		UTP:              getBool("DOWNLOADS_UTP", true),
 		MaxFiles:         clampInt(getInt("DOWNLOADS_MAX_FILES", 500), 1, 5000),
+		ListenAddr:       getString("DOWNLOADS_LISTEN_ADDR", ":0"),
 	}
 	// In s3 mode nothing runs locally, so the containment check must not fire.
 	c.Downloads.Enabled = c.Storage.Mode == StorageLocal
