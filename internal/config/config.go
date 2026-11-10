@@ -172,7 +172,8 @@ type S3Config struct {
 	Endpoint  string
 	AccessKey string
 	SecretKey string
-	// ForcePathStyle is implied when Endpoint is set.
+	// ForcePathStyle is reserved: nothing reads it and no variable sets it. Path-style
+	// addressing is decided in storage.New, which turns it on whenever Endpoint is set.
 	ForcePathStyle bool
 }
 

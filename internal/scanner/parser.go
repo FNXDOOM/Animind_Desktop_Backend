@@ -121,11 +121,11 @@ func extractEpisode(name string) (title string, episode float64, season *int, ok
 	return "", 0, nil, false
 }
 
-// ExtractEpisodeByStrongPatterns matches an episode number inside a longer string, used
-// when a filename is really a subtitle file where the title and language tokens interleave.
+// ExtractEpisodeByStrongPatterns picks an episode number out of a longer string, where
+// title and language tokens interleave. Patterns run in order: SxxEyy, "Ep yy", then a
+// dash-separated number that stands alone.
 //
-// Patterns mirror the migration script's order: SxxEyy, "Ep yy", a dash-separated number,
-// then a language-aware trailing number.
+// Exported for the parser tests; the scan path goes through ParseAnimeFilename.
 func ExtractEpisodeByStrongPatterns(name string) (float64, bool) {
 	strong := []*regexp.Regexp{
 		regexp.MustCompile(`(?i)\bS\d{1,2}E(\d{1,4})\b`),

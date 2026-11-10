@@ -72,7 +72,7 @@ func (l *WindowLimiter) pruneLocked(now time.Time) {
 	}
 }
 
-// Hits reports how many keys currently hold a live window. Used by tests to prove pruning.
+// Hits reports how many keys currently hold a live window. It has no callers.
 func (l *WindowLimiter) Hits() int {
 	l.mu.Lock()
 	defer l.mu.Unlock()

@@ -116,13 +116,15 @@ func (p *peer) send(raw string) {
 	p.enqueue(string(engineMessage) + raw)
 }
 
+// enqueue queues one frame for the writer. The queue is bounded, and a full queue means
+// the frame is dropped rather than blocking the room behind a slow client.
 func (p *peer) enqueue(frame string) {
 	select {
 	case p.out <- frame:
 	default:
-		// A slow client must not block the room. Dropping a stale heartbeat broadcast is
-		// correct behaviour; dropping a state change would not be, so the hub re-sends
-		// critical packets through sendDirect.
+		// A stale heartbeat is safe to lose; a state change is not, and nothing is
+		// retransmitted from here. A client that notices a gap calls requestSync, and the
+		// seq stamped on every broadcast lets it discard anything that arrives late.
 		p.logger.Debug("dropping socket packet for a slow client",
 			slog.String("sid", p.sid), slog.String("peer", p.userID))
 	}

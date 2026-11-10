@@ -158,8 +158,9 @@ func (f *FFmpeg) RunFFmpeg(ctx context.Context, args ...string) ([]byte, string,
 // argument list (the HLS session manager).
 func (f *FFmpeg) Binary() string { return f.cfg.FFmpeg.FFmpegPath }
 
-// Run executes a configured binary directly, returning captured output. The HLS manager
-// uses this because its process must outlive the request that started it.
+// Run executes an arbitrary binary under ctx and returns its output. It has no callers:
+// RunFFmpeg and probe both go through run directly, and the HLS manager builds its own
+// long-lived command instead.
 func (f *FFmpeg) Run(ctx context.Context, binary string, args ...string) ([]byte, string, error) {
 	stdout, stderr, err := f.run(ctx, binary, args...)
 	return stdout, string(stderr), err

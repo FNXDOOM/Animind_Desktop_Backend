@@ -1791,8 +1791,8 @@ func (r *Room) handlePeerLeft(p *peer, h *Hub) {
 	}, "")
 }
 
-// sortedParticipants returns peers in socket-id order for deterministic host promotion and
-// listing. Callers hold room.mu.
+// sortedParticipants returns peers ordered by join time, breaking ties on socket id, so
+// host promotion and the roster are deterministic. Callers hold room.mu.
 func sortedParticipants(room *Room) []*Participant {
 	out := make([]*Participant, 0, len(room.participants))
 	for _, participant := range room.participants {
