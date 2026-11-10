@@ -77,6 +77,8 @@ func (h *Hub) Len() int {
 	return h.nsubs
 }
 
+// Publish delivers one event to that user's subscribers, coalescing repeats of the same
+// job so a fast ticker cannot flood the stream. It is a no-op once the hub is closed.
 func (h *Hub) Publish(userID string, ev JobEvent) {
 	h.mu.Lock()
 	defer h.mu.Unlock()
@@ -162,8 +164,7 @@ func (h *Hub) deliver(userID string, ev JobEvent, now time.Time) {
 
 // Subscribe registers a stream for the user: ch carries live events, snapshot
 // holds the last known event per job, cancel removes the stream. ok is false
-// when the hub is closed (shutdown) or the per-user (2) or total (100) cap is
-// hit.
+// at shutdown or once maxPerUser/maxTotal is already reached.
 func (h *Hub) Subscribe(userID string) (ch <-chan JobEvent, snapshot []JobEvent, cancel func(), ok bool) {
 	h.mu.Lock()
 	defer h.mu.Unlock()
@@ -201,11 +202,10 @@ func (h *Hub) Subscribe(userID string) (ch <-chan JobEvent, snapshot []JobEvent,
 	return s.ch, snapshot, cancel, true
 }
 
-// Close ends every subscriber stream at once: each channel is closed so its
-// SSE handler's receive loop returns and the HTTP connections drain instead of
-// holding server.Shutdown open for its whole timeout window. It is idempotent;
-// afterwards Publish is a no-op and Subscribe returns ok=false. Pre-existing
-// cancel funcs stay no-ops, so no channel can be closed twice.
+// Close ends every subscriber stream so each SSE handler's receive loop
+// returns; without it server.Shutdown waits on live streams for its whole
+// timeout window. It is idempotent: Publish no-ops, Subscribe refuses, and
+// pre-existing cancel funcs stay no-ops, so no channel closes twice.
 func (h *Hub) Close() {
 	h.mu.Lock()
 	defer h.mu.Unlock()

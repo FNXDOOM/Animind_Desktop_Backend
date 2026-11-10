@@ -29,6 +29,8 @@ func NewResilientLimiter(shared, local Limiter) *ResilientLimiter {
 
 var _ Limiter = (*ResilientLimiter)(nil)
 
+// Allow asks the shared store first and falls back to local counting only when that
+// store is unreachable.
 func (r *ResilientLimiter) Allow(ctx context.Context, key string, limit int, duration time.Duration) (Decision, error) {
 	decision, err := r.shared.Allow(ctx, key, limit, duration)
 	if err == nil {

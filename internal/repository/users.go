@@ -41,6 +41,8 @@ type PoolStats struct {
 	Max    int32
 }
 
+// PoolStats snapshots the connection pool for the metrics collector. It returns zeroes
+// when the pool has not been created yet rather than failing the scrape.
 func (s *Store) PoolStats() PoolStats {
 	stat := s.pool.Stat()
 	if stat == nil {

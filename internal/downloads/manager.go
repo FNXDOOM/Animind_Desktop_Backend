@@ -54,6 +54,8 @@ var (
 // layer can point the client at it without parsing error text.
 type DuplicateJobError struct{ JobID string }
 
+// Error renders the duplicate as a sentence; the job id in it is for logs, and callers
+// that need it should read JobID or match ErrDuplicate with errors.Is.
 func (e *DuplicateJobError) Error() string {
 	return "downloads: duplicate: existing job " + e.JobID
 }
@@ -374,6 +376,8 @@ func (m *Manager) authorized(ctx context.Context, jobID, actorUserID string, isA
 	return job, nil
 }
 
+// Pause stops a running job. The actor must own it unless they are an admin, and a state
+// that cannot reach paused answers ErrConflict rather than pretending to succeed.
 func (m *Manager) Pause(ctx context.Context, jobID, actorUserID string, isAdmin bool) (repository.DownloadJob, error) {
 	job, err := m.authorized(ctx, jobID, actorUserID, isAdmin)
 	if err != nil {
@@ -396,6 +400,8 @@ func (m *Manager) Pause(ctx context.Context, jobID, actorUserID string, isAdmin 
 	return updated, nil
 }
 
+// Resume continues a paused job. Only StatePaused can be resumed; any other state answers
+// ErrConflict, and the actor must own the job unless they are an admin.
 func (m *Manager) Resume(ctx context.Context, jobID, actorUserID string, isAdmin bool) (repository.DownloadJob, error) {
 	job, err := m.authorized(ctx, jobID, actorUserID, isAdmin)
 	if err != nil {
