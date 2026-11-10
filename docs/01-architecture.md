@@ -26,6 +26,8 @@ cmd/server/main.go        wiring only: config -> db -> cache -> services -> hub 
   +-- internal/media        ffmpeg probing, subtitles, audio variants, HLS sessions
   +-- internal/metadata     AniList + MyAnimeList, cache, rate-limit cooldown
   +-- internal/scanner      filename parser, indexing, pruning, LLM fallback
+  +-- internal/torrent      Torznab indexers, search ranking, opaque ids, trending
+  +-- internal/downloads    engine adapter, job state machine, quotas, importer, SSE hub
   +-- internal/syncplay     Engine.IO/Socket.IO framing, room state machine
   +-- internal/scheduler    cron jobs with overlap protection
 migrations/*.sql           schema, embedded into the binary and readable by psql

@@ -2,7 +2,8 @@
 
 The API for AniMind: a personal anime streaming service with a desktop player
 (Qt/QML + libmpv) and a website. This process indexes a media library, authorizes playback,
-stores per-user viewing data, runs watch parties, and exposes administration.
+stores per-user viewing data, runs watch parties, fetches missing episodes over BitTorrent,
+and exposes administration.
 
 It is a rewrite of the original Node/Express backend (`animind-backend`) in Go, with the
 authentication system built in rather than delegated to Clerk. It serves **no frontend**:
@@ -72,6 +73,8 @@ starts half-configured and then 500s on first use.
 | Playback | Signed tickets, byte-range passthrough, presigned redirects, browser audio variants, on-demand HLS | [Streaming](docs/05-streaming.md) |
 | Watch parties | Socket.IO v4 rooms: server-authoritative clock, scheduled group starts, drift ladder, per-member latency and wait policy | [Watch parties](docs/06-watch-parties.md) |
 | Shared state | Optional Redis for resolved credentials, rate-limit windows and AniList documents, plus a Prometheus listener and a provisioned Grafana dashboard | [Caching and observability](docs/10-caching-and-observability.md) |
+| Torrent search | Torznab indexers, ranked results behind opaque ids, a bounded client and a trending feed | [Downloads](docs/11-downloads.md) |
+| Downloads | Job manager with per-user and global quotas, a state machine that resumes on boot, file selection, an importer that writes picks into the library, and per-user SSE progress | [Downloads](docs/11-downloads.md) |
 | Operations | Cron jobs, metrics, webhooks, Docker/VPS deployment | [Deployment](docs/07-deployment.md) |
 
 Package layout and request lifecycle are in [Architecture](docs/01-architecture.md).
@@ -266,3 +269,33 @@ Those runs found ten defects that type-checking and unit tests did not:
 The lesson is worth stating twice: a host with no database and no ffmpeg can prove the build, not
 the behaviour — and an in-process fake cannot prove the eviction paths either.
 [Deployment](docs/07-deployment.md) ends with the commands that reproduce this run.
+
+---
+
+## Contributing
+
+[CONTRIBUTING.md](CONTRIBUTING.md) covers the setup, which checks actually exercise the
+interesting code, and what a complete change looks like. Open an issue before changing a
+route, a payload field or the watch-party protocol: shipped clients read those shapes.
+
+Report vulnerabilities through GitHub's private advisory form, described in
+[SECURITY.md](SECURITY.md), rather than a public issue.
+
+## Known gaps worth knowing before you file one
+
+- `make lint` reports 61 findings (34 unchecked errors, 13 staticcheck, 14 dead symbols).
+  They are listed and prioritised in [.golangci.yml](.golangci.yml). CI does not gate on the
+  linter yet, because a gate that is permanently red teaches nobody anything.
+- `go test -race ./internal/downloads` fails. Four races sit in the test helper `waitFor`
+  (`manager_test.go:436`) reading a map while the scenario goroutine writes it. It is test
+  code, not the engine, and it predates the current CI.
+- `GET /api/shows` reports a `total` from an unfiltered `count(*)` while the page itself
+  applies the search and genre filters, so the number disagrees with the list.
+- Torrent search and downloads are **local-mode features**. In `s3` mode those routes answer
+  `501 downloads_unavailable`, because there is nothing on this filesystem to write into.
+
+## Licence
+
+Released under the [MIT License](LICENSE). [NOTICE](NOTICE) records the third-party
+components, including the MPL-2.0 BitTorrent library, whose source those terms require you
+to be able to obtain.
