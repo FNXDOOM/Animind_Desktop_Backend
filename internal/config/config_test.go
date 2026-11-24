@@ -135,6 +135,23 @@ func TestProductionRejectsDevelopmentWebhookSecret(t *testing.T) {
 	}
 }
 
+func TestProductionRequiresSecureCookiesAndExplicitOrigins(t *testing.T) {
+	baseEnv(t)
+	t.Setenv("ENV", "production")
+	t.Setenv("WEBHOOK_SECRET", "production-webhook-secret")
+	t.Setenv("SECURE_COOKIES", "false")
+
+	if _, err := Load(); err == nil || !strings.Contains(err.Error(), "SECURE_COOKIES") {
+		t.Fatalf("Load() error = %v, want SECURE_COOKIES validation error", err)
+	}
+
+	t.Setenv("SECURE_COOKIES", "true")
+	t.Setenv("FRONTEND_URL", "*")
+	if _, err := Load(); err == nil || !strings.Contains(err.Error(), "FRONTEND_URL") {
+		t.Fatalf("Load() error = %v, want FRONTEND_URL validation error", err)
+	}
+}
+
 func TestGetBoolAcceptsDocumentedSpellings(t *testing.T) {
 	for _, truthy := range []string{"true", "TRUE", "1", "yes", "on"} {
 		t.Setenv("TRUST_PROXY_HEADERS", truthy)
@@ -194,12 +211,46 @@ func TestPublicIssuerFallsBackToFirstOrigin(t *testing.T) {
 	}
 
 	t.Setenv("PUBLIC_URL", "https://api.example.com/")
+	t.Setenv("ENV", "development")
 	cfg, err = Load()
 	if err != nil {
 		t.Fatal(err)
 	}
 	if cfg.PublicIssuer() != "https://api.example.com" {
 		t.Errorf("PublicIssuer = %q, want PUBLIC_URL without a trailing slash", cfg.PublicIssuer())
+	}
+}
+
+func TestProductionRejectsPlaceholderSecrets(t *testing.T) {
+	baseEnv(t)
+	t.Setenv("ENV", "production")
+	t.Setenv("SECURE_COOKIES", "true")
+	t.Setenv("FRONTEND_URL", "https://animind.example")
+	t.Setenv("DESKTOP_TOKEN_SIGNING_KEY", "replace-with-a-long-random-secret")
+	t.Setenv("WEBHOOK_SECRET", "change-me")
+
+	if _, err := Load(); err == nil {
+		t.Fatal("config accepted documented placeholder secrets in production")
+	}
+}
+
+func TestLoadFailsClosedWithoutEnvironment(t *testing.T) {
+	baseEnv(t)
+	t.Setenv("ENV", "")
+	t.Setenv("PUBLIC_URL", "https://api.animind.example")
+
+	if _, err := Load(); err == nil {
+		t.Fatal("config defaulted to development with a public URL and no ENV")
+	}
+}
+
+func TestLoadAllowsLoopbackWithoutEnvironment(t *testing.T) {
+	baseEnv(t)
+	t.Setenv("ENV", "")
+	t.Setenv("PUBLIC_URL", "http://localhost:3001")
+
+	if _, err := Load(); err != nil {
+		t.Fatalf("loopback deployment should remain usable for local tooling: %v", err)
 	}
 }
 

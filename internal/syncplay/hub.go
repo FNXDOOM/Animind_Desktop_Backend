@@ -43,11 +43,25 @@ type Hub struct {
 
 	upgrader websocket.Upgrader
 
-	mu           sync.RWMutex
-	peers        map[string]*peer
-	pendingPeers map[string]*peer
-	rooms        map[string]*Room
+	mu    sync.RWMutex
+	peers map[string]*peer
+	rooms map[string]*Room
+
+	// joinLimiter slows room-code guessing. It is per authenticated account, in-process,
+	// and deliberately small: a room code is the only secret protecting a party.
+	joinMu       sync.Mutex
+	joinFailures map[string]*joinWindow
 }
+
+type joinWindow struct {
+	count   int
+	resetAt time.Time
+}
+
+const (
+	joinFailureLimit  = 10
+	joinFailureWindow = time.Minute
+)
 
 // NewHub builds the hub. CORS is enforced at the HTTP layer, so the socket handler only needs to refuse an upgrade from a disallowed origin.
 
@@ -58,8 +72,8 @@ func NewHub(cfg *config.Config, logger *slog.Logger, repo *repository.Store, aut
 		repo:         repo,
 		auth:         authenticator,
 		peers:        map[string]*peer{},
-		pendingPeers: map[string]*peer{},
 		rooms:        map[string]*Room{},
+		joinFailures: map[string]*joinWindow{},
 		upgrader: websocket.Upgrader{
 			ReadBufferSize:  4096,
 			WriteBufferSize: 4096,
@@ -75,14 +89,15 @@ func NewHub(cfg *config.Config, logger *slog.Logger, repo *repository.Store, aut
 	}
 }
 
-// Register mounts the socket endpoints on a router.
-func (h *Hub) Register(r chi.Router) {
+// Register mounts the socket endpoints on a router. Middleware is applied per route so
+// the handshake shares the same per-IP limiter as the REST surface.
+func (h *Hub) Register(r chi.Router, middlewares ...func(http.Handler) http.Handler) {
 	if !h.cfg.SyncPlay.Enabled {
 		return
 	}
-	r.Get(SocketPath, h.serveSocket)
-	r.Head(SocketPath, h.serveSocket)
-	r.Post(SocketPath, h.serveSocket)
+	r.With(middlewares...).Get(SocketPath, h.serveSocket)
+	r.With(middlewares...).Head(SocketPath, h.serveSocket)
+	r.With(middlewares...).Post(SocketPath, h.serveSocket)
 }
 
 // serveSocket routes an Engine.IO request to the transport the client asked for.
@@ -107,10 +122,14 @@ func isWebSocketUpgrade(r *http.Request) bool {
 		strings.Contains(strings.ToLower(r.Header.Get("Connection")), "upgrade")
 }
 
-func (h *Hub) register(p *peer) {
+func (h *Hub) register(p *peer) bool {
 	h.mu.Lock()
+	defer h.mu.Unlock()
+	if len(h.peers) >= maxPeers {
+		return false
+	}
 	h.peers[p.sid] = p
-	h.mu.Unlock()
+	return true
 }
 
 func (h *Hub) lookupPeer(sid string) *peer {
@@ -143,6 +162,59 @@ func (h *Hub) forgetPeer(p *peer) {
 	h.mu.Lock()
 	delete(h.peers, p.sid)
 	h.mu.Unlock()
+}
+
+// joinAllowed reports whether an account may attempt another room join. It is a simple
+// fixed window; callers record only failures, so a successful join resets the budget.
+func (h *Hub) joinAllowed(userID string) bool {
+	if userID == "" {
+		return true
+	}
+	now := time.Now()
+	h.joinMu.Lock()
+	defer h.joinMu.Unlock()
+	if h.joinFailures == nil {
+		h.joinFailures = map[string]*joinWindow{}
+	}
+	if len(h.joinFailures) > 4096 {
+		for id, w := range h.joinFailures {
+			if !now.Before(w.resetAt) {
+				delete(h.joinFailures, id)
+			}
+		}
+	}
+	w := h.joinFailures[userID]
+	if w == nil || !now.Before(w.resetAt) {
+		return true
+	}
+	return w.count < joinFailureLimit
+}
+
+func (h *Hub) noteJoinFailure(userID string) {
+	if userID == "" {
+		return
+	}
+	now := time.Now()
+	h.joinMu.Lock()
+	defer h.joinMu.Unlock()
+	if h.joinFailures == nil {
+		h.joinFailures = map[string]*joinWindow{}
+	}
+	w := h.joinFailures[userID]
+	if w == nil || !now.Before(w.resetAt) {
+		w = &joinWindow{resetAt: now.Add(joinFailureWindow)}
+		h.joinFailures[userID] = w
+	}
+	w.count++
+}
+
+func (h *Hub) clearJoinFailures(userID string) {
+	if userID == "" {
+		return
+	}
+	h.joinMu.Lock()
+	delete(h.joinFailures, userID)
+	h.joinMu.Unlock()
 }
 
 // authenticate resolves the socket token, rejecting anything this backend did not issue.
@@ -352,7 +424,14 @@ func (h *Hub) CleanupEnded() (rooms, participants int64) {
 // roomCodeAlphabet excludes the characters that are easy to mistype or misread: I, O, 0, 1.
 const roomCodeAlphabet = "ABCDEFGHJKLMNPQRSTUVWXYZ23456789"
 
-const roomCodeLength = 5
+const roomCodeLength = 7
+
+// Resource limits for the unauthenticated socket surface. The handshake is rate-limited
+// at the HTTP layer; these bound what a distributed client can still accumulate.
+const (
+	maxPeers     = 1000
+	authDeadline = 10 * time.Second
+)
 
 // newRoomCode mints a code and retries on collision with a live room.
 func (h *Hub) newRoomCode() (string, error) {

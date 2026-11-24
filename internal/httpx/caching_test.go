@@ -192,6 +192,32 @@ func TestAniListProxyServesADocumentOnce(t *testing.T) {
 // TestAniListProxyDoesNotCacheABadResponse keeps a provider hiccup from becoming a half-day
 // of empty results. AniList answers some rejections with 200 and an errors array, and a
 // truncated body is not a document at all.
+// TestAniListProxyDoesNotCacheOversizeDocuments keeps one response from becoming an
+// unbounded memory entry. The cache also enforces a byte budget; this is the first gate.
+func TestAniListProxyDoesNotCacheOversizeDocuments(t *testing.T) {
+	big := `{"data":{"Media":{"description":"` + strings.Repeat("x", 300<<10) + `"}}}`
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = io.WriteString(w, big)
+	}))
+	defer upstream.Close()
+
+	cfg := loadTestConfig(t)
+	cfg.Metadata.AniListEndpoint = upstream.URL
+	api := New(Deps{Config: cfg, Cache: newStore(t, cfg), Logger: slog.New(slog.NewTextHandler(io.Discard, nil))})
+	document := mustBody(t, map[string]any{"query": "{ Page { media { id } } }"})
+
+	for i := 0; i < 2; i++ {
+		res := doRaw(api, http.MethodPost, "/api/anilist", document, "application/json")
+		if res.Code != http.StatusOK {
+			t.Fatalf("call %d = %d: %s", i+1, res.Code, res.Body.String())
+		}
+		if got := res.Header().Get("X-Cache"); got != "MISS" {
+			t.Fatalf("call %d X-Cache = %q, want MISS for an oversized document", i+1, got)
+		}
+	}
+}
+
 func TestAniListProxyDoesNotCacheABadResponse(t *testing.T) {
 	var upstream atomic.Int64
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {

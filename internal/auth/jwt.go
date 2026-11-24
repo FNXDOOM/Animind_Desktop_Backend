@@ -32,11 +32,14 @@ type BridgeClaims struct {
 	Issuer    string `json:"iss"`
 	Subject   string `json:"sub"`
 	SessionID string `json:"sid"`
-	Nonce     string `json:"nonce,omitempty"`
-	Email     string `json:"email,omitempty"`
-	Audience  string `json:"aud"`
-	IssuedAt  int64  `json:"iat"`
-	ExpiresAt int64  `json:"exp"`
+	// WebSessionRowID pins the browser session that minted a handoff. The exchange
+	// re-checks this row so a token minted before logout cannot be redeemed after it.
+	WebSessionRowID string `json:"wsid,omitempty"`
+	Nonce           string `json:"nonce,omitempty"`
+	Email           string `json:"email,omitempty"`
+	Audience        string `json:"aud"`
+	IssuedAt        int64  `json:"iat"`
+	ExpiresAt       int64  `json:"exp"`
 }
 
 // JWT errors. Each maps to 401 at the edge; none expose the verification detail to the

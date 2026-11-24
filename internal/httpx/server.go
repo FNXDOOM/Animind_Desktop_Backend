@@ -31,8 +31,13 @@ import (
 // needs. Handlers are methods on it, so a route table reads as a list of endpoints rather
 // than a list of constructors.
 
-// SessionCookieName is the cookie a browser session is stored in.
-const SessionCookieName = "animind_session"
+// SessionCookieName is the cookie a browser session is stored in. When secure cookies are
+// enabled the prefixed form is used: __Host- forces Secure, Path=/ and no Domain, which
+// stops a sibling subdomain from overwriting the session.
+const (
+	SessionCookieName       = "animind_session"
+	SecureSessionCookieName = "__Host-" + SessionCookieName
+)
 
 // maxJSONBody bounds one request body.
 const maxJSONBody = int64(1 << 20)
@@ -152,8 +157,12 @@ func credential(r *http.Request) string {
 	if token := BearerToken(r); token != "" {
 		return token
 	}
-	if cookie, err := r.Cookie(SessionCookieName); err == nil {
-		return strings.TrimSpace(cookie.Value)
+	// Read the hardened name first, then the legacy name so a deployment can roll the
+	// change out without signing every browser out twice.
+	for _, name := range []string{SecureSessionCookieName, SessionCookieName} {
+		if cookie, err := r.Cookie(name); err == nil {
+			return strings.TrimSpace(cookie.Value)
+		}
 	}
 	return ""
 }
@@ -213,7 +222,7 @@ func (s *Server) Router() chi.Router {
 			// routes, since chi forbids Use() after routes have been registered on a mux.
 			authz.Group(func(privileged chi.Router) {
 				privileged.Use(s.RequireAuth)
-				privileged.With(s.rate(s.limiter.Login)).Get("/me", s.handleCurrentUser)
+				privileged.With(s.rate(s.limiter.UserData)).Get("/me", s.handleCurrentUser)
 				privileged.With(s.rate(s.limiter.Login)).Post("/desktop/bridge-token", s.handleBridgeToken)
 				privileged.With(s.rate(s.limiter.Login)).Post("/password/change", s.handleChangePassword)
 				privileged.With(s.rate(s.limiter.Account)).Get("/sessions", s.handleListSessions)
@@ -289,7 +298,7 @@ func (s *Server) Router() chi.Router {
 
 	// Watch party sockets live under the same /api prefix as the REST routes.
 	if s.hub != nil {
-		s.hub.Register(r)
+		s.hub.Register(r, s.rate(s.limiter.SocketHandshake))
 	}
 
 	r.NotFound(func(w http.ResponseWriter, req *http.Request) {
@@ -389,8 +398,12 @@ func (s *Server) requirePrincipal(w http.ResponseWriter, r *http.Request) (*auth
 // HttpOnly keeps the token out of page scripts, so an XSS in the site cannot read it; callers
 // that use a bearer header get the token in the login response body instead.
 func (s *Server) setSessionCookie(w http.ResponseWriter, token string, expiresAt time.Time, remember bool) {
+	name := SessionCookieName
+	if s.cfg.Auth.SecureCookies {
+		name = SecureSessionCookieName
+	}
 	http.SetCookie(w, &http.Cookie{
-		Name:     SessionCookieName,
+		Name:     name,
 		Value:    token,
 		Path:     "/",
 		HttpOnly: true,
@@ -402,13 +415,15 @@ func (s *Server) setSessionCookie(w http.ResponseWriter, token string, expiresAt
 	_ = remember
 }
 
-// clearSessionCookie expires the cookie immediately.
+// clearSessionCookie expires both the hardened and legacy names immediately.
 func (s *Server) clearSessionCookie(w http.ResponseWriter) {
-	http.SetCookie(w, &http.Cookie{
-		Name: SessionCookieName, Value: "", Path: "/", HttpOnly: true,
-		Secure: s.cfg.Auth.SecureCookies, SameSite: http.SameSiteLaxMode,
-		Expires: time.Unix(0, 0), MaxAge: -1,
-	})
+	for _, name := range []string{SecureSessionCookieName, SessionCookieName} {
+		http.SetCookie(w, &http.Cookie{
+			Name: name, Value: "", Path: "/", HttpOnly: true,
+			Secure: s.cfg.Auth.SecureCookies, SameSite: http.SameSiteLaxMode,
+			Expires: time.Unix(0, 0), MaxAge: -1,
+		})
+	}
 }
 
 // parsePositiveInt reads a query parameter as a positive integer.

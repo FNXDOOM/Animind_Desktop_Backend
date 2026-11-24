@@ -10,6 +10,7 @@ import (
 	"errors"
 	"io"
 	"log/slog"
+	"net"
 	"net/http"
 	"strconv"
 	"strings"
@@ -148,16 +149,16 @@ func ClientIP(r *http.Request, trustProxy bool) string {
 	if trustProxy {
 		if xf := r.Header.Get("X-Forwarded-For"); xf != "" {
 			first := strings.TrimSpace(strings.Split(xf, ",")[0])
-			if first != "" {
+			if net.ParseIP(first) != nil {
 				return first
 			}
 		}
-		if real := strings.TrimSpace(r.Header.Get("X-Real-IP")); real != "" {
+		if real := strings.TrimSpace(r.Header.Get("X-Real-IP")); net.ParseIP(real) != nil {
 			return real
 		}
 	}
-	host, _, found := strings.Cut(r.RemoteAddr, ":")
-	if !found {
+	host, _, err := net.SplitHostPort(r.RemoteAddr)
+	if err != nil {
 		return r.RemoteAddr
 	}
 	return host

@@ -9,6 +9,7 @@ package config
 import (
 	"errors"
 	"fmt"
+	"net"
 	"net/url"
 	"os"
 	"path/filepath"
@@ -33,6 +34,9 @@ type Config struct {
 	Env          string
 	Port         int
 	IsProduction bool
+	// DebugErrors exposes the underlying error text in 500 responses. It is false by
+	// default in every environment: operators who need it opt in explicitly.
+	DebugErrors bool
 	// PublicURL is this API's externally reachable origin, used for token issuance and
 	// OAuth callbacks.
 	PublicURL string
@@ -344,14 +348,31 @@ type SyncPlayConfig struct {
 
 // Load reads configuration from the process environment and validates it.
 func Load() (*Config, error) {
+	envRaw, envSet := os.LookupEnv("ENV")
+	if !envSet || strings.TrimSpace(envRaw) == "" {
+		envRaw, envSet = os.LookupEnv("NODE_ENV")
+	}
+	env := strings.ToLower(strings.TrimSpace(envRaw))
+	publicURL := strings.TrimSuffix(getString("PUBLIC_URL", ""), "/")
+	if !envSet || env == "" {
+		// Fail closed when the deployment looks public: an omitted ENV used to silently
+		// disable Secure cookies, verbose errors and origin checks. A loopback deployment
+		// may still default to development for local tooling.
+		if publicURL != "" && !isLoopbackURL(publicURL) {
+			return nil, errors.New("config: ENV must be set (production or development) when PUBLIC_URL is not a loopback address")
+		}
+		env = "development"
+	}
+
 	cfg := &Config{
-		Env:             strings.ToLower(strings.TrimSpace(getString("ENV", getString("NODE_ENV", "development")))),
+		Env:             env,
 		Port:            mustInt(getInt("PORT", 3001)),
-		PublicURL:       strings.TrimSuffix(getString("PUBLIC_URL", ""), "/"),
+		PublicURL:       publicURL,
 		FrontendOrigins: splitList(getString("FRONTEND_URL", "http://localhost:5173,http://localhost:3000")),
 		AppLinkOrigins:  parseAppLinkOrigins(getString("APP_LINK_ORIGINS", "")),
 		WebhookSecret:   getString("WEBHOOK_SECRET", "dev-secret"),
 		TrustProxy:      getBool("TRUST_PROXY_HEADERS", false),
+		DebugErrors:     getBool("DEBUG_ERRORS", false),
 	}
 	cfg.IsProduction = cfg.Env == "production"
 
@@ -378,6 +399,9 @@ func Load() (*Config, error) {
 	cfg.loadHLS()
 	cfg.loadAudioCache()
 	cfg.loadSyncPlay()
+	if err := cfg.validateProductionSecurity(); err != nil {
+		return nil, err
+	}
 
 	if cfg.WebhookSecret == "" {
 		return nil, errors.New("config: WEBHOOK_SECRET must not be empty")
@@ -386,6 +410,57 @@ func Load() (*Config, error) {
 		return nil, errors.New("config: WEBHOOK_SECRET must be changed from the development default in production")
 	}
 	return cfg, nil
+}
+
+func (cfg *Config) validateProductionSecurity() error {
+	if !cfg.IsProduction {
+		return nil
+	}
+	if !cfg.Auth.SecureCookies {
+		return errors.New("config: SECURE_COOKIES must be true in production")
+	}
+	for _, origin := range cfg.FrontendOrigins {
+		if origin == "*" {
+			return errors.New("config: FRONTEND_URL must not include * in production")
+		}
+	}
+	if placeholderSecret(cfg.Auth.TokenSigningKey) {
+		return errors.New("config: DESKTOP_TOKEN_SIGNING_KEY still contains a documented placeholder")
+	}
+	if placeholderSecret(cfg.WebhookSecret) {
+		return errors.New("config: WEBHOOK_SECRET still contains a documented placeholder")
+	}
+	return nil
+}
+
+// placeholderSecret rejects values copied from the example environment or a tutorial.
+// The check is intentionally textual: a real 48-byte random key will not contain these
+// markers, while every shipped example does.
+func placeholderSecret(value string) bool {
+	lowered := strings.ToLower(strings.TrimSpace(value))
+	for _, marker := range []string{
+		"replace-with", "change-me", "local-development", "dev-secret",
+		"please-replace", "your-secret", "your-key", "example-secret",
+	} {
+		if strings.Contains(lowered, marker) {
+			return true
+		}
+	}
+	return false
+}
+
+// isLoopbackURL reports whether a configured public origin is only reachable locally.
+func isLoopbackURL(raw string) bool {
+	parsed, err := url.Parse(raw)
+	if err != nil {
+		return false
+	}
+	host := parsed.Hostname()
+	if strings.EqualFold(host, "localhost") {
+		return true
+	}
+	ip := net.ParseIP(host)
+	return ip != nil && ip.IsLoopback()
 }
 
 // LoadOrDie loads configuration and exits the process on error, printing the reason.
@@ -725,6 +800,18 @@ func (c *Config) OriginAllowed(origin string) bool {
 	}
 	for _, allowed := range c.FrontendOrigins {
 		if allowed == "*" || strings.EqualFold(allowed, origin) {
+			return true
+		}
+	}
+	return false
+}
+
+// WildcardOrigin reports whether the deployment opted into any-origin CORS. Callers must
+// not combine that with credentials: a reflected origin plus Allow-Credentials is the
+// classic credentialed-CORS primitive.
+func (c *Config) WildcardOrigin() bool {
+	for _, allowed := range c.FrontendOrigins {
+		if allowed == "*" {
 			return true
 		}
 	}

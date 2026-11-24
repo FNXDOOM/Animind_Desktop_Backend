@@ -339,9 +339,13 @@ func (s *Server) handleAniListProxy(w http.ResponseWriter, r *http.Request) {
 		s.serverError(w, "Could not read the AniList response.", err)
 		return
 	}
+	// Cache only documents small enough to be a bounded memory cost. The cache also
+	// enforces a byte budget, but refusing an oversized document here keeps a single
+	// response from evicting the rest of the metadata working set.
+	const maxCachedAniListBytes = 256 << 10
 	if response.StatusCode != http.StatusOK {
 		s.logger.Warn("AniList upstream responded badly", slog.Int("status", response.StatusCode))
-	} else if isUsableGraphQLDocument(upstream) {
+	} else if len(upstream) <= maxCachedAniListBytes && isUsableGraphQLDocument(upstream) {
 		// Only a good document is stored: caching an empty match would hide the title from
 		// every later search for half a day.
 		s.rememberAniList(r.Context(), cacheKey, upstream)
@@ -497,7 +501,7 @@ func (s *Server) runScan(w http.ResponseWriter, r *http.Request) (*scanner.Resul
 		case errors.Is(err, scanner.ErrAlreadyRunning):
 			WriteErrorCode(w, http.StatusConflict, "scan_in_progress", "A library scan is already running.")
 		default:
-			WriteErrorDetails(w, http.StatusInternalServerError, "Scan failed.", safeDetail(err, s.cfg.IsProduction))
+			WriteErrorDetails(w, http.StatusInternalServerError, "Scan failed.", safeDetail(err, s.cfg.DebugErrors))
 		}
 		return nil, err
 	}

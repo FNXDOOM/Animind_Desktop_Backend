@@ -375,7 +375,11 @@ func (s *Server) handleCreateHLSSession(w http.ResponseWriter, r *http.Request) 
 	ctx, cancel := context.WithTimeout(r.Context(), s.cfg.HLS.ReadyTimeout+30*time.Second)
 	defer cancel()
 
-	sessionID, playlistURL, err := s.hls.Create(ctx, sourcePath, episode.ID, trackIndex, startTime)
+	principal, ok := s.requirePrincipal(w, r)
+	if !ok {
+		return
+	}
+	sessionID, playlistURL, err := s.hls.Create(ctx, sourcePath, episode.ID, trackIndex, startTime, principal.UserID)
 	if err != nil {
 		switch {
 		case errors.Is(err, media.ErrTooManySessions):
@@ -388,7 +392,7 @@ func (s *Server) handleCreateHLSSession(w http.ResponseWriter, r *http.Request) 
 			s.logger.Error("HLS session could not start",
 				slog.String("episode", episode.ID), slog.String("error", err.Error()))
 			WriteErrorDetails(w, http.StatusInternalServerError, "Could not start HLS playback.",
-				safeDetail(err, s.cfg.IsProduction))
+				safeDetail(err, s.cfg.DebugErrors))
 		}
 		return
 	}
@@ -467,25 +471,25 @@ func (s *Server) handleHLSSeek(w http.ResponseWriter, r *http.Request) {
 	if !s.requireHLS(w) {
 		return
 	}
+	principal, ok := s.requirePrincipal(w, r)
+	if !ok {
+		return
+	}
 	var req seekRequest
 	if err := DecodeJSON(r, &req); err != nil || req.Time < 0 {
 		WriteError(w, http.StatusBadRequest, "time must be a non-negative number.")
 		return
 	}
-	if !s.hls.Has(Param(r, "sessionId")) {
-		WriteError(w, http.StatusNotFound, "HLS session not found.")
-		return
-	}
 	ctx, cancel := context.WithTimeout(r.Context(), s.cfg.HLS.ReadyTimeout+30*time.Second)
 	defer cancel()
-	if err := s.hls.Seek(ctx, Param(r, "sessionId"), req.Time); err != nil {
+	if err := s.hls.Seek(ctx, Param(r, "sessionId"), req.Time, principal.UserID); err != nil {
 		if errors.Is(err, media.ErrUnknownSession) {
 			WriteError(w, http.StatusNotFound, "HLS session not found.")
 			return
 		}
 		s.logger.Warn("HLS seek failed", slog.String("session", Param(r, "sessionId")), slog.String("error", err.Error()))
 		WriteErrorDetails(w, http.StatusInternalServerError, "Could not seek this stream.",
-			safeDetail(err, s.cfg.IsProduction))
+			safeDetail(err, s.cfg.DebugErrors))
 		return
 	}
 	WriteJSON(w, http.StatusOK, map[string]any{"success": true, "time": req.Time})
@@ -497,8 +501,12 @@ func (s *Server) handleHLSHeartbeat(w http.ResponseWriter, r *http.Request) {
 	if !s.requireHLS(w) {
 		return
 	}
+	principal, ok := s.requirePrincipal(w, r)
+	if !ok {
+		return
+	}
 	sessionID := Param(r, "sessionId")
-	if !s.hls.Has(sessionID) {
+	if owner, found := s.hls.Owner(sessionID); !found || owner != principal.UserID {
 		WriteError(w, http.StatusNotFound, "HLS session not found.")
 		return
 	}
@@ -507,14 +515,22 @@ func (s *Server) handleHLSHeartbeat(w http.ResponseWriter, r *http.Request) {
 		// yet is still alive.
 		s.logger.Debug("HLS heartbeat on a session without a playlist", slog.String("session", sessionID))
 	}
-	WriteJSON(w, http.StatusOK, map[string]any{"alive": true, "stats": s.hls.Stats()})
+	stats, _ := s.hls.SessionStats(sessionID)
+	WriteJSON(w, http.StatusOK, map[string]any{"alive": true, "stats": stats})
 }
 
 func (s *Server) handleDestroyHLSSession(w http.ResponseWriter, r *http.Request) {
 	if !s.requireHLS(w) {
 		return
 	}
+	principal, ok := s.requirePrincipal(w, r)
+	if !ok {
+		return
+	}
 	sessionID := Param(r, "sessionId")
-	s.hls.Destroy(r.Context(), sessionID)
+	if !s.hls.DestroyForUser(r.Context(), sessionID, principal.UserID) {
+		WriteError(w, http.StatusNotFound, "HLS session not found.")
+		return
+	}
 	WriteJSON(w, http.StatusOK, map[string]bool{"success": true})
 }

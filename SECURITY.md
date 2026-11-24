@@ -80,10 +80,9 @@ REST API uses.
   the media. Treat that path as server-writable. In `s3` mode nothing is written at all.
 - **The scanner prunes rows for files it did not see.** A dropped mount during a scan removes
   catalogue rows for that disk. `SCANNER_PRUNE_DELETED=false` disables the pruning.
-- **A password-reset token is written to the server log.** There is no email transport in
-  this project. Anyone with log access can reset any account. Do not ship logs to a system
-  you have not considered that consequence for, and set up real delivery before letting
-  people you do not know sign up.
+- **Password-reset delivery is not included.** The API stores only the reset-token hash and
+  never logs the live credential. Configure an external recovery integration before exposing
+  password resets to other users.
 - **The first administrator has no bootstrap path.** `is_admin` defaults to false and the
   only route that grants it requires admin, so the initial grant is a manual database
   update. That is deliberate obscurity, not a hole — but it does mean the very first account
@@ -101,7 +100,7 @@ REST API uses.
 7. Put Postgres and Redis on loopback, which the bundled compose file already does.
 8. Run the API as a non-root user, as the Dockerfile does.
 9. Prefer `STORAGE_MODE=s3` if you do not want the server writing into your media tree.
-10. Re-read the log-handling note above before exposing this to anyone else.
+10. Add a recovery-delivery integration before exposing password resets to anyone else.
 
 ## Scope
 

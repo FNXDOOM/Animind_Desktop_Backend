@@ -148,6 +148,10 @@ type Manager struct {
 	base    context.Context
 	stopAll context.CancelFunc
 
+	// quotaMu serialises the count-then-insert admission decision. Creates are rare;
+	// correctness against the per-user and global quotas is worth the small contention.
+	quotaMu sync.Mutex
+
 	mu   sync.Mutex
 	jobs map[string]*jobRun
 }
@@ -285,6 +289,10 @@ func (m *Manager) Create(ctx context.Context, req Request) (repository.DownloadJ
 	if !m.cfg.Enabled {
 		return repository.DownloadJob{}, ErrNotEnabled
 	}
+	// Count and insert must be one critical section. The unique index catches identical
+	// torrents, but two different torrents could both pass the quota check.
+	m.quotaMu.Lock()
+	defer m.quotaMu.Unlock()
 	need := m.cfg.MinFreeBytes
 	if req.SizeBytes > 0 {
 		need += req.SizeBytes

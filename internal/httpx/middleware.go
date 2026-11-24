@@ -30,6 +30,15 @@ func PrincipalFromContext(ctx context.Context) *auth.Principal {
 	return p
 }
 
+// withClient attaches the request's user agent and address for any handler that may
+// create a session. RequireAuth does the same for requests that only resolve one.
+func (s *Server) withClient(r *http.Request) context.Context {
+	return auth.WithClient(r.Context(), auth.Client{
+		UserAgent: r.UserAgent(),
+		IPAddress: ClientIP(r, s.cfg.TrustProxy),
+	})
+}
+
 // RequireAuth resolves the bearer credential and stops the request when it is missing or
 // invalid. The wording echoes the original backend because the desktop player treats 401 as a
 // hard stop with no retry, so the message is the only diagnostic a user ever sees.
@@ -78,15 +87,25 @@ func (s *Server) CORS(next http.Handler) http.Handler {
 
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		origin := r.Header.Get("Origin")
-		if origin != "" && s.cfg.OriginAllowed(strings.TrimRight(origin, "/")) {
+		if origin != "" {
 			h := w.Header()
-			h.Set("Access-Control-Allow-Origin", origin)
-			h.Add("Vary", "Origin")
-			h.Set("Access-Control-Allow-Credentials", "true")
-			h.Set("Access-Control-Allow-Methods", methods)
-			h.Set("Access-Control-Allow-Headers", allowedHeaders)
-			h.Set("Access-Control-Expose-Headers", "Content-Range, Accept-Ranges, Content-Length, Retry-After, X-Session-Expires-At")
-			h.Set("Access-Control-Max-Age", "600")
+			if s.cfg.WildcardOrigin() {
+				// A wildcard is a public API, not a credentialed one. Never reflect an
+				// arbitrary origin together with Allow-Credentials.
+				h.Set("Access-Control-Allow-Origin", "*")
+				h.Set("Access-Control-Allow-Methods", methods)
+				h.Set("Access-Control-Allow-Headers", allowedHeaders)
+				h.Set("Access-Control-Expose-Headers", "Content-Range, Accept-Ranges, Content-Length, Retry-After, X-Session-Expires-At")
+				h.Set("Access-Control-Max-Age", "600")
+			} else if s.cfg.OriginAllowed(strings.TrimRight(origin, "/")) {
+				h.Set("Access-Control-Allow-Origin", origin)
+				h.Add("Vary", "Origin")
+				h.Set("Access-Control-Allow-Credentials", "true")
+				h.Set("Access-Control-Allow-Methods", methods)
+				h.Set("Access-Control-Allow-Headers", allowedHeaders)
+				h.Set("Access-Control-Expose-Headers", "Content-Range, Accept-Ranges, Content-Length, Retry-After, X-Session-Expires-At")
+				h.Set("Access-Control-Max-Age", "600")
+			}
 		}
 		if r.Method == http.MethodOptions {
 			w.WriteHeader(http.StatusNoContent)

@@ -76,9 +76,9 @@ substitutions and are trivially bypassed server-side anyway.
 - `failed_login_count` and `locked_until` are on the user row. After `AUTH_MAX_FAILED_LOGINS`
   failures the account answers **423** for `AUTH_FAILED_LOGIN_LOCKOUT_MINUTES`. A successful
   login clears both.
-- Reset requests always answer 202 with the same message. The generated token is written to
-  the server log, because no mail transport is configured here and inventing one is out of
-  scope; an operator delivers it.
+- Reset requests always answer 202 with the same message. The service stores only the token
+  hash and never logs the live credential. A deployment must provide an external recovery
+  delivery integration before enabling password resets for users.
 
 ## Sessions
 

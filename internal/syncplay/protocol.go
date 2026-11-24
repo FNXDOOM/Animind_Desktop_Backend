@@ -86,6 +86,9 @@ type peer struct {
 	// transport is "websocket" or "polling".
 	transport string
 
+	// connectedAt bounds how long an unauthenticated peer may hold resources.
+	connectedAt time.Time
+
 	// pollMu guards the inbox for long-polling readers.
 	pollMu      sync.Mutex
 	inbox       []string
@@ -106,6 +109,7 @@ func newPeer(sid, transport string, hub *Hub, logger *slog.Logger) *peer {
 		pollWait:    make(chan struct{}, 1),
 		logger:      logger,
 		lastTouched: time.Now(),
+		connectedAt: time.Now(),
 	}
 }
 
@@ -356,8 +360,23 @@ func (h *Hub) websocketHandler(w http.ResponseWriter, r *http.Request) {
 	}
 
 	peer := newPeer(newSID(), "websocket", h, h.logger)
-	h.register(peer)
+	if !h.register(peer) {
+		_ = conn.WriteControl(websocket.CloseMessage,
+			websocket.FormatCloseMessage(websocket.CloseTryAgainLater, "server is at connection capacity"),
+			time.Now().Add(time.Second))
+		_ = conn.Close()
+		return
+	}
 	h.attachWebSocket(peer, conn, false)
+}
+
+// readDeadline bounds an unauthenticated socket to authDeadline from the moment it
+// connected, and to the normal liveness window once CONNECT succeeds.
+func (h *Hub) readDeadline(p *peer) time.Time {
+	if p.authenticated.Load() {
+		return time.Now().Add(h.cfg.SyncPlay.PongTimeout)
+	}
+	return p.connectedAt.Add(authDeadline)
 }
 
 // attachWebSocket drives read and write loops for a peer.
@@ -377,10 +396,10 @@ func (h *Hub) attachWebSocket(p *peer, conn *websocket.Conn, upgrade bool) {
 	}
 
 	conn.SetReadLimit(h.cfg.SyncPlay.ReadLimitBytes)
-	pongDeadline := time.Now().Add(h.cfg.SyncPlay.PongTimeout)
+	pongDeadline := h.readDeadline(p)
 	conn.SetReadDeadline(pongDeadline)
 	conn.SetPongHandler(func(string) error {
-		return conn.SetReadDeadline(time.Now().Add(h.cfg.SyncPlay.PongTimeout))
+		return conn.SetReadDeadline(h.readDeadline(p))
 	})
 
 	defer func() {
@@ -408,7 +427,7 @@ func (h *Hub) attachWebSocket(p *peer, conn *websocket.Conn, upgrade bool) {
 			return
 		}
 		p.lastTouched = time.Now()
-		if err := conn.SetReadDeadline(time.Now().Add(h.cfg.SyncPlay.PongTimeout)); err != nil {
+		if err := conn.SetReadDeadline(h.readDeadline(p)); err != nil {
 			return
 		}
 		if !h.handleEngineFrame(p, string(raw)) {
@@ -573,7 +592,10 @@ func (h *Hub) pollingHandler(w http.ResponseWriter, r *http.Request) {
 		if p == nil {
 			// A new polling session: open it and send the handshake immediately.
 			p = newPeer(newSID(), "polling", h, h.logger)
-			h.register(p)
+			if !h.register(p) {
+				writeHTTPError(w, http.StatusServiceUnavailable, "server is at connection capacity")
+				return
+			}
 			go p.keepAlive(h)
 			p.enqueue(string(engineOpen) + mustJSON(h.openPayload(p.sid)))
 			h.drainPoll(w, p, 0)
@@ -640,15 +662,21 @@ func splitEngineFrames(body string) []string {
 }
 
 // keepAlive expires idle polling sessions so abandoned browser tabs do not accumulate.
+// An unauthenticated session is closed after authDeadline even if it keeps polling.
 func (p *peer) keepAlive(h *Hub) {
-	ticker := time.NewTicker(time.Minute)
+	ticker := time.NewTicker(5 * time.Second)
 	defer ticker.Stop()
 	for {
 		select {
 		case <-p.closed:
 			return
 		case <-ticker.C:
-			if p.transport == "polling" && time.Since(p.lastTouched) > 2*time.Minute {
+			if !p.authenticated.Load() && time.Since(p.connectedAt) > authDeadline {
+				p.Close()
+				h.disconnect(p)
+				return
+			}
+			if p.transport == "polling" && p.authenticated.Load() && time.Since(p.lastTouched) > 2*time.Minute {
 				p.Close()
 				h.disconnect(p)
 				return

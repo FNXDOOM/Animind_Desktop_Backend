@@ -49,6 +49,7 @@ var (
 type HLSSession struct {
 	ID              string    `json:"id"`
 	EpisodeID       string    `json:"episodeId"`
+	UserID          string    `json:"-"`
 	SourcePath      string    `json:"-"`
 	AudioTrackIndex int       `json:"audioTrack"`
 	PlaylistPath    string    `json:"-"`
@@ -122,7 +123,7 @@ func (m *HLSManager) Stop() {
 // Create starts a session and returns its id plus the playlist URL to fetch. It blocks
 // until the first segment exists: an empty playlist reads as a broken player rather than
 // a slow start.
-func (m *HLSManager) Create(ctx context.Context, sourcePath, episodeID string, audioTrackIndex int, startTime float64) (string, string, error) {
+func (m *HLSManager) Create(ctx context.Context, sourcePath, episodeID string, audioTrackIndex int, startTime float64, userID string) (string, string, error) {
 	if m.cfg.Storage.Mode != config.StorageLocal {
 		return "", "", ErrNotLocalMode
 	}
@@ -164,7 +165,7 @@ func (m *HLSManager) Create(ctx context.Context, sourcePath, episodeID string, a
 	now := time.Now()
 	entry := &managedSession{
 		session: &HLSSession{
-			ID: id, EpisodeID: episodeID, SourcePath: sourcePath,
+			ID: id, EpisodeID: episodeID, UserID: userID, SourcePath: sourcePath,
 			AudioTrackIndex: audioTrackIndex, PlaylistPath: playlist, Dir: dir,
 			StartedAt: now, LastAccessedAt: now, StartTime: startTime,
 		},
@@ -343,11 +344,11 @@ func (m *HLSManager) SegmentPath(id, segmentName string) (string, error) {
 // Seek restarts the session at a new start time. ffmpeg has no in-place seek for an
 // event-type playlist, so the process is killed, its output removed, and a new one
 // started from the requested offset.
-func (m *HLSManager) Seek(ctx context.Context, id string, timeSeconds float64) error {
+func (m *HLSManager) Seek(ctx context.Context, id string, timeSeconds float64, userID string) error {
 	m.mu.Lock()
 	entry := m.sessions[id]
 	m.mu.Unlock()
-	if entry == nil {
+	if entry == nil || (userID != "" && entry.session.UserID != userID) {
 		return ErrUnknownSession
 	}
 
@@ -445,6 +446,52 @@ func (m *HLSManager) Has(id string) bool {
 	defer m.mu.Unlock()
 	entry := m.sessions[id]
 	return entry != nil && !entry.destroy
+}
+
+// Owner reports which account created a session, so the HTTP layer can bind seek,
+// heartbeat and destroy to it.
+func (m *HLSManager) Owner(id string) (string, bool) {
+	if !sessionIDPattern.MatchString(id) {
+		return "", false
+	}
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	entry := m.sessions[id]
+	if entry == nil || entry.destroy {
+		return "", false
+	}
+	return entry.session.UserID, true
+}
+
+// DestroyForUser destroys a session only when the caller owns it. A mismatch is reported
+// as false so the handler can answer 404 without revealing that the id exists.
+func (m *HLSManager) DestroyForUser(ctx context.Context, id, userID string) bool {
+	m.mu.Lock()
+	entry := m.sessions[id]
+	m.mu.Unlock()
+	if entry == nil || entry.session.UserID != userID {
+		return false
+	}
+	m.Destroy(ctx, id)
+	return true
+}
+
+// SessionStats returns the stats for one session, used by the heartbeat route. It never
+// discloses the other sessions an account does not own.
+func (m *HLSManager) SessionStats(id string) (HLSStats, bool) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	entry := m.sessions[id]
+	if entry == nil || entry.destroy {
+		return HLSStats{}, false
+	}
+	session := *entry.session
+	session.LastAccessedAt = session.LastAccessedAt.UTC()
+	return HLSStats{
+		ActiveSessions: 1,
+		MaxSessions:    m.cfg.HLS.MaxConcurrentSessions,
+		Sessions:       []HLSSession{session},
+	}, true
 }
 
 // Stats snapshots the running sessions for the admin screen.

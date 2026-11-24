@@ -134,6 +134,11 @@ var (
 	// ErrInvalidAvatarURL is returned when a profile update carries a URL that could execute
 	// in a browser, such as a javascript: link.
 	ErrInvalidAvatarURL = errors.New("avatar_url must be an http or https URL")
+	// ErrAccountLinkRequired is returned when a provider sign-in matches an existing
+	// password account. Linking on email alone would let whoever registered the address
+	// first attach their account to a verified provider identity; the owner must prove
+	// the password first.
+	ErrAccountLinkRequired = errors.New("this address already has a password account; sign in with that password")
 )
 
 // touchInterval throttles session last-used writes. A browser hits the API many times
@@ -195,6 +200,11 @@ func (s *Service) Login(ctx context.Context, rawEmail, password string) (*LoginR
 	user, err := s.store.UserByEmailNormalized(ctx, email)
 	if errors.Is(err, repository.ErrNotFound) {
 		s.burnTime(ctx)
+		// Count the attempt even when no account exists: otherwise the lockout response
+		// itself tells an attacker that the address is registered.
+		if s.recordLoginFailure(ctx, email) {
+			return nil, ErrAccountLocked
+		}
 		return nil, ErrInvalidCredentials
 	}
 	if err != nil {
@@ -202,7 +212,12 @@ func (s *Service) Login(ctx context.Context, rawEmail, password string) (*LoginR
 	}
 
 	if user.PasswordHash == nil || *user.PasswordHash == "" {
-		// Identity-only account: it must sign in through its provider.
+		// Identity-only account: it must sign in through its provider. Count it into the
+		// same source-scoped window so its response is indistinguishable from a bad
+		// password on a password account.
+		if s.recordLoginFailure(ctx, email) {
+			return nil, ErrAccountLocked
+		}
 		return nil, ErrInvalidCredentials
 	}
 
@@ -448,6 +463,14 @@ func (s *Service) DesktopExchange(ctx context.Context, bearer, deviceID, deviceN
 		if jwtErr != nil {
 			return nil, ErrNotAuthenticated
 		}
+		// The signed token alone proves it was minted by this server, not that the
+		// browser session behind it is still alive. Re-check the row so logout wins.
+		if claims.WebSessionRowID == "" {
+			return nil, ErrNotAuthenticated
+		}
+		if _, rowErr := s.store.ActiveWebSessionByID(ctx, claims.Subject, claims.WebSessionRowID); rowErr != nil {
+			return nil, ErrNotAuthenticated
+		}
 		user, userErr := s.store.UserByID(ctx, claims.Subject)
 		if userErr != nil {
 			return nil, ErrTokenInvalid
@@ -496,6 +519,13 @@ func (s *Service) DesktopRefresh(ctx context.Context, refreshToken string) (*Des
 	session, err := s.store.DesktopSessionByRefreshHash(ctx, HashToken(refreshToken))
 	if err != nil {
 		if errors.Is(err, repository.ErrNotFound) {
+			// A token that matches a rotated-out hash is a replay of a credential the
+			// legitimate client already exchanged. Revoke the whole family: the server
+			// cannot tell which holder is the thief.
+			if revoked, revokeErr := s.store.RevokeDesktopFamilyByReusedHash(ctx, HashToken(refreshToken)); revokeErr == nil && revoked > 0 {
+				s.logger.Warn("desktop refresh token reuse detected; family revoked",
+					slog.Int64("sessions", revoked))
+			}
 			return nil, ErrTokenInvalid
 		}
 		return nil, err
@@ -573,12 +603,13 @@ func (s *Service) DesktopRevoke(ctx context.Context, refreshToken, accessToken s
 // loopback callback. It is exchanged immediately, so it lives only 60 seconds.
 func (s *Service) BridgeToken(ctx context.Context, p *Principal) (string, error) {
 	token, err := s.signer.SignBridgeToken(BridgeClaims{
-		Issuer:    s.cfg.PublicIssuer(),
-		Subject:   p.UserID,
-		SessionID: p.DesktopSessionID,
-		Email:     p.Email,
-		Audience:  BridgeAudience,
-		ExpiresAt: time.Now().Add(60 * time.Second).Unix(),
+		Issuer:          s.cfg.PublicIssuer(),
+		Subject:         p.UserID,
+		SessionID:       p.DesktopSessionID,
+		WebSessionRowID: p.WebSessionRowID,
+		Email:           p.Email,
+		Audience:        BridgeAudience,
+		ExpiresAt:       time.Now().Add(60 * time.Second).Unix(),
 	})
 	if err != nil {
 		return "", err
@@ -662,6 +693,11 @@ func (s *Service) ChangeEmail(ctx context.Context, userID, keepSessionID, newEma
 	if err := s.store.RevokeAllWebSessions(ctx, userID, keepSessionID); err != nil {
 		return nil, err
 	}
+	// The address of record is a credential boundary; a paired desktop must not keep
+	// speaking for the old identity after it changes.
+	if err := s.store.RevokeAllDesktopSessions(ctx, userID); err != nil {
+		return nil, err
+	}
 	s.InvalidateUser(ctx, userID)
 	updated, err := s.store.UserByID(ctx, userID)
 	if err != nil {
@@ -694,6 +730,11 @@ func (s *Service) ChangePassword(ctx context.Context, userID, currentPassword, n
 		return err
 	}
 	if err := s.store.RevokeAllWebSessions(ctx, userID, ""); err != nil {
+		return err
+	}
+	// A password change is a credential reset for every session family, not just the
+	// browser: desktop refresh tokens otherwise survive the change for up to 30 days.
+	if err := s.store.RevokeAllDesktopSessions(ctx, userID); err != nil {
 		return err
 	}
 	s.InvalidateUser(ctx, userID)
@@ -738,6 +779,9 @@ func (s *Service) ResetPassword(ctx context.Context, token, newPassword string) 
 		return err
 	}
 	if err := s.store.RevokeAllWebSessions(ctx, userID, ""); err != nil {
+		return err
+	}
+	if err := s.store.RevokeAllDesktopSessions(ctx, userID); err != nil {
 		return err
 	}
 	s.InvalidateUser(ctx, userID)
@@ -875,6 +919,9 @@ func (s *Service) consumeOAuthState(state string) bool {
 // SignInWithGoogle finds or creates the account behind a verified Google profile and
 // starts a web session.
 func (s *Service) SignInWithGoogle(ctx context.Context, profile *GoogleProfile) (*LoginResult, error) {
+	if err := validateGoogleProfile(profile); err != nil {
+		return nil, err
+	}
 	user, err := s.store.UserByProviderUserID(ctx, "google", profile.Subject)
 	if err != nil && !errors.Is(err, repository.ErrNotFound) {
 		return nil, err
@@ -882,11 +929,13 @@ func (s *Service) SignInWithGoogle(ctx context.Context, profile *GoogleProfile) 
 
 	if errors.Is(err, repository.ErrNotFound) {
 		email := NormalizeEmail(profile.Email)
-		if email == "" {
-			return nil, errors.New("auth: Google account supplied no email address")
-		}
 		if existing, lookupErr := s.store.UserByEmailNormalized(ctx, email); lookupErr == nil {
-			// Password account first, Google later: attach the identity to it.
+			// Password account first, Google later: the address alone is not proof of
+			// ownership. Refuse the silent link and require the password path; a stolen
+			// signup could otherwise inherit the victim's verified Google identity.
+			if existing.PasswordHash != nil {
+				return nil, ErrAccountLinkRequired
+			}
 			user = existing
 		} else if errors.Is(lookupErr, repository.ErrNotFound) {
 			username := strings.TrimSpace(profile.Name)
@@ -913,6 +962,10 @@ func (s *Service) SignInWithGoogle(ctx context.Context, profile *GoogleProfile) 
 			user = created
 		} else {
 			return nil, lookupErr
+		}
+		if user.PasswordHash != nil {
+			// A concurrent signup won the address between the lookup and the insert.
+			return nil, ErrAccountLinkRequired
 		}
 		if _, linkErr := s.store.LinkIdentity(ctx, user.ID, "google", profile.Subject, NormalizeEmail(profile.Email), profile.Name, profile.Picture); linkErr != nil {
 			return nil, fmt.Errorf("auth: link google identity: %w", linkErr)

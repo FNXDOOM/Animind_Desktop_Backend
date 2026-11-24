@@ -18,6 +18,10 @@ type localStore struct {
 	windows *WindowLimiter
 	stats   *Stats
 	now     func() time.Time
+	// maxBytes bounds the decoded payloads, not just the number of entries. A single
+	// AniList document can be several MiB; an entry cap alone is not a memory bound.
+	maxBytes int
+	bytes    int
 }
 
 type localEntry struct {
@@ -29,13 +33,17 @@ type localEntry struct {
 // which are the ones a fresh lookup would answer anyway.
 const maxLocalEntries = 50_000
 
+// maxLocalBytes is the default payload budget for the in-process cache.
+const maxLocalBytes = 64 << 20
+
 func newLocal() *localStore {
 	return &localStore{
-		entries: make(map[string]*localEntry),
-		groups:  make(map[string]map[string]struct{}),
-		windows: NewWindowLimiter(nil),
-		stats:   &Stats{},
-		now:     time.Now,
+		entries:  make(map[string]*localEntry),
+		groups:   make(map[string]map[string]struct{}),
+		windows:  NewWindowLimiter(nil),
+		stats:    &Stats{},
+		now:      time.Now,
+		maxBytes: maxLocalBytes,
 	}
 }
 
@@ -105,10 +113,18 @@ func (l *localStore) Set(_ context.Context, key string, value []byte, ttl time.D
 	if ttl <= 0 {
 		return nil
 	}
+	if l.maxBytes > 0 && len(value) > l.maxBytes {
+		// One document larger than the entire budget is not cacheable.
+		return nil
+	}
 	l.mu.Lock()
 	defer l.mu.Unlock()
 
+	if old, exists := l.entries[key]; exists {
+		l.bytes -= len(old.value)
+	}
 	l.entries[key] = &localEntry{value: value, expiresAt: l.now().Add(ttl)}
+	l.bytes += len(value)
 	for _, group := range groups {
 		if group == "" {
 			continue
@@ -121,7 +137,7 @@ func (l *localStore) Set(_ context.Context, key string, value []byte, ttl time.D
 		members[key] = struct{}{}
 	}
 	l.stats.record("set")
-	if len(l.entries) > maxLocalEntries {
+	if len(l.entries) > maxLocalEntries || (l.maxBytes > 0 && l.bytes > l.maxBytes) {
 		l.evictLocked()
 	}
 	return nil
@@ -144,7 +160,7 @@ func (l *localStore) DeleteGroup(_ context.Context, groups ...string) error {
 
 	for _, group := range groups {
 		for key := range l.groups[group] {
-			delete(l.entries, key)
+			l.removeLocked(key)
 		}
 		delete(l.groups, group)
 	}
@@ -153,6 +169,12 @@ func (l *localStore) DeleteGroup(_ context.Context, groups ...string) error {
 }
 
 func (l *localStore) removeLocked(key string) {
+	if entry, ok := l.entries[key]; ok {
+		l.bytes -= len(entry.value)
+		if l.bytes < 0 {
+			l.bytes = 0
+		}
+	}
 	delete(l.entries, key)
 	for group, members := range l.groups {
 		delete(members, key)
@@ -162,8 +184,8 @@ func (l *localStore) removeLocked(key string) {
 	}
 }
 
-// evictLocked reclaims space by expiring what is already stale, then by dropping the entries
-// closest to expiry. Only runs on overflow, so the sort is off the hot path.
+// evictLocked reclaims space by expiring what is already stale, then by dropping the
+// entries closest to expiry until both the entry and byte budgets are satisfied.
 func (l *localStore) evictLocked() {
 	now := l.now()
 	for key, entry := range l.entries {
@@ -171,7 +193,7 @@ func (l *localStore) evictLocked() {
 			l.removeLocked(key)
 		}
 	}
-	if len(l.entries) <= maxLocalEntries {
+	if len(l.entries) <= maxLocalEntries && (l.maxBytes <= 0 || l.bytes <= l.maxBytes) {
 		return
 	}
 	expiring := make([]string, 0, len(l.entries))
@@ -181,7 +203,10 @@ func (l *localStore) evictLocked() {
 	sort.Slice(expiring, func(i, j int) bool {
 		return l.entries[expiring[i]].expiresAt.Before(l.entries[expiring[j]].expiresAt)
 	})
-	for _, key := range expiring[:len(expiring)-maxLocalEntries/2] {
+	for _, key := range expiring {
+		if len(l.entries) <= maxLocalEntries && (l.maxBytes <= 0 || l.bytes <= l.maxBytes) {
+			break
+		}
 		l.removeLocked(key)
 	}
 }

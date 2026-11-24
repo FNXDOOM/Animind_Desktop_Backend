@@ -402,7 +402,7 @@ func TestWatchPartyHandshakeAndGate(t *testing.T) {
 	if err := json.Unmarshal(host.emitWithAck("createRoom", map[string]string{"episodeId": fixture.episode}), &ack); err != nil {
 		t.Fatalf("decode createRoom ack: %v", err)
 	}
-	if !ack.Success || len(ack.RoomCode) != 5 {
+	if !ack.Success || len(ack.RoomCode) != roomCodeLength {
 		t.Fatalf("createRoom failed: %+v", ack)
 	}
 	// The lookup a joiner performs before opening a player must name the parent show, not only

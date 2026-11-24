@@ -43,8 +43,8 @@ type downloadsJobStore interface {
 var _ downloadsJobStore = (*repository.Store)(nil)
 
 // downloadEntitlement answers whether one account may start (and delete) torrent downloads.
-// The store exposes can_download only through the admin listing, so the adapter pages it; a
-// one-row read on the store could replace the adapter without the handlers noticing.
+// The store exposes can_download as a single-row read; the adapter keeps the HTTP layer
+// decoupled from the repository type.
 type downloadEntitlement interface {
 	CanDownload(ctx context.Context, userID string) (bool, error)
 }
@@ -52,28 +52,11 @@ type downloadEntitlement interface {
 // storeEntitlements reads the entitlement from the repository.
 type storeEntitlements struct{ store *repository.Store }
 
-// entitlementPage is the listing page size; instances larger than one page pay
-// one extra query per page until the account is found.
-const entitlementPage = 200
-
 func (s storeEntitlements) CanDownload(ctx context.Context, userID string) (bool, error) {
 	if s.store == nil {
 		return false, nil
 	}
-	for offset := 0; ; offset += entitlementPage {
-		users, err := s.store.ListUsers(ctx, entitlementPage, offset)
-		if err != nil {
-			return false, err
-		}
-		for _, u := range users {
-			if u.ID == userID {
-				return u.CanDownload, nil
-			}
-		}
-		if len(users) < entitlementPage {
-			return false, nil
-		}
-	}
+	return s.store.CanDownload(ctx, userID)
 }
 
 // canDownload consults the entitlement seam, failing closed when it is absent.
@@ -193,6 +176,11 @@ func (s *Server) writeCreateError(w http.ResponseWriter, err error) {
 			"error":         "You already have this torrent queued or downloading.",
 			"existingJobId": jobID,
 		})
+	case repository.IsUniqueViolation(err):
+		// A concurrent create on another replica won the partial unique index; the
+		// client can retry and will then receive the typed duplicate with its id.
+		WriteErrorCode(w, http.StatusConflict, "duplicate_download",
+			"You already have this torrent queued or downloading.")
 	default:
 		s.serverError(w, "Could not start the download.", err)
 	}

@@ -95,14 +95,6 @@ func (s *Store) UserByID(ctx context.Context, id string) (*User, error) {
 	return scanUser(s.pool.QueryRow(ctx, `select `+userColumns+` from animind_users where id = $1::uuid`, id))
 }
 
-// EmailTaken reports whether a normalized email already belongs to an account.
-// It lets signup answer 409 without leaking the row.
-func (s *Store) EmailTaken(ctx context.Context, emailNormalized string) (bool, error) {
-	var exists bool
-	err := s.pool.QueryRow(ctx, `select exists(select 1 from animind_users where email_normalized = $1)`, emailNormalized).Scan(&exists)
-	return exists, err
-}
-
 // EmailTakenExcept ignores the caller's own row, so re-submitting the same address is not a
 // conflict for an account changing its email.
 func (s *Store) EmailTakenExcept(ctx context.Context, emailNormalized, exceptUserID string) (bool, error) {
@@ -240,6 +232,22 @@ func (s *Store) ListUsers(ctx context.Context, limit, offset int) ([]PublicUser,
 	return out, rows.Err()
 }
 
+// CanDownload answers whether one account holds the torrent-download entitlement.
+// It is a single-row read: the HTTP layer calls it on every non-admin create/delete,
+// and paging the whole user table there was an unnecessary amplifier.
+func (s *Store) CanDownload(ctx context.Context, userID string) (bool, error) {
+	var allowed bool
+	err := s.pool.QueryRow(ctx, `
+		select can_download from animind_users where id = $1::uuid`, userID).Scan(&allowed)
+	if err != nil {
+		if errors.Is(err, pgx.ErrNoRows) {
+			return false, ErrNotFound
+		}
+		return false, err
+	}
+	return allowed, nil
+}
+
 // CountUsers returns the total account count for admin metrics.
 func (s *Store) CountUsers(ctx context.Context) (int64, error) {
 	var n int64
@@ -341,6 +349,17 @@ func (s *Store) ActiveWebSession(ctx context.Context, tokenHash string) (*WebSes
 	return scanWebSession(s.pool.QueryRow(ctx, `
 		select `+webSessionColumns+` from animind_web_sessions
 		where session_hash = $1 and revoked_at is null and expires_at > now()`, tokenHash))
+}
+
+// ActiveWebSessionByID loads a live session by primary key for the authenticated user. It
+// is used to re-validate a desktop handoff after the browser session may have ended.
+func (s *Store) ActiveWebSessionByID(ctx context.Context, userID, id string) (*WebSession, error) {
+	if !isUUID(id) {
+		return nil, ErrNotFound
+	}
+	return scanWebSession(s.pool.QueryRow(ctx, `
+		select `+webSessionColumns+` from animind_web_sessions
+		where id = $1::uuid and user_id = $2::uuid and revoked_at is null and expires_at > now()`, id, userID))
 }
 
 // TouchWebSession advances sliding expiry and the last-used stamp.

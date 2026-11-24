@@ -56,11 +56,10 @@ func newMemHub(t *testing.T, tune func(*config.SyncPlayConfig)) *Hub {
 	}
 	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
 	return &Hub{
-		cfg:          &config.Config{SyncPlay: s},
-		logger:       logger,
-		peers:        map[string]*peer{},
-		pendingPeers: map[string]*peer{},
-		rooms:        map[string]*Room{},
+		cfg:    &config.Config{SyncPlay: s},
+		logger: logger,
+		peers:  map[string]*peer{},
+		rooms:  map[string]*Room{},
 	}
 }
 

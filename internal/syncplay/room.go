@@ -635,6 +635,10 @@ func (h *Hub) handleJoinRoom(p *peer, in inbound, existing *Room) {
 		h.reply(p, in, joinAckPayload{Success: false, Error: "Room code is required."})
 		return
 	}
+	if !h.joinAllowed(p.userID) {
+		h.reply(p, in, joinAckPayload{Success: false, Error: "Too many join attempts. Try again in a minute."})
+		return
+	}
 	if existing != nil && existing.code != code {
 		existing.handlePeerLeft(p, h)
 	}
@@ -643,6 +647,7 @@ func (h *Hub) handleJoinRoom(p *peer, in inbound, existing *Room) {
 	room := h.rooms[code]
 	h.mu.RUnlock()
 	if room == nil {
+		h.noteJoinFailure(p.userID)
 		h.reply(p, in, joinAckPayload{Success: false, Error: "Room not found."})
 		return
 	}
@@ -650,6 +655,7 @@ func (h *Hub) handleJoinRoom(p *peer, in inbound, existing *Room) {
 	room.mu.Lock()
 	if len(room.participants) >= h.cfg.SyncPlay.MaxParticipants {
 		room.mu.Unlock()
+		h.noteJoinFailure(p.userID)
 		h.reply(p, in, joinAckPayload{Success: false, Error: "Room is full."})
 		return
 	}
@@ -663,6 +669,7 @@ func (h *Hub) handleJoinRoom(p *peer, in inbound, existing *Room) {
 	wasPlaying := room.isPlaying
 	room.isPlaying = false
 	count := len(room.participants)
+	h.clearJoinFailures(p.userID)
 	summaries := room.uniqueParticipantsLocked()
 	states := room.peerStatesLocked()
 	goal := h.goalSecondsLocked(room)

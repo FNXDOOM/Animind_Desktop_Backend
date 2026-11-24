@@ -47,7 +47,7 @@ func (s *Server) handleSignup(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	result, err := s.auth.SignUp(r.Context(), req.Email, req.Password, req.Username)
+	result, err := s.auth.SignUp(s.withClient(r), req.Email, req.Password, req.Username)
 	if err != nil {
 		s.writeAuthError(w, err, "Signup failed.")
 		return
@@ -72,7 +72,8 @@ func (s *Server) handleLogin(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	result, err := s.auth.Login(auth.WithLoginSource(r.Context(), ClientIP(r, s.cfg.TrustProxy)), req.Email, req.Password)
+	loginCtx := auth.WithLoginSource(s.withClient(r), ClientIP(r, s.cfg.TrustProxy))
+	result, err := s.auth.Login(loginCtx, req.Email, req.Password)
 	if err != nil {
 		s.writeAuthError(w, err, "Login failed.")
 		return
@@ -162,15 +163,16 @@ func (s *Server) handleForgotPassword(w http.ResponseWriter, r *http.Request) {
 		WriteError(w, http.StatusBadRequest, "email is required.")
 		return
 	}
-	token, found, err := s.auth.RequestPasswordReset(r.Context(), req.Email)
+	_, found, err := s.auth.RequestPasswordReset(r.Context(), req.Email)
 	if err != nil {
 		s.serverError(w, "Could not start password recovery.", err)
 		return
 	}
 	if found {
+		// The reset token itself is never logged. Delivery is an operator concern for now;
+		// the token hash is deliberately absent so a log sink cannot become a credential
+		// oracle, and the address never reaches this line.
 		s.logger.Warn("password reset token issued",
-			slog.String("email", auth.NormalizeEmail(req.Email)),
-			slog.String("token_hash", auth.HashToken(token)),
 			slog.String("note", "deliver through the configured recovery channel; it expires in one hour"))
 	}
 	WriteJSON(w, http.StatusAccepted, map[string]any{
@@ -300,7 +302,7 @@ func (s *Server) handleGoogleCallback(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	result, err := s.auth.SignInWithGoogle(r.Context(), profile)
+	result, err := s.auth.SignInWithGoogle(s.withClient(r), profile)
 	if err != nil {
 		s.logger.Warn("Google account could not be provisioned", slog.String("error", err.Error()))
 		http.Redirect(w, r, s.frontendReturn(redirectAfter)+"?auth=failed", http.StatusFound)
@@ -341,7 +343,7 @@ func (s *Server) handleConsumeCode(w http.ResponseWriter, r *http.Request) {
 		WriteError(w, http.StatusBadRequest, "code is required.")
 		return
 	}
-	result, err := s.auth.ConsumeAuthCode(r.Context(), req.Code)
+	result, err := s.auth.ConsumeAuthCode(s.withClient(r), req.Code)
 	if err != nil {
 		s.writeAuthError(w, err, "That sign-in link is no longer valid.")
 		return
@@ -583,6 +585,8 @@ func (s *Server) writeAuthError(w http.ResponseWriter, err error, fallback strin
 		WriteError(w, http.StatusLocked, err.Error())
 	case errors.Is(err, auth.ErrEmailTaken):
 		WriteError(w, http.StatusConflict, err.Error())
+	case errors.Is(err, auth.ErrAccountLinkRequired):
+		WriteError(w, http.StatusConflict, err.Error())
 	case errors.Is(err, auth.ErrSignupDisabled):
 		WriteError(w, http.StatusForbidden, err.Error())
 	case errors.Is(err, auth.ErrWeakPassword),
@@ -599,12 +603,13 @@ func (s *Server) writeAuthError(w http.ResponseWriter, err error, fallback strin
 // a connection string or a file path never reach a client.
 func (s *Server) serverError(w http.ResponseWriter, message string, err error) {
 	s.logger.Error("request failed", slog.String("error", err.Error()), slog.String("message", message))
-	WriteErrorDetails(w, http.StatusInternalServerError, message, safeDetail(err, s.cfg.IsProduction))
+	WriteErrorDetails(w, http.StatusInternalServerError, message, safeDetail(err, s.cfg.DebugErrors))
 }
 
-// safeDetail exposes the underlying error only outside production.
-func safeDetail(err error, production bool) string {
-	if production || err == nil {
+// safeDetail exposes the underlying error only when the operator explicitly enabled
+// DEBUG_ERRORS. Environment name alone is not consent to leak internals to clients.
+func safeDetail(err error, expose bool) string {
+	if !expose || err == nil {
 		return ""
 	}
 	return err.Error()

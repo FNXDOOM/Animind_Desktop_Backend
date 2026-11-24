@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"log/slog"
@@ -275,6 +276,161 @@ func TestUpdateProfileEmailAllowsKeepingYourOwnAddress(t *testing.T) {
 	})
 	if res.Code != http.StatusOK {
 		t.Fatalf("status = %d body = %s, want 200", res.Code, res.Body)
+	}
+}
+
+func TestPasswordChangeRevokesDesktopSessions(t *testing.T) {
+	server, _, service := sharedHarness(t)
+	acct := signUpAccount(t, service)
+
+	tokens, err := service.DesktopExchange(context.Background(), acct.token, "dev-revoke", "laptop")
+	if err != nil {
+		t.Fatalf("DesktopExchange: %v", err)
+	}
+
+	res := acct.do(t, server, http.MethodPost, "/api/auth/password/change", map[string]string{
+		"current_password": testAccountPassword,
+		"new_password":     "a-different-strong-password",
+	})
+	if res.Code != http.StatusOK {
+		t.Fatalf("password change = %d %s", res.Code, res.Body.String())
+	}
+	if _, err := service.DesktopRefresh(context.Background(), tokens.RefreshToken); err == nil {
+		t.Fatal("desktop refresh still works after a password change")
+	}
+}
+
+func TestResetPasswordRevokesDesktopSessions(t *testing.T) {
+	_, _, service := sharedHarness(t)
+	acct := signUpAccount(t, service)
+
+	tokens, err := service.DesktopExchange(context.Background(), acct.token, "dev-reset", "laptop")
+	if err != nil {
+		t.Fatalf("DesktopExchange: %v", err)
+	}
+	resetToken, found, err := service.RequestPasswordReset(context.Background(), acct.email)
+	if err != nil || !found {
+		t.Fatalf("RequestPasswordReset: found=%v err=%v", found, err)
+	}
+	if err := service.ResetPassword(context.Background(), resetToken, "reset-password-value"); err != nil {
+		t.Fatalf("ResetPassword: %v", err)
+	}
+	if _, err := service.DesktopRefresh(context.Background(), tokens.RefreshToken); err == nil {
+		t.Fatal("desktop refresh still works after a password reset")
+	}
+}
+
+func TestBridgeTokenRejectedAfterLogout(t *testing.T) {
+	_, _, service := sharedHarness(t)
+	acct := signUpAccount(t, service)
+
+	principal, err := service.Authenticate(context.Background(), acct.token)
+	if err != nil {
+		t.Fatalf("Authenticate: %v", err)
+	}
+	bridge, err := service.BridgeToken(context.Background(), principal)
+	if err != nil {
+		t.Fatalf("BridgeToken: %v", err)
+	}
+	if err := service.Logout(context.Background(), principal); err != nil {
+		t.Fatalf("Logout: %v", err)
+	}
+	if _, err := service.DesktopExchange(context.Background(), bridge, "dev-bridge", "laptop"); err == nil {
+		t.Fatal("bridge token minted before logout still exchanges after logout")
+	}
+}
+
+func TestWebSessionRecordsClientMetadata(t *testing.T) {
+	server, store, _ := sharedHarness(t)
+
+	email := fmt.Sprintf("meta-%d@animind.test", time.Now().UnixNano())
+	body := fmt.Sprintf(`{"email":%q,"password":%q}`, email, testAccountPassword)
+	req := httptest.NewRequest(http.MethodPost, "/api/auth/signup", strings.NewReader(body))
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("User-Agent", "audit-test-agent/1.0")
+	req.RemoteAddr = "192.0.2.55:4321"
+	rec := httptest.NewRecorder()
+	server.Router().ServeHTTP(rec, req)
+	if rec.Code != http.StatusCreated {
+		t.Fatalf("signup = %d %s", rec.Code, rec.Body.String())
+	}
+
+	var envelope userEnvelope
+	if err := json.Unmarshal(rec.Body.Bytes(), &envelope); err != nil {
+		t.Fatalf("decode signup: %v", err)
+	}
+	sessions, err := store.ListWebSessions(context.Background(), envelope.User.ID)
+	if err != nil || len(sessions) == 0 {
+		t.Fatalf("ListWebSessions: %v (n=%d)", err, len(sessions))
+	}
+	if sessions[0].UserAgent == nil || *sessions[0].UserAgent != "audit-test-agent/1.0" {
+		t.Fatalf("user agent not recorded: %v", sessions[0].UserAgent)
+	}
+	if sessions[0].IPAddress == nil || *sessions[0].IPAddress != "192.0.2.55" {
+		t.Fatalf("ip not recorded: %v", sessions[0].IPAddress)
+	}
+}
+
+func TestRefreshTokenReuseRevokesFamily(t *testing.T) {
+	_, _, service := sharedHarness(t)
+	acct := signUpAccount(t, service)
+
+	first, err := service.DesktopExchange(context.Background(), acct.token, "dev-reuse", "laptop")
+	if err != nil {
+		t.Fatalf("DesktopExchange: %v", err)
+	}
+	second, err := service.DesktopRefresh(context.Background(), first.RefreshToken)
+	if err != nil {
+		t.Fatalf("first refresh: %v", err)
+	}
+
+	if _, err := service.DesktopRefresh(context.Background(), first.RefreshToken); err == nil {
+		t.Fatal("rotated-out refresh token was accepted")
+	}
+	if _, err := service.DesktopRefresh(context.Background(), second.RefreshToken); err == nil {
+		t.Fatal("refresh family survived a reuse attempt")
+	}
+}
+
+func TestGoogleSignInRefusesPasswordAccountLink(t *testing.T) {
+	_, _, service := sharedHarness(t)
+	acct := signUpAccount(t, service)
+
+	verified := true
+	_, err := service.SignInWithGoogle(context.Background(), &auth.GoogleProfile{
+		Subject:   "google-subject-" + acct.email,
+		Email:     acct.email,
+		EmailTrue: &verified,
+	})
+	if !errors.Is(err, auth.ErrAccountLinkRequired) {
+		t.Fatalf("SignInWithGoogle error = %v, want ErrAccountLinkRequired", err)
+	}
+}
+
+func TestLockoutDoesNotRevealAccountExistence(t *testing.T) {
+	server, _, service := sharedHarness(t)
+	existing := signUpAccount(t, service)
+	unknown := fmt.Sprintf("missing-%d@animind.test", time.Now().UnixNano())
+
+	attempt := func(email, remote string) (int, string) {
+		body := fmt.Sprintf(`{"email":%q,"password":"wrong-password"}`, email)
+		req := httptest.NewRequest(http.MethodPost, "/api/auth/login", strings.NewReader(body))
+		req.Header.Set("Content-Type", "application/json")
+		req.RemoteAddr = remote
+		rec := httptest.NewRecorder()
+		server.Router().ServeHTTP(rec, req)
+		return rec.Code, rec.Body.String()
+	}
+
+	var existingCode, unknownCode int
+	var existingBody, unknownBody string
+	for i := 0; i < 10; i++ {
+		existingCode, existingBody = attempt(existing.email, "203.0.113.10:1234")
+		unknownCode, unknownBody = attempt(unknown, "203.0.113.11:1234")
+	}
+	if existingCode != unknownCode || existingBody != unknownBody {
+		t.Fatalf("account existence observable: existing=%d %q unknown=%d %q",
+			existingCode, existingBody, unknownCode, unknownBody)
 	}
 }
 

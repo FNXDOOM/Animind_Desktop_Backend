@@ -54,11 +54,9 @@ func NewGoogle(cfg *config.Config, logger *slog.Logger) *Google {
 	enabled := a.GoogleClientID != "" && a.GoogleClientSecret != ""
 	redirect := a.GoogleRedirectURL
 	if redirect == "" {
-		// Derive the callback from the first configured site origin so a deployment
-		// only needs to register one URL with Google.
-		if len(cfg.FrontendOrigins) > 0 && cfg.FrontendOrigins[0] != "*" {
-			redirect = strings.TrimSuffix(cfg.FrontendOrigins[0], "/") + "/api/auth/google/callback"
-		}
+		// The callback is served by this API, not by the browser frontend. PublicIssuer
+		// prefers PUBLIC_URL and only falls back to a frontend origin for local setups.
+		redirect = strings.TrimSuffix(cfg.PublicIssuer(), "/") + "/api/auth/google/callback"
 	}
 	return &Google{
 		ClientID:     a.GoogleClientID,
@@ -158,15 +156,26 @@ func (g *Google) Exchange(ctx context.Context, code string) (*GoogleProfile, err
 	if err := json.Unmarshal(profileBody, &profile); err != nil {
 		return nil, fmt.Errorf("auth: decode google profile: %w", err)
 	}
-	// sub is the only stable identifier. Without it the account cannot be matched on a
-	// later login, so the sign-in is refused rather than creating an unlinked user.
-	if profile.Subject == "" {
-		return nil, ErrGoogleRejected
+	if err := validateGoogleProfile(&profile); err != nil {
+		return nil, err
 	}
-	if profile.Email != "" {
-		profile.Email = NormalizeEmail(profile.Email)
-	}
+	profile.Subject = strings.TrimSpace(profile.Subject)
+	profile.Email = NormalizeEmail(profile.Email)
 	return &profile, nil
+}
+
+// validateGoogleProfile accepts only identities whose email address Google has
+// explicitly verified. The email is used to link an existing local account, so
+// accepting an unverified claim here could attach an identity to an account its
+// holder does not own.
+func validateGoogleProfile(profile *GoogleProfile) error {
+	if profile == nil || strings.TrimSpace(profile.Subject) == "" || NormalizeEmail(profile.Email) == "" {
+		return ErrGoogleRejected
+	}
+	if profile.EmailTrue == nil || !*profile.EmailTrue {
+		return ErrGoogleRejected
+	}
+	return nil
 }
 
 func truncate(s string, n int) string {

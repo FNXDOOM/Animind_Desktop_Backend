@@ -69,6 +69,48 @@ func TestHashPasswordRejectsWeakInput(t *testing.T) {
 	}
 }
 
+func TestValidateGoogleProfileRequiresVerifiedEmail(t *testing.T) {
+	verified := true
+	unverified := false
+
+	tests := []struct {
+		name    string
+		profile *GoogleProfile
+		wantErr bool
+	}{
+		{name: "nil profile", wantErr: true},
+		{name: "missing subject", profile: &GoogleProfile{Email: "user@example.com", EmailTrue: &verified}, wantErr: true},
+		{name: "missing email", profile: &GoogleProfile{Subject: "google-subject", EmailTrue: &verified}, wantErr: true},
+		{name: "missing verification claim", profile: &GoogleProfile{Subject: "google-subject", Email: "user@example.com"}, wantErr: true},
+		{name: "unverified email", profile: &GoogleProfile{Subject: "google-subject", Email: "user@example.com", EmailTrue: &unverified}, wantErr: true},
+		{name: "verified email", profile: &GoogleProfile{Subject: "google-subject", Email: "user@example.com", EmailTrue: &verified}},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			err := validateGoogleProfile(tt.profile)
+			if (err != nil) != tt.wantErr {
+				t.Fatalf("validateGoogleProfile() error = %v, want error = %v", err, tt.wantErr)
+			}
+		})
+	}
+}
+
+func TestNewGoogleDerivesCallbackFromPublicAPIURL(t *testing.T) {
+	google := NewGoogle(&config.Config{
+		PublicURL:       "https://api.example.test",
+		FrontendOrigins: []string{"https://app.example.test"},
+		Auth: config.AuthConfig{
+			GoogleClientID:     "client-id",
+			GoogleClientSecret: "client-secret",
+		},
+	}, slog.New(slog.NewTextHandler(io.Discard, nil)))
+
+	if got, want := google.RedirectURL, "https://api.example.test/api/auth/google/callback"; got != want {
+		t.Fatalf("Google callback URL = %q, want %q", got, want)
+	}
+}
+
 func TestVerifyPasswordDetectsParameterUpgrade(t *testing.T) {
 	weak := Argon2Params{Memory: 1024, Time: 1, Threads: 1, KeyLen: 16}
 	hash, err := HashPassword("password123", weak)
