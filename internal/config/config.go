@@ -40,7 +40,7 @@ type Config struct {
 	// PublicURL is this API's externally reachable origin, used for token issuance and
 	// OAuth callbacks.
 	PublicURL string
-	// FrontendOrigins are allowed CORS origins for the site and desktop app.
+	// FrontendOrigins are allowed CORS origins for web clients and the desktop app.
 	FrontendOrigins []string
 	// AppLinkOrigins are HTTPS origins the OAuth callback may return to, so a native client can
 	// receive the one-time code through a verified app link. They are merged with FrontendOrigins
@@ -103,7 +103,7 @@ type AuthConfig struct {
 	// FailedLoginLockout. It is deliberately not an account-wide lockout.
 	MaxFailedLogins    int
 	FailedLoginLockout time.Duration
-	// GoogleClientID/Secret enable "continue with Google" on the site and desktop.
+	// GoogleClientID/Secret enable "continue with Google" on the website and desktop.
 	GoogleClientID     string
 	GoogleClientSecret string
 	GoogleRedirectURL  string
@@ -368,7 +368,7 @@ func Load() (*Config, error) {
 		Env:             env,
 		Port:            mustInt(getInt("PORT", 3001)),
 		PublicURL:       publicURL,
-		FrontendOrigins: splitList(getString("FRONTEND_URL", "http://localhost:5173,http://localhost:3000")),
+		FrontendOrigins: splitList(getString("FRONTEND_URL", "http://localhost:3001")),
 		AppLinkOrigins:  parseAppLinkOrigins(getString("APP_LINK_ORIGINS", "")),
 		WebhookSecret:   getString("WEBHOOK_SECRET", "dev-secret"),
 		TrustProxy:      getBool("TRUST_PROXY_HEADERS", false),

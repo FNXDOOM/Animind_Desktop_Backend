@@ -23,7 +23,7 @@ import (
 // streamTicketResponse is what both clients read before asking for bytes.
 type streamTicketResponse struct {
 	// URL is relative to this API, which the desktop player resolves against its configured
-	// base URL and the site resolves against the API origin.
+	// base URL and the client resolves against the API origin.
 	URL         string `json:"url"`
 	ExpiresIn   int64  `json:"expiresIn"`
 	HLSRequired bool   `json:"hlsRequired"`
@@ -102,7 +102,7 @@ func (s *Server) authorizeStream(w http.ResponseWriter, r *http.Request, episode
 		if err == nil {
 			return true, payload
 		}
-		if credential(r) == "" {
+		if s.credential(r) == "" {
 			WriteError(w, http.StatusUnauthorized, "Playback ticket is invalid or has expired.")
 			return false, nil
 		}
@@ -110,7 +110,7 @@ func (s *Server) authorizeStream(w http.ResponseWriter, r *http.Request, episode
 
 	principal, err := s.auth.Authenticate(auth.WithClient(r.Context(), auth.Client{
 		UserAgent: r.UserAgent(), IPAddress: ClientIP(r, s.cfg.TrustProxy),
-	}), credential(r))
+	}), s.credential(r))
 	if err != nil || principal == nil {
 		WriteError(w, http.StatusUnauthorized, "Missing or invalid authorization token.")
 		return false, nil
@@ -151,7 +151,7 @@ func (s *Server) handleStream(w http.ResponseWriter, r *http.Request) {
 			s.serverError(w, "Could not sign the storage URL.", err)
 			return
 		}
-		// The site asks for JSON so it can decide between hls.js and a direct source; the
+		// The web client asks for JSON so it can decide between hls.js and a direct source; the
 		// desktop player and any media element follow the redirect instead.
 		if acceptsJSON(r) {
 			WriteJSON(w, http.StatusOK, map[string]any{
@@ -339,7 +339,7 @@ type hlsSessionResponse struct {
 }
 
 // handleCreateHLSSession starts an on-demand remux for a local file. audioTrackIndex is
-// optional: the site sends no key at all on first play, which means the first audio stream.
+// optional: clients send no key at all on first play, which means the first audio stream.
 func (s *Server) handleCreateHLSSession(w http.ResponseWriter, r *http.Request) {
 	if !s.cfg.IsLocal() {
 		WriteError(w, http.StatusBadRequest, "HLS sessions are only available in local storage mode.")

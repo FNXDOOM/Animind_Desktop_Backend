@@ -152,17 +152,18 @@ func New(deps Deps) *Server {
 
 // credential extracts the bearer token, falling back to the session cookie. The cookie exists
 // because an SPA must sometimes not hold the token at all; the desktop player only ever sends
-// the header.
-func credential(r *http.Request) string {
+// the header. In a Secure deployment only the __Host- cookie is read: accepting the legacy
+// host-only name would let a sibling subdomain set a fixed session cookie.
+func (s *Server) credential(r *http.Request) string {
 	if token := BearerToken(r); token != "" {
 		return token
 	}
-	// Read the hardened name first, then the legacy name so a deployment can roll the
-	// change out without signing every browser out twice.
-	for _, name := range []string{SecureSessionCookieName, SessionCookieName} {
-		if cookie, err := r.Cookie(name); err == nil {
-			return strings.TrimSpace(cookie.Value)
-		}
+	name := SessionCookieName
+	if s.cfg.Auth.SecureCookies {
+		name = SecureSessionCookieName
+	}
+	if cookie, err := r.Cookie(name); err == nil {
+		return strings.TrimSpace(cookie.Value)
 	}
 	return ""
 }
@@ -246,9 +247,6 @@ func (s *Server) Router() chi.Router {
 		api.With(s.rate(s.limiter.HLSSession), s.RequireAuth).Post("/hls/{sessionId}/heartbeat", s.handleHLSHeartbeat)
 		api.With(s.rate(s.limiter.HLSSession), s.RequireAuth).Delete("/hls/{sessionId}", s.handleDestroyHLSSession)
 
-		// Library rescan, kept under /api/rescan for the existing clients.
-		api.With(s.rate(s.limiter.Rescan), s.RequireAuth, s.RequireAdmin).Post("/rescan", s.handleRescan)
-
 		// User-owned data. These replace the browser's direct database access.
 		api.Route("/me", func(me chi.Router) {
 			me.Use(s.RequireAuth, MaxBody(maxJSONBody))
@@ -293,6 +291,49 @@ func (s *Server) Router() chi.Router {
 			admin.With(s.rate(s.limiter.Admin)).Post("/scan", s.handleAdminScan)
 			admin.With(s.rate(s.limiter.Admin)).Get("/metrics", s.handleAdminMetrics)
 			admin.With(s.rate(s.limiter.Admin)).Post("/library/cleanup", s.handleAdminCleanupCaches)
+		})
+	})
+
+	// The old website's desktop handoff page is now served here, so a stock Qt player
+	// pointed at this origin can still pair a device without the retired site.
+	r.With(adminSecurityHeaders, s.rate(s.limiter.Login)).Get("/desktop-auth", s.handleDesktopAuthPage)
+	r.With(adminSecurityHeaders, s.rate(s.limiter.Login), MaxBody(maxJSONBody), s.adminCSRF).
+		Post("/desktop-auth/login", s.handleDesktopAuthLogin)
+	r.With(adminSecurityHeaders, s.rate(s.limiter.Login), MaxBody(maxJSONBody), s.adminCSRF).
+		Post("/desktop-auth/confirm", s.handleDesktopAuthConfirm)
+
+	// The website is the admin console. It is server-rendered from embedded templates, so
+	// there is no separate frontend build or static asset deployment.
+	r.Get("/", func(w http.ResponseWriter, req *http.Request) {
+		http.Redirect(w, req, "/admin", http.StatusSeeOther)
+	})
+	r.Route("/admin", func(admin chi.Router) {
+		admin.Use(adminSecurityHeaders)
+		admin.Get("/static/admin.css", s.handleAdminCSS)
+		admin.With(s.rate(s.limiter.Login), MaxBody(maxJSONBody)).Get("/login", s.handleAdminLoginPage)
+		admin.With(s.rate(s.limiter.Login), MaxBody(maxJSONBody), s.adminCSRF).Post("/login", s.handleAdminLoginSubmit)
+
+		admin.Group(func(page chi.Router) {
+			// The limiter runs before authentication so an unauthenticated flood cannot make
+			// every request hit the session store. A 429 is JSON; that is acceptable for an
+			// operator surface.
+			page.Use(s.rate(s.limiter.Admin), MaxBody(maxJSONBody), s.requireAdminPage, s.adminCSRF)
+			page.Get("/", s.handleAdminUIDashboard)
+			page.Get("/users", s.handleAdminUIUsers)
+			page.Get("/users/{id}", s.handleAdminUIUser)
+			page.Post("/logout", s.handleAdminLogout)
+			page.Post("/users/{id}/flags", s.handleAdminUIUserFlags)
+			page.Post("/users/{id}/sessions/{sessionId}/revoke", s.handleAdminRevokeWebSession)
+			page.Post("/users/{id}/devices/{sessionId}/revoke", s.handleAdminRevokeDesktop)
+			page.Get("/users/{id}/sessions/revoke-all", s.handleAdminConfirmRevokeAll)
+			page.Post("/users/{id}/sessions/revoke-all", s.handleAdminRevokeAllSessions)
+			page.Get("/users/{id}/delete", s.handleAdminConfirmDeleteUser)
+			page.Post("/users/{id}/delete", s.handleAdminDeleteUser)
+			page.Get("/library", s.handleAdminUILibrary)
+			page.Post("/library/scan", s.handleAdminUIScan)
+			page.Post("/library/cleanup", s.handleAdminUICleanup)
+			page.Get("/shows/{id}/delete", s.handleAdminConfirmDeleteShow)
+			page.Post("/shows/{id}/delete", s.handleAdminUIDeleteShow)
 		})
 	})
 
@@ -395,7 +436,7 @@ func (s *Server) requirePrincipal(w http.ResponseWriter, r *http.Request) (*auth
 
 // setSessionCookie installs the browser session cookie.
 //
-// HttpOnly keeps the token out of page scripts, so an XSS in the site cannot read it; callers
+// HttpOnly keeps the token out of page scripts, so an XSS in a web client cannot read it; callers
 // that use a bearer header get the token in the login response body instead.
 func (s *Server) setSessionCookie(w http.ResponseWriter, token string, expiresAt time.Time, remember bool) {
 	name := SessionCookieName
@@ -424,15 +465,6 @@ func (s *Server) clearSessionCookie(w http.ResponseWriter) {
 			Expires: time.Unix(0, 0), MaxAge: -1,
 		})
 	}
-}
-
-// parsePositiveInt reads a query parameter as a positive integer.
-func parsePositiveInt(raw string, fallback int) int {
-	value, err := strconv.Atoi(strings.TrimSpace(raw))
-	if err != nil || value < 0 {
-		return fallback
-	}
-	return value
 }
 
 // serveLocalFile writes a local media file honouring a single HTTP range request.

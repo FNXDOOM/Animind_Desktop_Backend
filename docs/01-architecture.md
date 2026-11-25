@@ -2,10 +2,10 @@
 
 ## Shape of the process
 
-One binary, one port, one process. It serves JSON over HTTP, a Socket.IO-compatible socket
-for watch parties, and byte ranges for media. There is no queue and no second service: a
-personal streaming backend on a single VPS is the deployment this is designed for, and adding
-coordination would be the cost, not the benefit.
+One binary, one port, one process. It serves JSON over HTTP, a server-rendered admin console
+at `/admin`, a Socket.IO-compatible socket for watch parties, and byte ranges for media. There
+is no queue and no second service: a personal streaming backend on a single VPS is the
+deployment this is designed for, and adding coordination would be the cost, not the benefit.
 
 Shared state is the one exception, and it is optional. `internal/cache` holds resolved
 credentials, rate-limit windows and upstream metadata; with no `REDIS_URL` all three live in
@@ -21,7 +21,7 @@ cmd/server/main.go        wiring only: config -> db -> cache -> services -> hub 
   +-- internal/repository   all SQL, one file per domain
   +-- internal/cache        shared state: Redis or in-process, keys, windows, group eviction
   +-- internal/auth         accounts, hashing, tokens, sessions, OAuth, bridge JWT
-  +-- internal/httpx        router, middleware, handlers, metrics (the HTTP edge)
+  +-- internal/httpx        router, middleware, handlers, embedded admin console, metrics
   +-- internal/storage      S3 presign + local paths + library file listing
   +-- internal/media        ffmpeg probing, subtitles, audio variants, HLS sessions
   +-- internal/metadata     AniList + MyAnimeList, cache, rate-limit cooldown
@@ -106,8 +106,9 @@ Cron jobs (`internal/scheduler`) and background goroutines spawned by handlers a
 deferred work. Handlers that start something expensive answer first:
 
 - `POST /api/webhooks/storage` replies `{received:true}` then scans.
-- `POST /api/rescan` scans synchronously (the client waits for a fresh library list) but
-  prewarms audio variants afterwards in the background.
+- `POST /api/admin/scan` scans synchronously for a native client that waits for the result;
+  `POST /admin/library/scan` starts the same scan in the background and the console refreshes
+  while it runs. Audio prewarm runs afterwards in the background.
 - `GET /api/health` answers `degraded` with 503 when the database is unreachable, so an
   orchestrator can act on it.
 

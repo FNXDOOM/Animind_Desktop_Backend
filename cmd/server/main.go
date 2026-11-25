@@ -1,6 +1,6 @@
-// Command server runs the AniMind backend: the API for the desktop player and the website —
-// indexing, playback, user data, watch parties and administration. It serves no frontend
-// assets and is configured entirely through environment variables.
+// Command server runs the AniMind backend: the JSON API for the Android app and the desktop
+// player, plus the embedded admin console. It also serves the /desktop-auth handoff page, and
+// is configured entirely through environment variables.
 //
 // Startup order is deliberate: configuration, the database and its migrations, the services
 // that read from it, the socket hub, then HTTP. Anything that can fail permanently fails

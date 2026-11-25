@@ -1,0 +1,50 @@
+{{define "desktop_auth"}}<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Pair desktop · AniMind</title>
+  <link rel="stylesheet" href="/admin/static/admin.css">
+</head>
+<body class="auth-body">
+  <main class="auth-wrap">
+    <div class="auth-card">
+      <div class="brand brand-center">
+        <span class="brand-mark" aria-hidden="true">A</span>
+        <span class="brand-text"><strong>AniMind</strong><small>Desktop pairing</small></span>
+      </div>
+      <h1>Pair this desktop</h1>
+
+      {{if .Error}}<div class="flash flash-bad" role="alert">{{.Error}}</div>{{end}}
+
+      {{if .SignedIn}}
+        <p class="muted">Signed in as <strong>{{.Email}}</strong>. This hands a short-lived token to the Animind player on this machine.</p>
+        <form class="stack" method="post" action="/desktop-auth/confirm">
+          <input type="hidden" name="csrf" value="{{.CSRF}}">
+          <button class="btn btn-primary btn-block" type="submit">Pair this desktop</button>
+        </form>
+        <p class="auth-foot">The token is sent only to <span class="mono">127.0.0.1:27182</span> and expires in 60 seconds.</p>
+      {{else}}
+        <p class="muted">Sign in to hand a short-lived pairing token to the Animind player on this machine.</p>
+        <form class="stack" method="post" action="/desktop-auth/login">
+          <input type="hidden" name="csrf" value="{{.CSRF}}">
+          <label class="field">
+            <span>Email</span>
+            <input class="input" type="email" name="email" value="{{.Email}}" autocomplete="username" required autofocus>
+          </label>
+          <label class="field">
+            <span>Password</span>
+            <input class="input" type="password" name="password" autocomplete="current-password" required>
+          </label>
+          <button class="btn btn-primary btn-block" type="submit">Sign in</button>
+        </form>
+        {{if .GoogleEnabled}}
+        <p class="auth-divider"><span>or</span></p>
+        <a class="btn btn-block" href="{{.GoogleStartURL}}">Continue with Google</a>
+        {{end}}
+        <p class="auth-foot">The token is sent only to <span class="mono">127.0.0.1:27182</span> and expires in 60 seconds.</p>
+      {{end}}
+    </div>
+  </main>
+</body>
+</html>{{end}}

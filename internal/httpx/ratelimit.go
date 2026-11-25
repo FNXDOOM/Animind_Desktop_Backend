@@ -94,7 +94,6 @@ type RateLimitPresets struct {
 	HLSSession      *RateLimiter
 	HLSSegment      *RateLimiter
 	SocketHandshake *RateLimiter
-	Rescan          *RateLimiter
 	Webhook         *RateLimiter
 	Signup          *RateLimiter
 	Login           *RateLimiter
@@ -139,7 +138,6 @@ func NewRateLimitPresets(store cache.Store, logger *slog.Logger) *RateLimitPrese
 		HLSSession:      newOne("hls-session", 60, time.Minute),
 		HLSSegment:      newOne("hls-segment", 1200, time.Minute),
 		SocketHandshake: newOne("socket-handshake", 120, time.Minute),
-		Rescan:          newOne("rescan", 3, time.Minute),
 		Webhook:         newOne("webhook", 30, time.Minute),
 		Signup:          newOne("signup", 10, time.Minute),
 		Login:           newOne("login", 20, time.Minute),

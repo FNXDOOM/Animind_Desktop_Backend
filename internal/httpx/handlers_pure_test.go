@@ -23,7 +23,7 @@ func TestNormalizeWatchlistStatus(t *testing.T) {
 		{input: "Completed", want: "Completed"},
 		{input: "Plan to Watch", want: "Plan to Watch"},
 		{input: "Dropped", want: "Dropped"},
-		{input: " watching ", wantErr: true}, // case matters: the site compares exactly
+		{input: " watching ", wantErr: true}, // case matters: clients compare exactly
 		{input: "On Hold", wantErr: true},
 		{input: "DROPPED", wantErr: true},
 	}

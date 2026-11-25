@@ -9,7 +9,8 @@ skill set. Findings were remediated in commit `ede8d1a`; nothing was deployed or
 2. **`FINAL_SECURITY_REPORT.md`** — method, coverage, verified controls, residual risk.
 3. **`SECURITY_FINDINGS.md`** — every finding with evidence, impact, CWE/CVSS and patch.
 4. **`REMEDIATION_STATUS.md`** — per-finding result after the fixes, plus the verification log.
-5. **`REMEDIATION_PLAN.md`** / **`REGRESSION_TESTS.md`** — remediation design and the tests that pin it.
+5. **`ADMIN_PANEL_REVIEW.md`** — second-pass review of the admin console and desktop pairing.
+6. **`REMEDIATION_PLAN.md`** / **`REGRESSION_TESTS.md`** — remediation design and the tests that pin it.
 
 ## Reference documents
 
@@ -23,6 +24,7 @@ skill set. Findings were remediated in commit `ede8d1a`; nothing was deployed or
 | `BUSINESS_LOGIC_AUDIT.md` | business rules, state machines, quota/session/party logic |
 | `AUDIT_CHECKLIST.md` | every security category with status, skills, findings |
 | `EVIDENCE.md` | redacted commands and code excerpts behind the findings |
+| `ADMIN_PANEL_REVIEW.md` | second-pass review of the admin console, desktop pairing and their fixes |
 
 ## Headline (pre-fix assessment)
 
@@ -32,6 +34,8 @@ skill set. Findings were remediated in commit `ede8d1a`; nothing was deployed or
   middleware, password hashing.
 - Highest-impact fix: desktop sessions are now revoked on password change/reset/email change
   (`F-01`), and refresh-token replay revokes the token family (`F-11`).
+- A second pass of the admin console (`ADMIN_PANEL_REVIEW.md`) fixed the legacy cookie
+  fallback, admin target validation, atomic access updates and absolute-expiry filtering.
 
 ## Reproduce the static checks
 

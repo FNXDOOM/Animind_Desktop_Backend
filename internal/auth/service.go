@@ -94,7 +94,7 @@ type Principal struct {
 	IsAdmin  bool   `json:"-"`
 	// Kind is how the caller proved identity: "web" or "desktop".
 	Kind string `json:"-"`
-	// WebSessionRowID identifies the site session row, used for logout and sliding expiry.
+	// WebSessionRowID identifies the web session row, used for logout and sliding expiry.
 	WebSessionRowID string `json:"-"`
 	// DesktopSessionID identifies the pinned desktop session, echoed to the player.
 	DesktopSessionID string `json:"-"`
@@ -599,7 +599,7 @@ func (s *Service) DesktopRevoke(ctx context.Context, refreshToken, accessToken s
 	return revoked, nil
 }
 
-// BridgeToken mints the short-lived JWT the site hands to a desktop player over the
+// BridgeToken mints the short-lived JWT a browser hands to a desktop player over the
 // loopback callback. It is exchanged immediately, so it lives only 60 seconds.
 func (s *Service) BridgeToken(ctx context.Context, p *Principal) (string, error) {
 	token, err := s.signer.SignBridgeToken(BridgeClaims{
@@ -976,9 +976,9 @@ func (s *Service) SignInWithGoogle(ctx context.Context, profile *GoogleProfile) 
 	return s.SignInUser(ctx, user.ID, "google", false)
 }
 
-// ── One-time codes for the site handoff ──────────────────────────────────────
+// ── One-time codes for the browser handoff ───────────────────────────────────
 
-// CreateAuthCode mints a short-lived code the site trades for a session after an
+// CreateAuthCode mints a short-lived code the browser trades for a session after an
 // OAuth redirect, so a bearer token never appears in browser history or a Referer.
 func (s *Service) CreateAuthCode(ctx context.Context, userID string) (string, error) {
 	code, err := NewOpaqueToken(32)

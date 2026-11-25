@@ -144,12 +144,14 @@ type DesktopSessionDevice struct {
 	ExpiresAt  time.Time `json:"expires_at"`
 }
 
-// ListDesktopSessions returns a user's live desktop devices.
+// ListDesktopSessions returns a user's live desktop devices. A session past its absolute
+// expiry is not live even when its last rotated refresh token has not expired yet.
 func (s *Store) ListDesktopSessions(ctx context.Context, userID string) ([]DesktopSessionDevice, error) {
 	rows, err := s.pool.Query(ctx, `
 		select id::text, session_id, device_id, device_name, created_at, updated_at, refresh_token_expires_at
 		from desktop_auth_sessions
-		where user_id = $1::uuid and revoked_at is null and refresh_token_expires_at > now()
+		where user_id = $1::uuid and revoked_at is null
+		  and refresh_token_expires_at > now() and absolute_expires_at > now()
 		order by created_at desc
 		limit 50`, userID)
 	if err != nil {

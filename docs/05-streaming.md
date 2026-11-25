@@ -47,7 +47,7 @@ actually send: `bytes=a-b`, `bytes=a-`, `bytes=-n` (a suffix range for the last 
 
 ## S3 mode
 
-Presigned GET URLs with `S3_PRESIGN_EXPIRES` (4 h default). The site sends
+Presigned GET URLs with `S3_PRESIGN_EXPIRES` (4 h default). Clients send
 `Accept: application/json` and receives `{type, url, expiresIn}` so it can decide between hls.js
 and a direct source; anything else gets a `302`. No media bytes pass through this process in S3
 mode, which is the point of the mode.
@@ -66,7 +66,7 @@ first request for a track produces a cached file and later requests reuse it.
 The hash is over a signature of the source's path, size, mtime and track index — so replacing an
 episode file cannot serve a stale audio track. `metadata.json` records which variants exist and
 lets `GET /api/episodes/{id}/audio-tracks` answer `cached` and `cacheMode`, which is what drives
-the site's "first play may take up to a minute" notice. A copy is attempted first
+the client's "first play may take up to a minute" notice. A copy is attempted first
 (`-c:v copy -c:a copy -movflags +faststart`); only when it fails does the AAC 320k transcode run.
 Writes go to `.partial` and are renamed, so a reader never sees half a file.
 

@@ -206,7 +206,7 @@ func TestPublicIssuerFallsBackToFirstOrigin(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if cfg.PublicIssuer() != "http://localhost:5173" {
+	if cfg.PublicIssuer() != "http://localhost:3001" {
 		t.Errorf("PublicIssuer = %q, want the first configured origin", cfg.PublicIssuer())
 	}
 

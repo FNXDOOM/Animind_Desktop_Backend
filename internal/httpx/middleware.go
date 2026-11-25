@@ -44,7 +44,7 @@ func (s *Server) withClient(r *http.Request) context.Context {
 // hard stop with no retry, so the message is the only diagnostic a user ever sees.
 func (s *Server) RequireAuth(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		token := credential(r)
+		token := s.credential(r)
 		if token == "" {
 			WriteError(w, http.StatusUnauthorized, "Missing or invalid authorization token.")
 			return
@@ -78,7 +78,7 @@ func (s *Server) RequireAdmin(next http.Handler) http.Handler {
 	})
 }
 
-// CORS answers the site and the desktop player. The player's Qt calls send no Origin at all,
+// CORS answers web clients and the desktop player. The player's Qt calls send no Origin at all,
 // and a missing Origin has to stay allowed, since an over-equal check would reject every
 // desktop request.
 func (s *Server) CORS(next http.Handler) http.Handler {

@@ -302,9 +302,9 @@ func (s *Server) handleAniListProxy(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// AniList answers the same document identically for everybody, and the site re-requests
+	// AniList answers the same document identically for everybody, and clients re-request
 	// the same search and detail queries as a user browses. Relaying every one of them cost an
-	// outbound call per click and left AniList's rate limit as the site's capacity limit.
+	// outbound call per click and left AniList's rate limit as the clients' capacity limit.
 	cacheKey := cache.AniListKey(string(encoded))
 	if document, ok := s.cachedAniList(r.Context(), cacheKey); ok {
 		w.Header().Set("Content-Type", "application/json; charset=utf-8")
@@ -431,90 +431,27 @@ func (s *Server) handleStorageWebhook(w http.ResponseWriter, r *http.Request) {
 	}()
 }
 
-// rescanResponse is the library list a client refreshes from after a scan.
-type rescanResponse struct {
-	ID       string   `json:"id"`
-	Title    string   `json:"title"`
-	Synopsis string   `json:"synopsis"`
-	ImageURL string   `json:"imageUrl"`
-	Rating   float64  `json:"rating"`
-	Genres   []string `json:"genres"`
-	Episodes int      `json:"episodes"`
-	Studio   string   `json:"studio"`
-	Status   string   `json:"status"`
-	Year     string   `json:"year"`
-	Reason   string   `json:"reason"`
-	Trailer  *trailer `json:"trailer,omitempty"`
-}
-
-type trailer struct {
-	ID        string  `json:"id"`
-	Site      string  `json:"site"`
-	Thumbnail *string `json:"thumbnail"`
-}
-
-// handleRescan runs a scan and returns the refreshed library in the camelCase shape the
-// site's Anime type expects.
-func (s *Server) handleRescan(w http.ResponseWriter, r *http.Request) {
-	result, err := s.runScan(w, r)
-	if err != nil {
-		return
+// runLibraryScan performs a scan and schedules the audio prewarm that keeps the first play of
+// a newly indexed episode from waiting on ffmpeg. It is shared by the admin JSON endpoint and
+// the admin console; both call the scanner, which serializes overlapping runs.
+func (s *Server) runLibraryScan(ctx context.Context) (*scanner.Result, error) {
+	if s.scanner == nil {
+		return nil, errors.New("scanner is not configured")
 	}
-	_ = result
-
-	summaries, err := s.store.ListShowSummaries(r.Context())
+	result, err := s.scanner.Run(ctx)
 	if err != nil {
-		s.serverError(w, "Scan finished but the library list could not be loaded.", err)
-		return
-	}
-
-	items := make([]rescanResponse, 0, len(summaries))
-	for _, show := range summaries {
-		item := rescanResponse{
-			ID: show.ID, Title: show.Title, Synopsis: orEmpty(show.Synopsis),
-			ImageURL: orEmpty(show.CoverImageURL), Rating: orZero(show.Rating),
-			Genres: show.Genres, Episodes: orZeroInt(show.EpisodeCount),
-			Studio: orEmpty(show.Studio), Status: orEmpty(show.Status), Year: orEmpty(show.Year),
-			Reason: "From your cloud library",
-		}
-		if item.Genres == nil {
-			item.Genres = []string{}
-		}
-		if show.TrailerID != nil && *show.TrailerID != "" {
-			site := "youtube"
-			if show.TrailerSite != nil && *show.TrailerSite != "" {
-				site = *show.TrailerSite
-			}
-			item.Trailer = &trailer{ID: *show.TrailerID, Site: site, Thumbnail: show.TrailerThumbnail}
-		}
-		items = append(items, item)
-	}
-	WriteJSON(w, http.StatusOK, items)
-}
-
-// runScan performs a scan and maps its errors to responses. It returns the error when the
-// response has already been written.
-func (s *Server) runScan(w http.ResponseWriter, r *http.Request) (*scanner.Result, error) {
-	result, err := s.scanner.Run(r.Context())
-	if err != nil {
-		switch {
-		case errors.Is(err, scanner.ErrAlreadyRunning):
-			WriteErrorCode(w, http.StatusConflict, "scan_in_progress", "A library scan is already running.")
-		default:
-			WriteErrorDetails(w, http.StatusInternalServerError, "Scan failed.", safeDetail(err, s.cfg.DebugErrors))
-		}
 		return nil, err
 	}
 
-	// Prewarming is best-effort and runs after the response: first playback of a new episode
+	// Prewarming is best-effort and runs after the scan: first playback of a new episode
 	// would otherwise wait on an ffmpeg transcode.
-	if s.cfg.IsLocal() && s.cfg.AudioCache.PrewarmEnabled {
+	if s.cfg.IsLocal() && s.cfg.AudioCache.PrewarmEnabled && s.audio != nil && s.storage != nil {
 		targets := s.scanner.PrewarmTargets()
 		if len(targets) > 0 {
 			go func() {
-				ctx, cancel := context.WithTimeout(context.Background(), 30*time.Minute)
+				prewarmCtx, cancel := context.WithTimeout(context.Background(), 30*time.Minute)
 				defer cancel()
-				built := s.audio.PrewarmLibrary(ctx, s.storage, targets)
+				built := s.audio.PrewarmLibrary(prewarmCtx, s.storage, targets)
 				s.logger.Info("audio prewarm finished", slog.Int("variants", built))
 			}()
 		}
@@ -523,7 +460,7 @@ func (s *Server) runScan(w http.ResponseWriter, r *http.Request) (*scanner.Resul
 }
 
 func (s *Server) handleAdminScan(w http.ResponseWriter, r *http.Request) {
-	result, err := s.scanner.Run(r.Context())
+	result, err := s.runLibraryScan(r.Context())
 	if err != nil {
 		if errors.Is(err, scanner.ErrAlreadyRunning) {
 			WriteErrorCode(w, http.StatusConflict, "scan_in_progress", "A library scan is already running.")
@@ -611,7 +548,7 @@ func (s *Server) handleAdminDeleteShow(w http.ResponseWriter, r *http.Request) {
 }
 
 // handleAdminMetrics reports real operational numbers, replacing the hard-coded dashboard
-// values the site showed.
+// values the old site showed. The admin console reads the same tables through its own pages.
 func (s *Server) handleAdminMetrics(w http.ResponseWriter, r *http.Request) {
 	shows, episodes, err := s.store.LibraryCounts(r.Context())
 	if err != nil {
@@ -688,24 +625,3 @@ func (s *Server) handleRoomLookup(w http.ResponseWriter, r *http.Request) {
 
 // SyncPlayPath re-exports the socket path for documentation output.
 const SyncPlayPath = syncplay.SocketPath
-
-func orEmpty(value *string) string {
-	if value == nil {
-		return ""
-	}
-	return *value
-}
-
-func orZero(value *float64) float64 {
-	if value == nil {
-		return 0
-	}
-	return *value
-}
-
-func orZeroInt(value *int) int {
-	if value == nil {
-		return 0
-	}
-	return *value
-}

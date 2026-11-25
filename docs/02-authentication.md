@@ -8,7 +8,7 @@ and admin rights live in Postgres and are decided here.
 
 | Family | Format | Storage | Lifetime | Verifier |
 | --- | --- | --- | --- | --- |
-| Site session | `as_` + 32 random bytes, base64url | SHA-256 hash in `animind_web_sessions` | `WEB_SESSION_TTL_HOURS`, sliding; `REMEMBER_ME_TTL_DAYS` when requested | `authenticateWeb` |
+| Web session | `as_` + 32 random bytes, base64url | SHA-256 hash in `animind_web_sessions` | `WEB_SESSION_TTL_HOURS`, sliding; `REMEMBER_ME_TTL_DAYS` when requested | `authenticateWeb` |
 | Desktop access | `adk_` + base64url(`v1.<user>.<session>.<exp>`) + `.` + HMAC-SHA256 | SHA-256 hash in `desktop_auth_sessions` | `DESKTOP_ACCESS_TOKEN_TTL_SECONDS` (15 min) | `authenticateDesktop` |
 | Desktop refresh | `adr_` + 48 random bytes | SHA-256 hash, rotated on each use | `DESKTOP_REFRESH_TOKEN_TTL_DAYS` (30 d) | `DesktopRefresh` |
 | Bridge JWT | HS256 JWT, `aud=animind-desktop-bridge`, 60 s | not stored | 60 s | `VerifyBridgeToken` |
@@ -147,14 +147,16 @@ The authorization-code flow is spoken directly to Google's endpoints
 a signed single-use `state`, and `GET /api/auth/google/callback` exchanges the code, reads the
 userinfo profile, and provisions the account.
 
-Account matching is by Google `sub` first, then by verified email. So a user who signed up
-with a password and later clicks Google lands on **one** account, and the identity is attached
-to it. An account created this way has `password_hash = NULL`, so password login for it is
-refused with the same generic message rather than a hint about the provider.
+Account matching is by Google `sub` first, then by verified email. A Google identity is linked
+to an existing account only when that account is already Google-only; an account with a
+password must sign in with that password first. Automatic linking would let whoever registered
+the address first inherit the owner's verified provider identity. A Google-created account has
+`password_hash = NULL`, so password login for it is refused with the same generic message
+rather than a hint about the provider.
 
 After the callback the browser is redirected to a configured origin with `?auth_code=...`,
-which the site redeems via `POST /api/auth/consume-code`. A one-time code is used rather than
-the session token itself so no credential ever lands in history, a log, or a `Referer`. The
+which a native client redeems via `POST /api/auth/consume-code`. A one-time code is used rather
+than the session token itself so no credential ever lands in history, a log, or a `Referer`. The
 `redirect` parameter is only honoured when it names an origin from `FRONTEND_URL` or
 `APP_LINK_ORIGINS`, which is what stops this being an open redirect.
 
@@ -197,7 +199,14 @@ trusting a third party's secret. Accounts here start empty.
 - **Admin rights** must be re-granted: `PATCH /api/admin/users/{id}`, or
   `update animind_users set is_admin = true where email_normalized = '...'`.
 - **`profiles` is gone** — `animind_users` carries `username`, `avatar_url` and `is_admin`, so
-  the bootstrap upsert the site used to run on every login is no longer needed.
+  the bootstrap upsert the old site used to run on every login is no longer needed.
+
+## Admin console
+
+The server-rendered console at `/admin` uses the same web-session cookie. Every page requires
+`is_admin`, every form carries a double-submit CSRF token, and the panel ships no JavaScript.
+Promote an operator with `PATCH /api/admin/users/{id}` or the SQL update above; see
+[Admin console](12-admin-panel.md).
 
 See [Client integration](08-client-integration.md) for the corresponding client changes.
 

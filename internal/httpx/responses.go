@@ -1,8 +1,8 @@
 // Package httpx is the HTTP edge: routing, middleware, and handlers.
 //
-// It owns every status code and JSON shape the site and the desktop player parse. Error bodies
-// always use {"error": "..."}, plus "code" when clients branch on the failure and "details"
-// when a reason is safe to expose.
+// It owns every status code and JSON shape the native clients and the admin console parse.
+// Error bodies always use {"error": "..."}, plus "code" when clients branch on the failure and
+// "details" when a reason is safe to expose.
 package httpx
 
 import (

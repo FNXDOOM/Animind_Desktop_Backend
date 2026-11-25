@@ -14,7 +14,7 @@ import (
 
 const googleStateCookieName = "animind_google_state"
 
-// Authentication endpoints. The site uses a session cookie or a bearer session token; the
+// Authentication endpoints. Web clients use a session cookie or a bearer session token; the
 // desktop player a HMAC access token exchanged for a web credential. Passwords never appear
 // in a URL, a log line, or a response body.
 
@@ -93,7 +93,7 @@ func (s *Server) handleLogin(w http.ResponseWriter, r *http.Request) {
 func (s *Server) handleLogout(w http.ResponseWriter, r *http.Request) {
 	principal := PrincipalFromContext(r.Context())
 	if principal == nil {
-		if token := credential(r); token != "" {
+		if token := s.credential(r); token != "" {
 			if resolved, err := s.auth.Authenticate(r.Context(), token); err == nil {
 				principal = resolved
 			}
@@ -202,7 +202,7 @@ func (s *Server) handleResetPassword(w http.ResponseWriter, r *http.Request) {
 
 // ── Google sign-in ───────────────────────────────────────────────────────────
 
-// handleGoogleURL returns the provider redirect for the site to navigate to. The state is a
+// handleGoogleURL returns the provider redirect for the browser to navigate to. The state is a
 // signed, single-use value binding this browser to the callback, which stops a forged
 // callback from logging someone into another account.
 func (s *Server) handleGoogleURL(w http.ResponseWriter, r *http.Request) {
@@ -259,9 +259,14 @@ func (s *Server) handleGoogleStart(w http.ResponseWriter, r *http.Request) {
 }
 
 // returnTargets is the only place AppLinkOrigins joins FrontendOrigins. Keeping the merge here means
-// CORS and every other origin check stay limited to the site's own origins.
+// CORS and every other origin check stay limited to the web client's own origins. The API's own
+// PUBLIC_URL is always a safe return target, which is what lets /desktop-auth complete a Google
+// handoff when FRONTEND_URL lists only a separate site.
 func (s *Server) returnTargets() []string {
-	merged := make([]string, 0, len(s.cfg.FrontendOrigins)+len(s.cfg.AppLinkOrigins))
+	merged := make([]string, 0, len(s.cfg.FrontendOrigins)+len(s.cfg.AppLinkOrigins)+1)
+	if s.cfg.PublicURL != "" {
+		merged = append(merged, s.cfg.PublicURL)
+	}
 	merged = append(merged, s.cfg.FrontendOrigins...)
 	merged = append(merged, s.cfg.AppLinkOrigins...)
 	return merged
@@ -421,10 +426,10 @@ type desktopExchangeRequest struct {
 }
 
 // handleDesktopExchange pairs a desktop player with a signed-in account. The credential is
-// either the site's session token or the bridge JWT from /api/auth/desktop/bridge-token;
+// either the browser session token or the bridge JWT from /api/auth/desktop/bridge-token;
 // both are issued by this backend, so the exchange proves control of a logged-in browser.
 func (s *Server) handleDesktopExchange(w http.ResponseWriter, r *http.Request) {
-	bearer := credential(r)
+	bearer := s.credential(r)
 	if bearer == "" {
 		WriteError(w, http.StatusUnauthorized, "Missing authorization token.")
 		return
@@ -503,7 +508,7 @@ func (s *Server) handleBridgeToken(w http.ResponseWriter, r *http.Request) {
 	if !principal.IsWeb() {
 		// A desktop token is already device-bound; handing it to another device would pair
 		// two machines to one session.
-		WriteError(w, http.StatusConflict, "Sign in on the website first to pair a desktop device.")
+		WriteError(w, http.StatusConflict, "Sign in in a browser first to pair a desktop device.")
 		return
 	}
 	token, err := s.auth.BridgeToken(r.Context(), principal)
@@ -517,7 +522,7 @@ func (s *Server) handleBridgeToken(w http.ResponseWriter, r *http.Request) {
 		"user_id":    principal.UserID,
 		"email":      principal.Email,
 		"expires_in": 60,
-		// callback lets the site build the loopback URL the desktop is listening on.
+		// callback lets the client build the loopback URL the desktop is listening on.
 		"callback_example": "http://127.0.0.1:27182/auth?token=<token>&sessionId=<session_id>",
 	})
 }

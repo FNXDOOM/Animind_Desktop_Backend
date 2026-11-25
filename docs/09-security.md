@@ -27,6 +27,7 @@ server-side configuration are called out as such rather than reported as vulnera
 | Stolen token reuse | Access and refresh tokens are stored only as SHA-256 hashes and must match a live, unrevoked, unexpired row | `repository/desktopsessions.go` |
 | Refresh-token theft | Rotation replaces both hashes in one statement, so a presented refresh token works once | `auth/service.go:DesktopRefresh` |
 | Session fixation | Opaque 256-bit session tokens generated server-side; nothing user-chosen becomes a credential | `auth/tokens.go:NewWebSessionToken` |
+| Cookie tossing | A Secure deployment reads only `__Host-animind_session`; the legacy host-only cookie is cleared but never accepted | `httpx/server.go:credential` |
 | IDOR on user data | Every statement filters `user_id` from the session; no endpoint accepts a client-supplied user id | `repository/userdata.go` |
 | Account takeover through an email change | `PATCH /api/me` with `email` re-verifies the current password, refuses a Google-only account with `password_not_set`, and revokes every **other** web session so a stolen cookie cannot outlive the change | `auth/service.go:ChangeEmail` |
 | Privilege escalation | `RequireAdmin` reads `is_admin` from the account row per request; self-demotion refused | `httpx/middleware.go`, `handler_auth.go` |
@@ -35,7 +36,9 @@ server-side configuration are called out as such rather than reported as vulnera
 | Arbitrary file read via HLS | Session id must match `^[a-f0-9]{32}$`, segment name `^seg\d{5}\.ts$`, and both are resolved under the session directory | `media/hls.go` |
 | Command injection | `exec.Command` with argument arrays, never a shell; binary paths come from configuration only | `media/ffmpeg.go`, `media/hls.go` |
 | Open redirect after OAuth | `redirect` accepted only when its origin matches `FRONTEND_URL`, or an `APP_LINK_ORIGINS` entry merged in only for this check; app-link entries must be https with no path, query, fragment, userinfo or wildcard | `httpx/handler_auth.go:sanitizeReturnTarget`, `config/config.go:parseAppLinkOrigins` |
-| CSRF | Session cookie is `HttpOnly` + `SameSite=Lax`; state-changing routes additionally accept the bearer header, which a cross-site form cannot set | `httpx/server.go:setSessionCookie` |
+| CSRF | Session cookie is `HttpOnly` + `SameSite=Lax`; state-changing JSON routes additionally accept the bearer header, which a cross-site form cannot set. The admin console adds a double-submit token to every form | `httpx/server.go:setSessionCookie`, `httpx/adminui.go:adminCSRF` |
+| Admin console | Every page requires an administrator session; forms carry a CSRF token; CSP has no script source, `frame-ancestors 'none'` and `form-action 'self'` | `httpx/adminui.go`, `adminui/templates/*` |
+| Desktop pairing | `/desktop-auth` requires an authenticated web session for the handoff, and the token is minted only after a CSRF-confirmed POST; the redirect target is the fixed loopback port | `httpx/desktop_auth.go` |
 | SSRF | Every outbound request targets a constant or operator-configured URL (AniList, MyAnimeList, OpenRouter, Google). No client-supplied URL is ever fetched | `metadata/*`, `auth/google.go` |
 | GraphQL abuse | Proxy strips comment lines then refuses any document containing `mutation` or `subscription`, capped at 10,000 characters | `httpx/handler_library.go` |
 | Response-size abuse | Every upstream body is read through `io.LimitReader` (1 MiB metadata, 8 MiB object reads, 4 MiB proxy) | `metadata/`, `storage/`, `httpx/` |
@@ -45,19 +48,19 @@ server-side configuration are called out as such rather than reported as vulnera
 | Webhook spoofing | `x-webhook-secret` compared in constant time; wrong or missing secret is 401 | `httpx/handler_library.go` |
 | Mass assignment | Request structs are explicit with `DisallowUnknownFields`, so an extra `is_admin` in a body cannot reach a update statement | `httpx/responses.go:DecodeJSON` |
 | Sensitive data in responses | `file_path`, `bucket_name`, `password_hash`, `token_hash` are tagged `json:"-"` or live on non-serialized fields | `repository/models.go` |
-| Internal detail leakage | Errors are `{ "error": generic }`; `details` is populated only outside production; panics log a stack and answer 500 | `httpx/handler_auth.go:safeDetail` |
+| Internal detail leakage | Errors are `{ "error": generic }`; `details` is populated only when `DEBUG_ERRORS=true`, which defaults to false in every environment; panics log a stack and answer 500 | `httpx/handler_auth.go:safeDetail` |
 
 ## Fixed during this port
 
 Each of these existed in the Node backend and is closed here:
 
-1. **Client-supplied `user_id` on every user-data write.** The site and the desktop player wrote
+1. **Client-supplied `user_id` on every user-data write.** The old site and the desktop player wrote
    `watchlist` and `progress` rows directly with an `user_id` they chose. Now: derived from the
    session only.
 2. **Unauthenticated HLS session destruction.** `DELETE /api/hls/{sessionId}` needed no credential;
    anyone guessing an id could destroy another viewer's session. Now session-authenticated, and ids
    are 128-bit.
-3. **No revocation path for site sessions** other than token expiry. Now session rows carry
+3. **No revocation path for web sessions** other than token expiry. Now session rows carry
    `revoked_at`, `GET /api/auth/sessions` lists them, `DELETE` revokes one, and a password change
    revokes all of them.
 4. **Non-constant-time comparison of a shared secret** on the webhook during this review; now
@@ -93,7 +96,7 @@ Stated plainly, because pretending they are gone would be worse than noting them
 | Watch parties live in memory | Persisting live playback state on every heartbeat would cost more than a restart costs users | A restart ends the party; startup closes the stale `active` rows so the cleanup job still converges |
 
 Also worth knowing: `anime_data` (watchlist) is stored and returned verbatim as JSON. This service
-does not render it, and React escapes interpolated values, so there is no XSS sink here — but a
+does not render it, and the admin console never displays it, so there is no XSS sink here — but a
 consumer that inserts those fields into HTML must sanitize them itself.
 
 ## Secrets inventory
@@ -117,7 +120,8 @@ image build context. The container runs as a non-root user with `ProtectSystem=s
 2. Set a unique `WEBHOOK_SECRET`. Production startup rejects the documented development default.
 3. Keep `TRUST_PROXY_HEADERS=false` unless nginx genuinely overwrites `X-Forwarded-For`; a forged
    header is otherwise a free rate-limit bypass.
-4. Set `ENV=production` so `SECURE_COOKIES` defaults on and error `details` stay suppressed.
+4. Set `ENV=production` so `SECURE_COOKIES` defaults on; leave `DEBUG_ERRORS=false` in every
+   environment unless you are actively debugging.
 5. Serve over TLS and pin `PUBLIC_URL` to the real origin, since it is the token issuer and the
    OAuth callback base.
 6. Bind the process to loopback or a private interface if a proxy fronts it; the app cannot tell a

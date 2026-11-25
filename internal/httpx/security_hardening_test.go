@@ -78,6 +78,31 @@ func TestSocketHandshakeIsRateLimited(t *testing.T) {
 	}
 }
 
+// TestSecureDeploymentIgnoresLegacySessionCookie pins the cookie-tossing boundary: a sibling
+// subdomain can set the legacy host-only name, so a Secure deployment must only read __Host-.
+func TestSecureDeploymentIgnoresLegacySessionCookie(t *testing.T) {
+	secureServer := testServerWith(t, func(d *Deps) {
+		d.Config.Auth.SecureCookies = true
+	})
+	legacy := httptest.NewRequest(http.MethodGet, "/", nil)
+	legacy.AddCookie(&http.Cookie{Name: SessionCookieName, Value: "legacy"})
+	if got := secureServer.credential(legacy); got != "" {
+		t.Fatalf("secure deployment accepted the legacy cookie: %q", got)
+	}
+	hostOnly := httptest.NewRequest(http.MethodGet, "/", nil)
+	hostOnly.AddCookie(&http.Cookie{Name: SecureSessionCookieName, Value: "secure"})
+	if got := secureServer.credential(hostOnly); got != "secure" {
+		t.Fatalf("secure deployment did not read __Host- cookie: %q", got)
+	}
+
+	devServer := testServer(t)
+	devLegacy := httptest.NewRequest(http.MethodGet, "/", nil)
+	devLegacy.AddCookie(&http.Cookie{Name: SessionCookieName, Value: "dev"})
+	if got := devServer.credential(devLegacy); got != "dev" {
+		t.Fatalf("development deployment did not read the plain cookie: %q", got)
+	}
+}
+
 // TestSessionCookieUsesHostPrefixWhenSecure pins the cookie hygiene: a Secure deployment
 // uses the __Host- name, which no sibling subdomain can overwrite.
 func TestSessionCookieUsesHostPrefixWhenSecure(t *testing.T) {
@@ -98,6 +123,9 @@ func TestSessionCookieUsesHostPrefixWhenSecure(t *testing.T) {
 		t.Fatalf("cookie attributes are not host-only: %+v", cookies[0])
 	}
 }
+
+// TestDebugErrorDetailsAreOptIn guards the error-disclosure boundary. The default config
+// must not expose the underlying error even outside a production environment.
 func TestDebugErrorDetailsAreOptIn(t *testing.T) {
 	if safeDetail(io.ErrUnexpectedEOF, false) != "" {
 		t.Fatal("safeDetail exposed an error without DEBUG_ERRORS")

@@ -25,3 +25,6 @@ Thumbs.db
 /seed-fixtures/
 .torrent.db*
 
+# OpenChamber preview artifacts
+.openchamber/
+

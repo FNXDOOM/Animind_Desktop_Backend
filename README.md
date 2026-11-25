@@ -1,20 +1,22 @@
 # AniMind Backend (Go)
 
-The API for AniMind — a personal anime streaming service with a desktop player (Qt/QML +
-libmpv) and a website. This process indexes a media library, authorizes playback, stores
-per-user viewing data, runs watch parties, fetches missing episodes over BitTorrent, and
-exposes administration.
+The API and admin console for AniMind — a personal anime streaming service with an Android
+app and a Qt/QML desktop player (libmpv). This process indexes a media library, authorizes
+playback, stores per-user viewing data, runs watch parties, fetches missing episodes over
+BitTorrent, and serves a server-rendered admin console at `/admin`.
 
 It is a Go rewrite of the original Node/Express backend with authentication built in rather
-than delegated to an external provider. It serves **no frontend**: no browser code, no
-templates, no static assets — only JSON, media bytes, and a Socket.IO socket.
+than delegated to an external provider. The only website is the admin console: there is no
+public catalogue site, no separate frontend build and no static asset deployment. Native
+clients browse and play; operators sign in at `/admin`.
 
 ## Architecture
 
 ```
-  desktop player / website
-          │
-          ▼
+  Android app        desktop player        admin browser
+        │                  │                    │
+        └──────────────────┼────────────────────┘
+                           ▼
        ┌──────┐   :3002 /metrics (loopback only) ──▶ Prometheus ──▶ Grafana
        │ nginx│◀─────────────────────────────────────────────────────┘
        └──┬───┘
@@ -23,6 +25,7 @@ templates, no static assets — only JSON, media bytes, and a Socket.IO socket.
    ┌────────────┐     ┌─────────┐     ┌────────┐
    │ animind API│◀───▶│ Postgres│     │ Redis  │  optional: shared sessions,
    │   :3001    │     └─────────┘     └────────┘  rate limits, metadata cache
+   │  + /admin  │
    └─────┬──────┘
          │ scan / presign / stream
          ▼
@@ -32,10 +35,14 @@ templates, no static assets — only JSON, media bytes, and a Socket.IO socket.
 ```
 
 One binary, one HTTP port, plus an unauthenticated metrics listener on `:3002` that is meant
-to stay loopback-only. See [Architecture](docs/01-architecture.md).
+to stay loopback-only. The admin console is embedded in the binary and rendered from Go
+templates. See [Architecture](docs/01-architecture.md) and
+[Admin console](docs/12-admin-panel.md).
 
 ## Features
 
+- **Admin console** — server-rendered overview, account management, live session and desktop
+  device revocation, library scans, cache cleanup and show deletion at `/admin`.
 - **Accounts** — email/password (argon2id), Google OAuth, web sessions and desktop device
   pairing with rotating refresh tokens, per-device revocation.
 - **Catalog** — shows and episodes indexed from disk or S3, enriched from AniList/MyAnimeList.
@@ -46,7 +53,7 @@ to stay loopback-only. See [Architecture](docs/01-architecture.md).
 - **Torrent search & downloads** — Torznab search with quotas, a resumable job state machine,
   file selection, and an importer that writes picks into the library (local mode only).
 - **User data** — watchlist, resume progress, continue-watching, preferences under `/api/me/*`.
-- **Operations** — admin API, Prometheus metrics, storage webhooks, cron scans, Docker stack.
+- **Operations** — Prometheus metrics, storage webhooks, cron scans, Docker stack.
 
 ## Requirements
 
@@ -62,6 +69,7 @@ From source:
 cp .env.example .env        # then edit: DATABASE_URL, DESKTOP_TOKEN_SIGNING_KEY, ...
 make run                    # builds, applies migrations, listens on :3001
 curl localhost:3001/health
+open http://localhost:3001/admin   # sign in with an administrator account
 ```
 
 With Docker (API + nginx + Postgres + Redis + Prometheus + Grafana):
@@ -69,6 +77,7 @@ With Docker (API + nginx + Postgres + Redis + Prometheus + Grafana):
 ```bash
 make docker-up
 curl localhost:8080/health              # API through nginx
+open http://localhost:8080/admin        # admin console through nginx
 # Grafana:    http://localhost:3000  (admin/admin — change it)
 # Prometheus: http://localhost:9090
 ```
@@ -89,7 +98,7 @@ The essentials:
 | `DATABASE_URL` | — | Required. Any Postgres 14+. |
 | `DESKTOP_TOKEN_SIGNING_KEY` | — | Required, 32+ chars. Signs desktop tokens **and** playback tickets; rotating it invalidates both. |
 | `STORAGE_MODE` | `s3` | `s3` (presigned URLs) or `local` (this process streams bytes and runs ffmpeg). |
-| `FRONTEND_URL` | `http://localhost:5173,...` | CORS allowlist. `*` is rejected in production. |
+| `FRONTEND_URL` | `http://localhost:3001` | CORS and post-login redirect allowlist. The admin console is same-origin, so this is mainly for native app links. `*` is rejected in production. |
 | `REDIS_URL` | empty | Optional shared state. Startup fails if the address does not answer. |
 | `WEBHOOK_SECRET` | placeholder | Required; placeholder values are rejected in production. |
 
@@ -113,7 +122,9 @@ GET  /api/hls/{sessionId}/...                     HLS playlist and segments
 WS   /api/socket.io                               watch parties
 GET/POST/PATCH/DELETE /api/downloads...           torrent downloads
 */api/me/*                                        watchlist, progress, history, preferences
-*/api/admin/*                                     admin (requires admin session)
+*/api/admin/*                                     admin JSON (requires admin session)
+GET  /admin                                       server-rendered admin console
+GET  /desktop-auth                                desktop pairing handoff
 ```
 
 ## Documentation
@@ -131,6 +142,7 @@ GET/POST/PATCH/DELETE /api/downloads...           torrent downloads
 | [09-security.md](docs/09-security.md) | threat model and controls |
 | [10-caching-and-observability.md](docs/10-caching-and-observability.md) | Redis, metrics, Grafana |
 | [11-downloads.md](docs/11-downloads.md) | torrent search and downloads |
+| [12-admin-panel.md](docs/12-admin-panel.md) | admin console, accounts, scans and security |
 
 ## Development
 
@@ -153,8 +165,10 @@ python3 scripts/verify_media.py --base http://localhost:3001  # subtitles, varia
 ## Security
 
 Report vulnerabilities through GitHub's private advisory form — see
-[SECURITY.md](SECURITY.md). Do not open a public issue. The defensive audit of this repository,
-its findings and their remediation status are under [`security-audit/`](security-audit/).
+[SECURITY.md](SECURITY.md). Do not open a public issue. The admin console requires an
+administrator session, uses a double-submit CSRF token on every form and a CSP with no script
+source. The defensive audit of this repository, its findings and their remediation status are
+under [`security-audit/`](security-audit/).
 
 ## Contributing
 
@@ -166,6 +180,9 @@ field, or the watch-party protocol — shipped clients read those shapes.
 - Torrent search and downloads are **local-mode** features; in `s3` mode those routes answer
   `501`.
 - `GET /api/shows` reports an unfiltered `total` alongside the filtered page.
+- The desktop player's browser pairing opens `ANIMIND_SITE_URL + /desktop-auth`; point
+  `ANIMIND_SITE_URL` at this API origin because the backend now serves that page. In-app
+  password sign-in still works.
 - `make lint` has known findings that CI does not gate on yet (see `.golangci.yml`).
 
 ## Licence

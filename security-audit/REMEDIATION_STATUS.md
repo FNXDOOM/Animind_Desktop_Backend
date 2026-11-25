@@ -8,6 +8,11 @@ against a disposable PostgreSQL 16 container (migration `0004` applied); `govuln
 The pre-fix assessment remains in `SECURITY_FINDINGS.md`; this file records what changed after
 it. Find `F-xx` IDs there for the evidence and original impact.
 
+> **Second pass (admin console, 2026-11-25):** `ADMIN_PANEL_REVIEW.md` records the review of
+> the new `/admin` panel and `/desktop-auth` pairing page. It fixed the legacy session-cookie
+> fallback, added UUID validation to account actions, made access updates atomic, filtered
+> desktop counts by absolute expiry, and removed unused scanner/grouping code.
+
 ---
 
 ## 1. Status by finding

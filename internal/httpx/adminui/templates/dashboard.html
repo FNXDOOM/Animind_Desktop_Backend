@@ -1,0 +1,102 @@
+{{define "content"}}
+<section class="stat-grid" aria-label="Summary">
+  <article class="stat">
+    <span class="stat-label">Accounts</span>
+    <strong class="stat-value">{{.Stats.Total}}</strong>
+    <span class="stat-foot">{{.Stats.Admins}} admin · {{.Stats.Downloaders}} with downloads</span>
+  </article>
+  <article class="stat">
+    <span class="stat-label">Library</span>
+    <strong class="stat-value">{{.Shows}}</strong>
+    <span class="stat-foot">{{.Episodes}} indexed episodes</span>
+  </article>
+  <article class="stat">
+    <span class="stat-label">Live sessions</span>
+    <strong class="stat-value">{{.WebSessions}}</strong>
+    <span class="stat-foot">{{.DesktopDevices}} desktop device{{if ne .DesktopDevices 1}}s{{end}}</span>
+  </article>
+  <article class="stat">
+    <span class="stat-label">Watch parties</span>
+    <strong class="stat-value">{{.ActiveParties}}</strong>
+    <span class="stat-foot">{{.Peers}} socket peer{{if ne .Peers 1}}s{{end}} · {{.Rooms}} room{{if ne .Rooms 1}}s{{end}}</span>
+  </article>
+</section>
+
+<div class="grid-2">
+  <section class="card">
+    <div class="card-head">
+      <h2>Library scan</h2>
+      {{if .Scan.Running}}<span class="badge badge-warn"><span class="dot dot-warn"></span> Running</span>{{else}}<span class="badge"><span class="dot dot-good"></span> Idle</span>{{end}}
+    </div>
+
+    {{if .Scan.LastResult}}
+      <div class="scan-result">
+        <div class="scan-item"><span>Files seen</span><strong>{{.Scan.LastResult.Scanned}}</strong></div>
+        <div class="scan-item"><span>Indexed</span><strong>{{.Scan.LastResult.Inserted}}</strong></div>
+        <div class="scan-item"><span>Removed</span><strong>{{.Scan.LastResult.Removed}}</strong></div>
+        <div class="scan-item"><span>Duration</span><strong>{{durationMS .Scan.LastResult.Duration}}</strong></div>
+      </div>
+      {{if .Scan.LastResult.Errors}}
+        <details class="details">
+          <summary>{{len .Scan.LastResult.Errors}} scan warning{{if ne (len .Scan.LastResult.Errors) 1}}s{{end}}</summary>
+          <ul class="error-list">{{range .Scan.LastResult.Errors}}<li>{{.}}</li>{{end}}</ul>
+        </details>
+      {{end}}
+    {{else}}
+      <p class="muted">No scan has completed in this process yet.</p>
+    {{end}}
+
+    {{if .Scan.LastError}}<p class="text-bad">Last error: {{.Scan.LastError}}</p>{{end}}
+
+    <div class="card-actions">
+      <form method="post" action="/admin/library/scan">
+        <input type="hidden" name="csrf" value="{{.CSRF}}">
+        <button class="btn btn-primary" type="submit"{{if .Scan.Running}} disabled{{end}}>Run scan</button>
+      </form>
+      <a class="btn btn-ghost" href="/admin/library">Open library</a>
+    </div>
+  </section>
+
+  <section class="card">
+    <div class="card-head"><h2>Server</h2><span class="badge">{{.Env}}</span></div>
+    <dl class="facts">
+      <div><dt>Storage</dt><dd>{{.StorageMode}}</dd></div>
+      <div><dt>Uptime</dt><dd>{{.Uptime}}</dd></div>
+      <div><dt>Public URL</dt><dd class="mono">{{.PublicURL}}</dd></div>
+    </dl>
+  </section>
+</div>
+
+<section class="card">
+  <div class="card-head">
+    <h2>Recent accounts</h2>
+    <a class="link" href="/admin/users">All accounts →</a>
+  </div>
+  <div class="table-wrap">
+    <table>
+      <thead><tr><th>Account</th><th>Access</th><th>Joined</th><th></th></tr></thead>
+      <tbody>
+        {{range .RecentUsers}}
+        <tr>
+          <td>
+            <div class="identity">
+              <span class="avatar" aria-hidden="true">{{initial .Email}}</span>
+              <span><strong>{{.Username}}</strong><small>{{.Email}}</small></span>
+            </div>
+          </td>
+          <td>
+            {{if .IsAdmin}}<span class="badge badge-accent">Admin</span>{{end}}
+            {{if .CanDownload}}<span class="badge">Downloads</span>{{end}}
+            {{if and (not .IsAdmin) (not .CanDownload)}}<span class="muted">Standard</span>{{end}}
+          </td>
+          <td class="muted">{{fmtTime .CreatedAt}}</td>
+          <td class="row-end"><a class="btn btn-sm" href="/admin/users/{{.ID}}">Manage</a></td>
+        </tr>
+        {{else}}
+        <tr><td colspan="4" class="empty">No accounts yet.</td></tr>
+        {{end}}
+      </tbody>
+    </table>
+  </div>
+</section>
+{{end}}

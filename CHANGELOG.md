@@ -23,6 +23,14 @@ reconstructed from 60 commits afterwards.
 - Shared auth cache and observability; AniList response caching.
 - A browser-facing Google entry point and app-link return targets.
 - Password accounts can change their email address.
+- **Admin console.** A server-rendered operator UI at `/admin` with overview stats, account
+  search, administrator/download toggles, live app/browser session and desktop-device
+  revocation, account deletion, library scans, audio-cache cleanup and show deletion. The
+  templates and stylesheet are embedded in the binary; there is no separate frontend build.
+- `/desktop-auth`, replacing the old website's pairing page: the Qt player opens it in a
+  browser, signs in, and receives the 60-second bridge token on its loopback listener.
+- `scanner.Status()`, so the console can show the last scan result and whether a scan is
+  running without blocking the request.
 - `migrations/0004_desktop_session_families.sql`: refresh-token family id, the previous
   hash used for reuse detection, and a non-sliding 90-day absolute expiry.
 - A defensive security audit under `security-audit/`, including architecture, threat model,
@@ -44,8 +52,21 @@ reconstructed from 60 commits afterwards.
 - The runtime image is Alpine 3.22, digest-pinned; GitHub Actions are pinned to commit
   SHAs, and CI runs `govulncheck`.
 - `gorilla/websocket` and the OpenTelemetry modules are upgraded to their fixed versions.
-- A Secure deployment now sets the session cookie as `__Host-animind_session`; the legacy
-  name remains readable and is cleared on logout during rollout.
+- A Secure deployment now sets the session cookie as `__Host-animind_session` and does not
+  accept the legacy host-only name; the legacy cookie is cleared on logout. Existing browsers
+  may need to sign in once after upgrading.
+- The website is now the admin console only: `/` redirects to `/admin`, and the default
+  `FRONTEND_URL` is the API origin rather than the retired Vite dev server.
+- `User` carries `can_download`, so the account page can render the entitlement without a
+  second projection.
+
+### Removed
+
+- The old website's `POST /api/rescan` endpoint, its camelCase `Anime` response, the
+  `ShowSummary` projection and the dedicated rescan rate limiter. The mobile app uses
+  `POST /api/admin/scan`; the console uses the asynchronous `POST /admin/library/scan`.
+- The old-site-specific Google/desktop pairing page is no longer required: the backend serves
+  `/desktop-auth` itself.
 
 ### Fixed
 
@@ -99,6 +120,11 @@ reconstructed from 60 commits afterwards.
   query rather than a full user-table page scan.
 - Dependency and build-input upgrades close the reachable `gorilla/websocket` and
   OpenTelemetry advisories; `govulncheck` reports no vulnerabilities.
+- The admin console was reviewed again: a Secure deployment reads only the
+  `__Host-animind_session` cookie (the legacy name is cleared but not accepted), account
+  ids are UUID-validated before queries and redirects, both access flags are written
+  atomically, and desktop counts honour the absolute expiry. See
+  `security-audit/ADMIN_PANEL_REVIEW.md`.
 
 ### Follow-up / still to do
 
@@ -113,6 +139,10 @@ deployment action, or code outside this repository.
   provider identity. Then remove the 409 on signup if a uniform response is required.
 - **Multi-replica download quota (F-16).** The quota lock is per process. A deployment
   with several API replicas needs a database advisory lock or a conditional insert.
+- **Desktop pairing loopback port.** The stock player listens on fixed `127.0.0.1:27182`,
+  so a malicious local process can bind it first and capture the bridge token. Change the
+  player to choose a random port/nonce and pass it to `/desktop-auth`; the backend can then
+  redirect only to that validated port. See `security-audit/ADMIN_PANEL_REVIEW.md`.
 - **Remaining supply-chain items (F-18).** Pin the compose images by digest, add an
   SBOM/signature step, and update the development Prometheus/Grafana tags when the local
   stack is next refreshed.

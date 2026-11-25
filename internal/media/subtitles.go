@@ -359,7 +359,6 @@ var assStyleBlocklist = regexp.MustCompile(`(?i)sign|caption|title|song|op|ed|op
 
 var (
 	assDialoguePrefix  = "Dialogue:"
-	assCommentPrefix   = "Comment:"
 	assFormatPrefix    = "Format:"
 	assDrawingPattern  = regexp.MustCompile(`\{[^}]*\\p[1-9][^}]*\}`)
 	assBracePattern    = regexp.MustCompile(`\{[^}]*\}`)
@@ -417,8 +416,6 @@ func ConvertAssToVTT(ass string) string {
 				End:   assTimeToVTT(end),
 				Text:  rendered,
 			})
-		case strings.HasPrefix(trimmed, assCommentPrefix):
-			continue
 		}
 	}
 

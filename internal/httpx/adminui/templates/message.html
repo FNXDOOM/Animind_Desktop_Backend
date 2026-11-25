@@ -1,0 +1,22 @@
+{{define "message"}}<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>{{.Title}} · AniMind Admin</title>
+  <link rel="stylesheet" href="/admin/static/admin.css">
+</head>
+<body class="auth-body">
+  <main class="auth-wrap">
+    <div class="auth-card">
+      <div class="brand brand-center">
+        <span class="brand-mark" aria-hidden="true">A</span>
+        <span class="brand-text"><strong>AniMind</strong><small>Admin console</small></span>
+      </div>
+      <h1>{{.Heading}}</h1>
+      <p class="muted">{{.Body}}</p>
+      {{if .BackHref}}<a class="btn btn-block" href="{{.BackHref}}">{{if .BackLabel}}{{.BackLabel}}{{else}}Back{{end}}</a>{{end}}
+    </div>
+  </main>
+</body>
+</html>{{end}}

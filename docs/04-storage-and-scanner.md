@@ -44,8 +44,8 @@ list files (video extensions only)
   -> prune                               episodes whose file is gone, shows with no episodes
 ```
 
-`POST /api/rescan`, `POST /api/admin/scan`, `POST /api/webhooks/storage`, cron, and an optional
-startup pass all call the same `scanner.Run`. A second concurrent call gets 409.
+`POST /api/admin/scan`, `POST /admin/library/scan`, `POST /api/webhooks/storage`, cron, and an
+optional startup pass all call the same `scanner.Run`. A second concurrent call gets 409.
 
 ### Filename parsing
 

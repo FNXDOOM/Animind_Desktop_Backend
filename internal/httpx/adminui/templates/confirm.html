@@ -1,0 +1,12 @@
+{{define "content"}}
+<section class="card card-danger confirm-card">
+  <h2>{{.Heading}}</h2>
+  <p>{{.Body}}</p>
+  {{if .Entity}}<p class="entity mono">{{.Entity}}</p>{{end}}
+  <form class="card-actions" method="post" action="{{.Action}}">
+    <input type="hidden" name="csrf" value="{{.CSRF}}">
+    <button class="btn btn-danger" type="submit">{{.ConfirmLabel}}</button>
+    <a class="btn btn-ghost" href="{{.CancelHref}}">Cancel</a>
+  </form>
+</section>
+{{end}}

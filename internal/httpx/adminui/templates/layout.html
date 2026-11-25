@@ -1,0 +1,74 @@
+{{define "layout"}}<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  {{if .RefreshSeconds}}<meta http-equiv="refresh" content="{{.RefreshSeconds}}">{{end}}
+  <title>{{.Title}} · AniMind Admin</title>
+  <link rel="stylesheet" href="/admin/static/admin.css">
+</head>
+<body>
+  <div class="app">
+    <aside class="sidebar">
+      <a class="brand" href="/admin">
+        <span class="brand-mark" aria-hidden="true">A</span>
+        <span class="brand-text"><strong>AniMind</strong><small>Admin console</small></span>
+      </a>
+
+      <nav class="nav" aria-label="Admin sections">
+        <a class="nav-link{{if eq .Active "dashboard"}} is-active{{end}}" href="/admin"{{if eq .Active "dashboard"}} aria-current="page"{{end}}>
+          <svg class="icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" aria-hidden="true">
+            <rect x="3.5" y="3.5" width="7" height="7" rx="1.5"/><rect x="13.5" y="3.5" width="7" height="7" rx="1.5"/>
+            <rect x="3.5" y="13.5" width="7" height="7" rx="1.5"/><rect x="13.5" y="13.5" width="7" height="7" rx="1.5"/>
+          </svg>
+          Overview
+        </a>
+        <a class="nav-link{{if eq .Active "users"}} is-active{{end}}" href="/admin/users"{{if eq .Active "users"}} aria-current="page"{{end}}>
+          <svg class="icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" aria-hidden="true">
+            <circle cx="9" cy="8" r="3.2"/><path d="M3.5 19.5c.6-3.1 2.7-5 5.5-5s4.9 1.9 5.5 5"/>
+            <path d="M16 5.2a3.2 3.2 0 0 1 0 6.1"/><path d="M17.5 14.8c2.1.5 3.4 2.2 3.8 4.7"/>
+          </svg>
+          Accounts
+        </a>
+        <a class="nav-link{{if eq .Active "library"}} is-active{{end}}" href="/admin/library"{{if eq .Active "library"}} aria-current="page"{{end}}>
+          <svg class="icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" aria-hidden="true">
+            <rect x="3.5" y="5" width="17" height="14" rx="2.2"/><path d="M3.5 9.5h17"/>
+            <path d="M7 13h4M7 15.8h7"/>
+          </svg>
+          Library
+        </a>
+      </nav>
+
+      <div class="sidebar-foot">
+        <div class="who">
+          <span class="avatar" aria-hidden="true">{{initial .AdminEmail}}</span>
+          <span class="who-text"><strong>{{if .AdminEmail}}{{.AdminEmail}}{{else}}Administrator{{end}}</strong><small>Signed in</small></span>
+        </div>
+        <form method="post" action="/admin/logout">
+          <input type="hidden" name="csrf" value="{{.CSRF}}">
+          <button class="btn btn-ghost btn-sm btn-block" type="submit">Sign out</button>
+        </form>
+      </div>
+    </aside>
+
+    <main class="main">
+      <header class="topbar">
+        <div>
+          <h1>{{.Title}}</h1>
+          {{if .Subtitle}}<p class="subtitle">{{.Subtitle}}</p>{{end}}
+        </div>
+        <a class="status-link" href="/health">
+          <span class="dot"></span> API health
+        </a>
+      </header>
+
+      {{if .Flash}}<div class="flash flash-ok" role="status">{{.Flash}}</div>{{end}}
+      {{if .Error}}<div class="flash flash-bad" role="alert">{{.Error}}</div>{{end}}
+
+      {{template "content" .}}
+
+      <footer class="foot">AniMind admin console · server-rendered from the API binary</footer>
+    </main>
+  </div>
+</body>
+</html>{{end}}

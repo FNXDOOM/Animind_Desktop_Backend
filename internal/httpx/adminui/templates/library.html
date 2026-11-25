@@ -1,0 +1,86 @@
+{{define "content"}}
+<section class="card">
+  <div class="card-head">
+    <h2>Scanner</h2>
+    {{if .Scan.Running}}<span class="badge badge-warn"><span class="dot dot-warn"></span> Running</span>{{else}}<span class="badge"><span class="dot dot-good"></span> Idle</span>{{end}}
+  </div>
+
+  {{if .Scan.LastResult}}
+    <div class="scan-result">
+      <div class="scan-item"><span>Files seen</span><strong>{{.Scan.LastResult.Scanned}}</strong></div>
+      <div class="scan-item"><span>Indexed</span><strong>{{.Scan.LastResult.Inserted}}</strong></div>
+      <div class="scan-item"><span>Removed</span><strong>{{.Scan.LastResult.Removed}}</strong></div>
+      <div class="scan-item"><span>Pruned</span><strong>{{.Scan.LastResult.PrunedEpisodes}} ep / {{.Scan.LastResult.PrunedShows}} show</strong></div>
+      <div class="scan-item"><span>Duration</span><strong>{{durationMS .Scan.LastResult.Duration}}</strong></div>
+    </div>
+    {{if .Scan.LastResult.Errors}}
+      <details class="details">
+        <summary>{{len .Scan.LastResult.Errors}} scan warning{{if ne (len .Scan.LastResult.Errors) 1}}s{{end}}</summary>
+        <ul class="error-list">{{range .Scan.LastResult.Errors}}<li>{{.}}</li>{{end}}</ul>
+      </details>
+    {{end}}
+  {{else}}
+    <p class="muted">No scan has completed in this process yet. A scan indexes new files, refreshes metadata and prunes deleted media when pruning is enabled.</p>
+  {{end}}
+
+  {{if .Scan.LastError}}<p class="text-bad">Last error: {{.Scan.LastError}}</p>{{end}}
+  {{if .Scan.Running}}<p class="muted">The page refreshes every few seconds until the scan finishes.</p>{{end}}
+
+  <div class="card-actions">
+    <form method="post" action="/admin/library/scan">
+      <input type="hidden" name="csrf" value="{{.CSRF}}">
+      <button class="btn btn-primary" type="submit"{{if .Scan.Running}} disabled{{end}}>Run scan</button>
+    </form>
+    {{if .CanCleanup}}
+    <form method="post" action="/admin/library/cleanup">
+      <input type="hidden" name="csrf" value="{{.CSRF}}">
+      <button class="btn" type="submit">Clean audio cache</button>
+    </form>
+    {{else}}
+    <span class="muted">Audio cache cleanup needs local storage mode.</span>
+    {{end}}
+  </div>
+</section>
+
+<section class="card">
+  <div class="card-head">
+    <h2>{{.Total}} show{{if ne .Total 1}}s{{end}}</h2>
+    <form class="search" method="get" action="/admin/library">
+      <input class="input" type="search" name="q" value="{{.Search}}" placeholder="Search title, studio or synopsis" aria-label="Search library">
+      <button class="btn" type="submit">Search</button>
+      {{if .Search}}<a class="btn btn-ghost" href="/admin/library">Clear</a>{{end}}
+    </form>
+  </div>
+
+  <div class="table-wrap">
+    <table>
+      <thead><tr><th>Title</th><th>Year</th><th>Episodes</th><th>Status</th><th>Indexed</th><th></th></tr></thead>
+      <tbody>
+        {{range .Shows}}
+        <tr>
+          <td>
+            <strong>{{.Title}}</strong>
+            {{if .Studio}}<small>{{deref .Studio}}</small>{{end}}
+          </td>
+          <td>{{if .Year}}{{deref .Year}}{{else}}<span class="muted">—</span>{{end}}</td>
+          <td>{{if .EpisodeCount}}{{derefInt .EpisodeCount}}{{else}}<span class="muted">—</span>{{end}}</td>
+          <td>{{if .Status}}<span class="badge">{{deref .Status}}</span>{{else}}<span class="muted">—</span>{{end}}</td>
+          <td class="muted">{{fmtTime .CreatedAt}}</td>
+          <td class="row-end"><a class="btn btn-sm btn-danger-outline" href="/admin/shows/{{.ID}}/delete">Delete</a></td>
+        </tr>
+        {{else}}
+        <tr><td colspan="6" class="empty">No shows match {{if .Search}}“{{.Search}}”{{else}}this library{{end}}.</td></tr>
+        {{end}}
+      </tbody>
+    </table>
+  </div>
+
+  {{if gt .Pages 1}}
+  <nav class="pager" aria-label="Library pages">
+    {{if .HasPrev}}<a class="btn btn-sm" href="/admin/library?page={{.PrevPage}}{{if .Search}}&amp;q={{.Search}}{{end}}">Previous</a>{{end}}
+    <span>Page {{.Page}} of {{.Pages}}</span>
+    {{if .HasNext}}<a class="btn btn-sm" href="/admin/library?page={{.NextPage}}{{if .Search}}&amp;q={{.Search}}{{end}}">Next</a>{{end}}
+  </nav>
+  {{end}}
+</section>
+{{end}}

@@ -13,7 +13,7 @@ exactly, so an unmodified `socket.io-client` connects.
 | --- | --- |
 | Path | `/api/socket.io` (mounted under `/api` so one reverse-proxy rule covers API and socket) |
 | Protocol | Engine.IO 4, Socket.IO 4, root namespace `/` |
-| Transports | WebSocket first (the site requests `['websocket','polling']`); long-polling with upgrade is also implemented |
+| Transports | WebSocket first (clients request `['websocket','polling']`); long-polling with upgrade is also implemented |
 | Auth | `auth: { token }` on the Socket.IO CONNECT packet — nothing else is read: not a query parameter, not a cookie |
 | Liveness | Server-sent Engine.IO ping every `SYNCPLAY_PING_INTERVAL_SECONDS` (25 s), pong deadline `SYNCPLAY_PONG_TIMEOUT_SECONDS` (40 s) |
 | Message cap | `SYNCPLAY_MAX_MESSAGE_BYTES` (64 KiB) on the read limit and the polling body |
@@ -121,7 +121,7 @@ reported by clients on `heartbeat`, `play`, `pause`, `seek` and `ping`, and clam
 `SYNCPLAY_MAX_PING_MS` so no client can push a room's start arbitrarily far out.
 
 The field is named `scheduledPlayAt` because that is what the deployed web client already parses
-(`msUntilServerTime` in `services/syncplay.client.ts`), which means the site gains scheduled starts
+(`msUntilServerTime` in `services/syncplay.client.ts`), which means clients gain scheduled starts
 without a release.
 
 ### Clock service
@@ -193,7 +193,7 @@ Server → client: `waitForBufferGoal`, `waitForReady`, `allReady`, `peerReady`,
 Payload shapes, and which peers receive each (all, others, or just the caller), are documented in
 `internal/syncplay/room.go` beside each emit.
 
-`allReady` and `peerBuffering` are named for what the site already listens for
+`allReady` and `peerBuffering` are named for what clients already listen for
 (`services/syncplay.client.ts`); until now the hub never sent either, so that code path was dead.
 `peerBuffering` is the mid-play counterpart of a gate and is announced once per fall below the
 goal, not once per report.
@@ -215,7 +215,7 @@ deployed client reads them literally.
 
 Each peer entry in `waitForBufferGoal`, `waitForReady` and `participantStates` carries
 `socketId`, `userId`, `displayName`, `currentTime`, `playbackRate`, `readyState`, `bufferedAhead`,
-`ready` and `stalling`. The site's roster and ready-badges read all of them, so the two identity
+`ready` and `stalling`. The clients' roster and ready-badges read all of them, so the two identity
 fields are part of the contract, not debug detail — `TestWatchPartyHandshakeAndGate` asserts they
 survive the JSON round trip.
 
@@ -263,7 +263,7 @@ transaction so participants never outlive their room.
 - Only the host advances the canonical clock, so a stalled host freezes it.
 - Room capacity is `SYNCPLAY_MAX_PARTICIPANTS` (12) per room, enforced on join.
 - Cross-episode joins are not validated against the room's episode: a member can join a code while
-  playing something else. The site's UI never does this today; `changeEpisode` and
+  playing something else. The clients' UI never does this today; `changeEpisode` and
   `episodeChanged` exist so a room can be steered, and the desktop player has no watch-party code at
   all.
 

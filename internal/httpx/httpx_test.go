@@ -82,13 +82,15 @@ func TestRoutesAreRegistered(t *testing.T) {
 			`/api/me/watchlist /api/me/progress /api/me/progress/recent /api/me/history /api/me/preferences ` +
 			`/api/torrents/search /api/downloads /api/downloads/` + uuid + ` /api/downloads/events ` +
 			`/api/search/trending ` +
-			`/api/admin/users /api/admin/metrics /api/syncplay/rooms/ABCDE`,
-		http.MethodPost: `/api/anilist /api/webhooks/storage /api/rescan /api/admin/scan /api/admin/library/cleanup ` +
+			`/api/admin/users /api/admin/metrics /api/syncplay/rooms/ABCDE ` +
+			`/admin /admin/login /admin/static/admin.css /desktop-auth`,
+		http.MethodPost: `/api/anilist /api/webhooks/storage /api/admin/scan /api/admin/library/cleanup ` +
 			`/api/episodes/` + uuid + `/hls-session /api/hls/` + session + `/seek ` +
 			`/api/hls/` + session + `/heartbeat /api/downloads ` +
 			`/api/auth/signup /api/auth/login /api/auth/logout /api/auth/consume-code ` +
 			`/api/auth/password/change /api/auth/password/forgot /api/auth/password/reset ` +
-			`/api/auth/desktop/exchange /api/auth/desktop/refresh /api/auth/desktop/revoke /api/auth/desktop/bridge-token`,
+			`/api/auth/desktop/exchange /api/auth/desktop/refresh /api/auth/desktop/revoke /api/auth/desktop/bridge-token ` +
+			`/admin/login /desktop-auth/login /desktop-auth/confirm`,
 		http.MethodPut:    `/api/me/watchlist/1 /api/me/progress /api/me/history /api/me/preferences`,
 		http.MethodPatch:  `/api/me /api/me/watchlist/1 /api/downloads/` + uuid + ` /api/admin/users/` + uuid,
 		http.MethodDelete: `/api/me /api/me/watchlist/1 /api/hls/` + session + ` /api/admin/shows/` + uuid + ` /api/auth/sessions/` + uuid + ` /api/downloads/` + uuid,
@@ -141,7 +143,6 @@ func TestProtectedRoutesRejectAnonymous(t *testing.T) {
 		{http.MethodPost, "/api/hls/00000000000000000000000000000000/seek", true},
 		{http.MethodPost, "/api/hls/00000000000000000000000000000000/heartbeat", false},
 		{http.MethodDelete, "/api/hls/00000000000000000000000000000000", false},
-		{http.MethodPost, "/api/rescan", false},
 		{http.MethodGet, "/api/torrents/search", false},
 		{http.MethodPost, "/api/downloads", true},
 		{http.MethodGet, "/api/downloads", false},
@@ -265,19 +266,18 @@ func TestSecurityHeadersAreSet(t *testing.T) {
 
 func TestRateLimitReturns429WithRetryAfter(t *testing.T) {
 	server := testServer(t)
-	// The rescan limiter allows three requests a minute; the fourth must be refused before
-	// any scan work happens. Anonymous requests still consume budget, which is the point: the
-	// limiter runs ahead of authentication so a credential-stuffing loop cannot flood the
-	// auth path.
-	for attempt := 1; attempt <= 3; attempt++ {
-		recorder := do(server, http.MethodPost, "/api/rescan", nil)
+	// The webhook limiter allows thirty requests a minute; the thirty-first must be refused
+	// before the handler runs. Anonymous requests still consume budget, which is the point:
+	// the limiter runs ahead of the handler, so a credential-stuffing loop cannot flood it.
+	for attempt := 1; attempt <= 30; attempt++ {
+		recorder := do(server, http.MethodPost, "/api/webhooks/storage", nil)
 		if recorder.Code != http.StatusUnauthorized {
-			t.Fatalf("attempt %d = %d, want 401 while unauthenticated", attempt, recorder.Code)
+			t.Fatalf("attempt %d = %d, want 401 for a wrong shared secret", attempt, recorder.Code)
 		}
 	}
-	recorder := do(server, http.MethodPost, "/api/rescan", nil)
+	recorder := do(server, http.MethodPost, "/api/webhooks/storage", nil)
 	if recorder.Code != http.StatusTooManyRequests {
-		t.Fatalf("fourth attempt = %d, want 429", recorder.Code)
+		t.Fatalf("thirty-first attempt = %d, want 429", recorder.Code)
 	}
 	if recorder.Header().Get("Retry-After") == "" {
 		t.Error("a 429 must tell the client when to retry")
@@ -287,9 +287,9 @@ func TestRateLimitReturns429WithRetryAfter(t *testing.T) {
 
 func TestRateLimitersAreIndependentPerRoute(t *testing.T) {
 	server := testServer(t)
-	// Exhausting the rescan budget must not lock the catalog out of the login budget.
-	for attempt := 0; attempt < 4; attempt++ {
-		do(server, http.MethodPost, "/api/rescan", nil)
+	// Exhausting the webhook budget must not lock the admin bucket.
+	for attempt := 0; attempt < 31; attempt++ {
+		do(server, http.MethodPost, "/api/webhooks/storage", nil)
 	}
 	recorder := do(server, http.MethodGet, "/api/admin/users", nil)
 	if recorder.Code == http.StatusTooManyRequests {

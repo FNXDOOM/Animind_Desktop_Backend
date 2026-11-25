@@ -1,8 +1,9 @@
 # 8. Client integration
 
-What each client needs, and exactly what changes when Clerk is removed. Paths, field names and
-socket payloads are unchanged wherever a shipped client parses them, so the diff on the client
-side is confined to authentication and to the data it used to fetch from a database directly.
+What each native client needs. Paths, field names and socket payloads are unchanged wherever a
+shipped client parses them, so client changes stay confined to authentication and to the data
+that used to be fetched from a database directly. The old React website was retired; the only
+website is the [admin console](12-admin-panel.md).
 
 ## Desktop player (Qt/QML + libmpv)
 
@@ -47,9 +48,10 @@ Three of its five dependencies are gone:
 1. **The browser handoff token.** The player decodes the token it receives on
    `127.0.0.1:27182` as a JWT and reads `sub`, `sid`, `exp`. That token was a Clerk session JWT;
    now it is the bridge JWT from `POST /api/auth/desktop/bridge-token`, which carries exactly
-   those claims. The player's own code needs no change — the site's `/desktop-auth` page does:
-   request a bridge token and navigate to
-   `http://127.0.0.1:27182/auth?token=<jwt>&sessionId=<session_id>`.
+   those claims. The player's own code needs no change. The backend now serves the handoff page
+   itself at `/desktop-auth`, so set `ANIMIND_SITE_URL` to this API origin (for example
+   `http://127.0.0.1:3001`); the page signs the browser in, shows a **Pair this desktop**
+   confirmation, and redirects to `http://127.0.0.1:27182/auth?token=<jwt>&sessionId=<session_id>`.
 2. **Clerk FAPI calls.** `GET {fapi}/v1/client` and
    `POST /v1/client/sessions/{id}/tokens/supabase` are gone. The email is in the bridge JWT; there
    is no Supabase token to mint.
@@ -82,97 +84,26 @@ Three of its five dependencies are gone:
    changing that constant or fronting it at the same hostname. Nothing else in the environment file
    is read either.
 5. The player has **no watch-party code** (QtWebSockets is not even linked), so nothing to do there.
-   It also never calls rescan, admin, subtitles or audio-track endpoints.
+   It also never calls the admin, scan, subtitles or audio-track endpoints.
 
-## Website (React SPA)
+## Admin console
 
-### Authentication
+The website is now the server-rendered admin console at `/admin`; it is embedded in the Go
+binary, so there is no React/Clerk/Supabase migration to perform. The old React site is not
+part of this repository and should be retired from the deployment.
 
-| Was (Clerk) | Now |
-| --- | --- |
-| `<ClerkProvider publishableKey=…>` + `<SignIn/>`/`<SignUp/>` components | `POST /api/auth/login` and `/api/auth/signup`; render your own form |
-| `useAuth().getToken()` for API calls | the session token: `Authorization: Bearer as_...`, or nothing at all if you let the HttpOnly cookie ride (`credentials: 'include'`) |
-| `useUser()` for id, name, avatar | `GET /api/auth/me` → `{ user: { id, email, username, avatar_url, is_admin } }` |
-| `user.publicMetadata.isAdmin === true` | `user.is_admin`, from the same endpoint |
-| `clerkUser.delete()` | `DELETE /api/me` |
-| `getToken({template: 'supabase'})` for direct DB access | no equivalent — see the data table below |
-| `getToken({template: 'desktop', skipCache: true})` for pairing | `POST /api/auth/desktop/bridge-token` |
-| `openUserProfile()` | `PATCH /api/me` |
+- Sign in at `/admin/login` with an account whose `is_admin` flag is true. The form posts to
+  the same auth service as the API and sets the HttpOnly session cookie.
+- Every mutating form carries a double-submit CSRF token. The console sends a CSP with no
+  script source, so do not add inline scripts to it.
+- Account pages show live app/browser sessions and desktop devices; both can be revoked. The
+  library page runs scans and shows the last result.
+- The JSON admin API (`/api/admin/*`) remains available to native clients; the console is a
+  thin HTML layer over the same store.
 
-Google sign-in: `GET /api/auth/google/url?redirect=<same-origin>` → navigate → the callback
-returns to the API and redirects to `redirect?auth_code=...` → `POST /api/auth/consume-code`
-exchanges the code for a session. A one-time code is used rather than putting the session token in
-a URL, where history and `Referer` would keep it. If you prefer the cookie alone, nothing is needed
-after the redirect: the callback already set it.
-
-### Data that was direct-to-database
-
-Those calls sent a client-supplied `user_id` and relied on row-level security keyed to an external
-JWT. Both are gone; the session decides ownership.
-
-| Was | Now |
-| --- | --- |
-| `from('profiles').upsert({ id, username, avatar_url, updated_at })` on every login | nothing — accounts are created by signup, and `PATCH /api/me` updates them. There is no `profiles` bootstrap to satisfy an FK. |
-| `from('watchlist').select('*').eq('user_id', uid)` | `GET /api/me/watchlist` |
-| `.upsert({ user_id, anime_id, anime_data, status }, { onConflict: 'user_id, anime_id' })` | `PUT /api/me/watchlist/{anime_id}` |
-| `.update({ status }).eq('user_id', uid).eq('anime_id', id)` | `PATCH /api/me/watchlist/{anime_id}` |
-| `.delete().eq('user_id', uid).eq('anime_id', id)` | `DELETE /api/me/watchlist/{anime_id}` |
-| `from('progress').select('timestamp')…maybeSingle()` | `GET /api/me/progress?anime_id=&episode_index=` → `{ timestamp }` (0 when absent) |
-| `from('progress').upsert({ user_id, anime_id, episode_index, timestamp })` | `PUT /api/me/progress` |
-
-`anime_data` is stored and returned verbatim, so `map(item => ({ ...item.anime_data, userStatus:
-item.status }))` keeps working unchanged. Keep `PUT` idempotent in your optimistic UI: the server is
-now the truth source and will not roll back.
-
-The resume arithmetic the site does today is worth keeping server-side in mind: `resumeTime > 5 ?
-resumeTime - 2 : 0` (a 2 s pre-roll, ignoring tiny resumes) and adding the HLS start offset back
-before saving. Those are client choices this backend deliberately does not replicate, so a saved
-position is exactly what the client sent.
-
-### New endpoints available to the site
-
-`GET /api/me/progress/recent` (there was no resume rail because no such query existed),
-`GET`/`PUT /api/me/preferences` (volume, speed, subtitle and audio choices are the only settings
-the site had in `localStorage`; the audio choice was written and never read back),
-`GET /api/auth/sessions` plus `DELETE /api/auth/sessions/{id}`, and `POST /api/hls/{id}/heartbeat`.
-
-`GET /api/shows` now accepts `q` and `genre`, and its `limit` goes to 200 — the catalog is no
-longer silently capped at whatever one unpaginated call returned. Episode rows carry `thumbnail`
-(the show cover when there is no per-episode artwork) and `season_number`, so seasons no longer
-need to be fabricated by chunking 24 episodes.
-
-`GET /api/admin/metrics` returns real counts; the dashboard's "Server Load 34%", "API Latency
-42ms" and hard-coded log lines have no server counterpart and should be removed or fed from it.
-
-### Playback and subtitles
-
-Unchanged: `hlsRequired`/`clientType` device negotiation, `playlistUrl`, the ticket URL shape, and
-`{ tracks: [{ id, label, language, content }] }` with `content` a full WebVTT document — still
-parsed by your `parseVTT`, not a `<track>` element. Audio-track switching still round-trips
-`streamIndex` through `?at=` and re-fetches the stream, and the "first play may take a minute"
-notice still keys on `!cached && !browserSupported`.
-
-`expiresIn` on a ticket remains unused by the site; with `STREAM_TICKET_TTL_SECONDS` at 4 hours a
-long episode is not at risk, and the heartbeat endpoint covers an HLS gap.
-
-### Watch parties
-
-Nothing to change. Same path (`/api/socket.io`), same `auth: { token }` (send the session token
-instead of a Clerk token), same event names and payloads. `transports: ['websocket','polling']`
-works: WebSocket is native here and long-polling with upgrade is supported.
-
-`GET /api/syncplay/rooms/{code}` can validate the join bar's code before asking the user to open
-the matching episode, which the UI could not do before.
-
-### Infrastructure notes
-
-- **CSP**: the site's `connect-src`, `media-src` and `default-src` must list the API host for both
-  `https://` and `wss://`.
-- The session cookie is `HttpOnly` and `SameSite=Lax`. `SameSite=Lax` does not attach it to the
-  SPA's cross-site `fetch` — those requests must send the bearer header, or use
-  `credentials: 'include'` with the site and API on one registrable domain.
-- The API sends no `frame-ancestors`/CSP of its own beyond `X-Frame-Options: DENY`: it serves no
-  HTML. The page that embeds the YouTube trailer iframe and the player is yours.
+If you keep a separate web client, it must use `Authorization: Bearer` or same-origin
+`credentials: 'include'`; see [Authentication](02-authentication.md). The API sends
+`X-Frame-Options: DENY`, and serves HTML only under `/admin` and `/desktop-auth`.
 
 ## Curl cookbook
 

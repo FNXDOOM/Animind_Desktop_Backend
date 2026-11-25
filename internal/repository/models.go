@@ -26,6 +26,7 @@ type User struct {
 	AvatarURL       *string    `json:"avatar_url"`
 	PasswordHash    *string    `json:"-"`
 	IsAdmin         bool       `json:"is_admin"`
+	CanDownload     bool       `json:"can_download"`
 	FailedLogins    int        `json:"-"`
 	LockedUntil     *time.Time `json:"-"`
 	CreatedAt       time.Time  `json:"created_at"`
@@ -51,7 +52,7 @@ func (u *User) Public() *PublicUser {
 	}
 	return &PublicUser{
 		ID: u.ID, Email: u.Email, Username: u.Username, AvatarURL: u.AvatarURL,
-		IsAdmin: u.IsAdmin, CreatedAt: u.CreatedAt, UpdatedAt: u.UpdatedAt,
+		IsAdmin: u.IsAdmin, CanDownload: u.CanDownload, CreatedAt: u.CreatedAt, UpdatedAt: u.UpdatedAt,
 	}
 }
 

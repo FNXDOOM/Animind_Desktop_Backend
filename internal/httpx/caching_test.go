@@ -55,23 +55,24 @@ func TestRateLimitBudgetIsSharedAcrossServers(t *testing.T) {
 	first := New(Deps{Config: cfg, Cache: store, Logger: logger})
 	second := New(Deps{Config: cfg, Cache: store, Logger: logger})
 
-	// The rescan budget is three a minute. Auth fails on every attempt, which is irrelevant:
-	// the limiter runs first, so a 401 is a counted hit and a 429 is the budget closing.
+	// The webhook budget is thirty a minute. A wrong secret answers 401, which is
+	// irrelevant: the limiter runs first, so a 401 is a counted hit and a 429 is the budget
+	// closing.
 	servers := []*Server{first, second}
-	for attempt := 0; attempt < 3; attempt++ {
-		recorder := do(servers[attempt%2], http.MethodPost, "/api/rescan", nil)
+	for attempt := 0; attempt < 30; attempt++ {
+		recorder := do(servers[attempt%2], http.MethodPost, "/api/webhooks/storage", nil)
 		if recorder.Code == http.StatusTooManyRequests {
 			t.Fatalf("attempt %d was rate limited while the budget was still open", attempt+1)
 		}
 	}
-	recorder := do(servers[1], http.MethodPost, "/api/rescan", nil)
+	recorder := do(servers[1], http.MethodPost, "/api/webhooks/storage", nil)
 	if recorder.Code != http.StatusTooManyRequests {
-		t.Fatalf("the fourth hit crossed two servers and was %d, want 429: the window is per-server", recorder.Code)
+		t.Fatalf("the thirty-first hit crossed two servers and was %d, want 429: the window is per-server", recorder.Code)
 	}
 
 	// A different bucket stays independent even though both share the store.
 	if other := do(second, http.MethodGet, "/api/admin/users", nil); other.Code == http.StatusTooManyRequests {
-		t.Fatal("exhausting rescan blocked the admin bucket")
+		t.Fatal("exhausting the webhook bucket blocked the admin bucket")
 	}
 }
 
@@ -83,8 +84,8 @@ func TestMetricsEndpointExportsRequestsAndCacheOutcomes(t *testing.T) {
 	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
 	server := New(Deps{Config: cfg, Cache: store, Logger: logger})
 
-	for attempt := 0; attempt < 4; attempt++ {
-		do(server, http.MethodPost, "/api/rescan", nil)
+	for attempt := 0; attempt < 31; attempt++ {
+		do(server, http.MethodPost, "/api/webhooks/storage", nil)
 	}
 	// A parameterised path: the label must be the route pattern, not whatever the client
 	// asked for, or a path scan would mint unbounded series.
@@ -99,8 +100,8 @@ func TestMetricsEndpointExportsRequestsAndCacheOutcomes(t *testing.T) {
 	}
 	body := recorder.Body.String()
 	for _, expected := range []string{
-		`animind_http_requests_total{method="POST",route="/api/rescan",status="429"}`,
-		`animind_http_requests_total{method="POST",route="/api/rescan",status="401"}`,
+		`animind_http_requests_total{method="POST",route="/api/webhooks/storage",status="429"}`,
+		`animind_http_requests_total{method="POST",route="/api/webhooks/storage",status="401"}`,
 		`animind_http_request_duration_seconds`,
 		`route="/api/hls/{sessionId}/{segment}"`,
 		`animind_cache_operations_total{backend="local",result="deny"}`,
@@ -131,7 +132,7 @@ func TestMetricsDisabledServesNothing(t *testing.T) {
 	}
 }
 
-// TestAniListProxyServesADocumentOnce is the relay's whole point: the site re-issues the same
+// TestAniListProxyServesADocumentOnce is the relay's whole point: clients re-issue the same
 // search as a user browses, and each one used to leave the process.
 func TestAniListProxyServesADocumentOnce(t *testing.T) {
 	var upstream atomic.Int64

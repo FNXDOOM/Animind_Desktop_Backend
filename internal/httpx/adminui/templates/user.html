@@ -1,0 +1,115 @@
+{{define "content"}}
+<div class="page-head">
+  <a class="back" href="/admin/users">← All accounts</a>
+</div>
+
+<div class="grid-2">
+  <section class="card">
+    <div class="card-head">
+      <h2>Account</h2>
+      {{if .IsSelf}}<span class="badge badge-accent">You</span>{{end}}
+    </div>
+    <div class="identity identity-lg">
+      <span class="avatar" aria-hidden="true">{{initial .User.Email}}</span>
+      <span><strong>{{.User.Username}}</strong><small>{{.User.Email}}</small></span>
+    </div>
+    <dl class="facts">
+      <div><dt>User ID</dt><dd class="mono">{{.User.ID}}</dd></div>
+      <div><dt>Joined</dt><dd>{{fmtTime .User.CreatedAt}}</dd></div>
+      <div><dt>Last updated</dt><dd>{{fmtTime .User.UpdatedAt}}</dd></div>
+    </dl>
+  </section>
+
+  <section class="card">
+    <div class="card-head"><h2>Access</h2></div>
+    <form class="stack" method="post" action="/admin/users/{{.User.ID}}/flags">
+      <input type="hidden" name="csrf" value="{{.CSRF}}">
+      <input type="hidden" name="flags" value="1">
+      <label class="check">
+        <input type="checkbox" name="is_admin"{{if .User.IsAdmin}} checked{{end}}{{if .IsSelf}} disabled{{end}}>
+        <span><strong>Administrator</strong><small>Can open this console and call the admin API.</small></span>
+      </label>
+      {{if .IsSelf}}<input type="hidden" name="is_admin" value="on">{{end}}
+      <label class="check">
+        <input type="checkbox" name="can_download"{{if .User.CanDownload}} checked{{end}}>
+        <span><strong>Torrent downloads</strong><small>Can search indexers and add downloads in local mode.</small></span>
+      </label>
+      <div class="card-actions">
+        <button class="btn btn-primary" type="submit">Save access</button>
+        {{if .IsSelf}}<span class="muted">You cannot remove your own admin access.</span>{{end}}
+      </div>
+    </form>
+  </section>
+</div>
+
+<section class="card">
+  <div class="card-head">
+    <h2>App and browser sessions</h2>
+    <span class="badge">{{len .WebSessions}} live</span>
+  </div>
+  <div class="table-wrap">
+    <table>
+      <thead><tr><th>Client</th><th>Device</th><th>Address</th><th>Last used</th><th>Expires</th><th></th></tr></thead>
+      <tbody>
+        {{range .WebSessions}}
+        <tr>
+          <td><span class="badge">{{clientLabel .UserAgent}}</span></td>
+          <td>{{if .DeviceName}}{{deref .DeviceName}}{{else}}<span class="muted">—</span>{{end}}</td>
+          <td class="mono">{{if .IPAddress}}{{deref .IPAddress}}{{else}}<span class="muted">—</span>{{end}}</td>
+          <td class="muted">{{fmtTime .LastUsedAt}}</td>
+          <td class="muted">{{fmtTime .ExpiresAt}}</td>
+          <td class="row-end">
+            <form method="post" action="/admin/users/{{$.User.ID}}/sessions/{{.ID}}/revoke">
+              <input type="hidden" name="csrf" value="{{$.CSRF}}">
+              <button class="btn btn-sm btn-danger-outline" type="submit">Revoke</button>
+            </form>
+          </td>
+        </tr>
+        {{else}}
+        <tr><td colspan="6" class="empty">No app or browser session is live.</td></tr>
+        {{end}}
+      </tbody>
+    </table>
+  </div>
+</section>
+
+<section class="card">
+  <div class="card-head">
+    <h2>Desktop devices</h2>
+    <span class="badge">{{len .DesktopDevices}} paired</span>
+  </div>
+  <div class="table-wrap">
+    <table>
+      <thead><tr><th>Device</th><th>Device ID</th><th>Paired</th><th>Last seen</th><th>Expires</th><th></th></tr></thead>
+      <tbody>
+        {{range .DesktopDevices}}
+        <tr>
+          <td>{{if .DeviceName}}<strong>{{deref .DeviceName}}</strong>{{else}}<span class="muted">Unnamed device</span>{{end}}</td>
+          <td class="mono">{{if .DeviceID}}{{deref .DeviceID}}{{else}}<span class="muted">—</span>{{end}}</td>
+          <td class="muted">{{fmtTime .CreatedAt}}</td>
+          <td class="muted">{{fmtTime .LastSeenAt}}</td>
+          <td class="muted">{{fmtTime .ExpiresAt}}</td>
+          <td class="row-end">
+            <form method="post" action="/admin/users/{{$.User.ID}}/devices/{{.ID}}/revoke">
+              <input type="hidden" name="csrf" value="{{$.CSRF}}">
+              <button class="btn btn-sm btn-danger-outline" type="submit">Revoke</button>
+            </form>
+          </td>
+        </tr>
+        {{else}}
+        <tr><td colspan="6" class="empty">No desktop player is paired.</td></tr>
+        {{end}}
+      </tbody>
+    </table>
+  </div>
+</section>
+
+<section class="card card-danger">
+  <div class="card-head"><h2>Account actions</h2></div>
+  <p class="muted">Revoking signs the account out everywhere but keeps the account. Deleting removes the account and all of its user data.</p>
+  <div class="card-actions">
+    <a class="btn" href="/admin/users/{{.User.ID}}/sessions/revoke-all">Revoke all sessions</a>
+    {{if not .IsSelf}}<a class="btn btn-danger-outline" href="/admin/users/{{.User.ID}}/delete">Delete account</a>{{end}}
+  </div>
+</section>
+{{end}}

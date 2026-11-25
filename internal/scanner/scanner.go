@@ -35,6 +35,14 @@ type Service struct {
 	warnOnce map[string]bool
 	// processed collects episodes the current scan touched, for audio prewarm.
 	processed []media.PrewarmTarget
+
+	// lastStartedAt, lastFinishedAt, lastResult and lastError back the admin console. They
+	// are written under mu and describe the most recent Run in this process; a restart
+	// clears them, so the panel always says "no scan yet" rather than showing stale state.
+	lastStartedAt  time.Time
+	lastFinishedAt time.Time
+	lastResult     *Result
+	lastError      string
 }
 
 // New builds the scanner.
@@ -64,23 +72,56 @@ type Result struct {
 // 409: two concurrent scans would double the metadata traffic for no benefit.
 var ErrAlreadyRunning = errors.New("scanner: a library scan is already running")
 
+// Status is the admin console's view of the scanner. LastResult is nil until a scan has
+// completed in this process.
+type Status struct {
+	Running    bool
+	StartedAt  time.Time
+	FinishedAt time.Time
+	LastResult *Result
+	LastError  string
+}
+
+// Status snapshots the scanner state.
+func (s *Service) Status() Status {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	status := Status{
+		Running: s.running, StartedAt: s.lastStartedAt,
+		FinishedAt: s.lastFinishedAt, LastError: s.lastError,
+	}
+	if s.lastResult != nil {
+		copied := *s.lastResult
+		status.LastResult = &copied
+	}
+	return status
+}
+
 // Run performs a full scan of the configured library.
-func (s *Service) Run(ctx context.Context) (*Result, error) {
+func (s *Service) Run(ctx context.Context) (result *Result, err error) {
 	s.mu.Lock()
 	if s.running {
 		s.mu.Unlock()
 		return nil, ErrAlreadyRunning
 	}
 	s.running = true
+	s.lastStartedAt = time.Now()
+	s.lastError = ""
 	s.mu.Unlock()
 	defer func() {
 		s.mu.Lock()
 		s.running = false
+		s.lastFinishedAt = time.Now()
+		if err != nil {
+			s.lastError = err.Error()
+		} else {
+			s.lastResult = result
+		}
 		s.mu.Unlock()
 	}()
 
 	start := time.Now()
-	result := &Result{Errors: []string{}}
+	result = &Result{Errors: []string{}}
 
 	files, err := s.storage.ListVideoFiles(ctx)
 	if err != nil {
@@ -93,14 +134,10 @@ func (s *Service) Run(ctx context.Context) (*Result, error) {
 		found[path] = true
 	}
 
-	// Group by normalized title so a show with 200 files resolves its catalog metadata
-	// (and any database row) once instead of 200 times.
-	type group struct {
-		title string
-		files []string
-	}
-	var groups []*group
-	byTitle := map[string]*group{}
+	// Normalize the title spelling once per key so files whose names differ only in
+	// punctuation are indexed under the same title. The show row itself is resolved per
+	// file; the metadata service caches upstream lookups.
+	byTitle := map[string]string{}
 	for _, path := range files {
 		parsed, err := s.parseFile(ctx, path, files)
 		if err != nil {
@@ -115,15 +152,13 @@ func (s *Service) Run(ctx context.Context) (*Result, error) {
 			result.Errors = append(result.Errors, fmt.Sprintf("missing show title for %q", path))
 			continue
 		}
-		entry, ok := byTitle[key]
-		if !ok {
-			entry = &group{title: strings.TrimSpace(parsed.Title)}
-			byTitle[key] = entry
-			groups = append(groups, entry)
+		title, known := byTitle[key]
+		if !known {
+			title = strings.TrimSpace(parsed.Title)
+			byTitle[key] = title
 		}
-		entry.files = append(entry.files, path)
 
-		if err := s.indexFile(ctx, entry.title, path, parsed); err != nil {
+		if err := s.indexFile(ctx, title, path, parsed); err != nil {
 			result.Errors = append(result.Errors, err.Error())
 			continue
 		}
@@ -471,13 +506,6 @@ func (s *Service) warnOnceLog(key, message string) {
 }
 
 func stringPointer(v string) *string {
-	if v == "" {
-		return nil
-	}
-	return &v
-}
-
-func nonEmptyToNil(v string) *string {
 	if v == "" {
 		return nil
 	}

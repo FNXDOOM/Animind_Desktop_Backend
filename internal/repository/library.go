@@ -49,17 +49,12 @@ func scanEpisode(row scanner) (*Episode, error) {
 	return &e, nil
 }
 
-// ListShows returns the catalog page plus the unpaginated total. search matches title, studio
-// or synopsis and genre filters the genres array; both are optional. The dedupe-by-identity
-// pass belongs to the HTTP layer, not here, so the raw total stays honest.
-func (s *Store) ListShows(ctx context.Context, limit, offset int, search, genre string) ([]Show, int64, error) {
-	var total int64
-	if err := s.pool.QueryRow(ctx, `select count(*) from shows`).Scan(&total); err != nil {
-		return nil, 0, err
-	}
-
+// showFilter builds the optional WHERE clause shared by the catalog page and the admin count.
+// Keeping the escaping in one place means a search for "%" cannot turn into a full-table scan
+// on one path but not the other.
+func showFilter(search, genre string) (string, []any) {
 	var clauses []string
-	args := make([]any, 0, 4)
+	args := make([]any, 0, 2)
 	if trimmed := strings.TrimSpace(search); trimmed != "" {
 		args = append(args, "%"+escapeLike(trimmed)+"%")
 		clauses = append(clauses, fmt.Sprintf(`(title ilike $%d or studio ilike $%d or synopsis ilike $%d)`,
@@ -69,12 +64,22 @@ func (s *Store) ListShows(ctx context.Context, limit, offset int, search, genre 
 		args = append(args, escapeLike(trimmed))
 		clauses = append(clauses, fmt.Sprintf(`$%d = any(genres)`, len(args)))
 	}
+	if len(clauses) == 0 {
+		return "", args
+	}
+	return " where " + strings.Join(clauses, " and "), args
+}
 
-	where := ""
-	if len(clauses) > 0 {
-		where = " where " + strings.Join(clauses, " and ")
+// ListShows returns the catalog page plus the unpaginated total. search matches title, studio
+// or synopsis and genre filters the genres array; both are optional. The dedupe-by-identity
+// pass belongs to the HTTP layer, not here, so the raw total stays honest.
+func (s *Store) ListShows(ctx context.Context, limit, offset int, search, genre string) ([]Show, int64, error) {
+	var total int64
+	if err := s.pool.QueryRow(ctx, `select count(*) from shows`).Scan(&total); err != nil {
+		return nil, 0, err
 	}
 
+	where, args := showFilter(search, genre)
 	args = append(args, limit, offset)
 	query := fmt.Sprintf(`select %s from shows%s order by title asc limit $%d offset $%d`,
 		showColumns, where, len(args)-1, len(args))
@@ -96,6 +101,15 @@ func (s *Store) ListShows(ctx context.Context, limit, offset int, search, genre 
 		out = append(out, sh)
 	}
 	return out, total, rows.Err()
+}
+
+// CountShows returns the total matching a catalog filter. The public ListShows keeps its
+// historical unfiltered total; the admin library page needs the filtered number for its pager.
+func (s *Store) CountShows(ctx context.Context, search, genre string) (int64, error) {
+	where, args := showFilter(search, genre)
+	var total int64
+	err := s.pool.QueryRow(ctx, `select count(*) from shows`+where, args...).Scan(&total)
+	return total, err
 }
 
 // ShowByID loads one show.
@@ -155,47 +169,6 @@ func (s *Store) EpisodeExists(ctx context.Context, id string) bool {
 	var exists bool
 	err := s.pool.QueryRow(ctx, `select exists(select 1 from episodes where id = $1::uuid)`, id).Scan(&exists)
 	return err == nil && exists
-}
-
-// ShowSummary is the trimmed show projection returned by a rescan.
-type ShowSummary struct {
-	ID               string   `json:"id"`
-	Title            string   `json:"title"`
-	Synopsis         *string  `json:"synopsis"`
-	CoverImageURL    *string  `json:"cover_image_url"`
-	Genres           []string `json:"genres"`
-	Rating           *float64 `json:"rating"`
-	EpisodeCount     *int     `json:"episode_count"`
-	Studio           *string  `json:"studio"`
-	Status           *string  `json:"status"`
-	Year             *string  `json:"year"`
-	TrailerID        *string  `json:"trailer_id"`
-	TrailerSite      *string  `json:"trailer_site"`
-	TrailerThumbnail *string  `json:"trailer_thumbnail"`
-}
-
-// ListShowSummaries returns the whole catalog in title order, which is what a rescan
-// response needs so a client can refresh its library in one round trip.
-func (s *Store) ListShowSummaries(ctx context.Context) ([]ShowSummary, error) {
-	rows, err := s.pool.Query(ctx, `
-		select id::text, title, synopsis, cover_image_url, genres, rating::float8, episode_count,
-		       studio, status, year, trailer_id, trailer_site, trailer_thumbnail
-		from shows order by title asc`)
-	if err != nil {
-		return nil, err
-	}
-	defer rows.Close()
-
-	out := make([]ShowSummary, 0, 64)
-	for rows.Next() {
-		var v ShowSummary
-		if err := rows.Scan(&v.ID, &v.Title, &v.Synopsis, &v.CoverImageURL, &v.Genres, &v.Rating,
-			&v.EpisodeCount, &v.Studio, &v.Status, &v.Year, &v.TrailerID, &v.TrailerSite, &v.TrailerThumbnail); err != nil {
-			return nil, err
-		}
-		out = append(out, v)
-	}
-	return out, rows.Err()
 }
 
 // DeleteShow removes a show; its episodes cascade, and any watch party pointing at it

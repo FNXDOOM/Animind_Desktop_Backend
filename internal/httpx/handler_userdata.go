@@ -29,7 +29,7 @@ type watchlistItemResponse struct {
 	UpdatedAt time.Time       `json:"updated_at"`
 }
 
-// watchlistStatuses are the values the site's filter chips match.
+// watchlistStatuses are the values the clients' filter chips match.
 var watchlistStatuses = map[string]bool{
 	"Watching": true, "Completed": true, "Plan to Watch": true, "Dropped": true,
 }
@@ -181,7 +181,7 @@ func (s *Server) handlePutWatchlist(w http.ResponseWriter, r *http.Request) {
 		WriteError(w, http.StatusBadRequest, "anime_data must be a JSON object.")
 		return
 	}
-	if req.AnimeData == nil || len(req.AnimeData) == 0 {
+	if len(req.AnimeData) == 0 {
 		WriteError(w, http.StatusBadRequest, "anime_data is required.")
 		return
 	}
@@ -259,7 +259,7 @@ func (s *Server) handleDeleteWatchlist(w http.ResponseWriter, r *http.Request) {
 }
 
 // handleGetProgress returns one resume position. episode_index is the client's positional
-// index into its own episode list, stored as-is for compatibility with the site's existing
+// index into its own episode list, stored as-is for compatibility with the client's existing
 // rows; new clients should prefer the history endpoint, which keys on a show title.
 func (s *Server) handleGetProgress(w http.ResponseWriter, r *http.Request) {
 	principal, ok := s.requirePrincipal(w, r)

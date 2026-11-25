@@ -77,8 +77,6 @@ type peer struct {
 	// roomCode is the room this peer joined, if any.
 	roomCode string
 
-	ackMu sync.Mutex
-
 	closed   chan struct{}
 	closeOne sync.Once
 	logger   *slog.Logger
@@ -89,9 +87,6 @@ type peer struct {
 	// connectedAt bounds how long an unauthenticated peer may hold resources.
 	connectedAt time.Time
 
-	// pollMu guards the inbox for long-polling readers.
-	pollMu      sync.Mutex
-	inbox       []string
 	pollWait    chan struct{}
 	lastTouched time.Time
 

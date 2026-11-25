@@ -73,7 +73,7 @@ cache should cost latency, not lock every client out of a healthy API.
 ### 3. AniList documents and scan titles
 
 `POST /api/anilist` was a blind relay: one outbound call per site click, no cache, no backoff, and
-AniList's rate limit therefore was the website's capacity. Read-only documents are now cached for
+AniList's rate limit therefore was the clients' capacity. Read-only documents are now cached for
 `CACHE_METADATA_TTL_HOURS` under the SHA-256 of the canonical request body, and `X-Cache: HIT|MISS`
 says which happened. Only a `200` carrying `data` and no `errors` is stored — AniList answers some
 rejections with `200` and an error array, and caching that would hide a title for half a day.

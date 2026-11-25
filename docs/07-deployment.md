@@ -67,6 +67,8 @@ files.
 ## nginx
 
 The stack ships a working proxy config at [`deploy/nginx/nginx.conf`](../deploy/nginx/nginx.conf).
+The admin console is served by the same upstream at `/admin`; the existing `location /` block
+already proxies it, so no extra location is needed. Terminate TLS here as usual.
 For a host-based deployment this is the same shape with TLS added:
 
 ```nginx

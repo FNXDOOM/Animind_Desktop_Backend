@@ -24,7 +24,7 @@ fields are rejected so a client typo fails loudly instead of being ignored.
 
 **Rate limits** are per client IP and per route, per minute: public reads 120, signup 10,
 login 20, account 5, admin 60, user data 240, stream ticket 120, media stream 600, HLS session
-60, HLS segment 1200, rescan 3, webhook 30. A refusal sends `Retry-After`.
+60, HLS segment 1200, webhook 30. A refusal sends `Retry-After`.
 
 ---
 
@@ -82,7 +82,7 @@ way) with `episodes` attached:
 Episodes are ordered by season then number, de-duplicated on `(season, content_type, episode)`
 — the combination a re-scan can produce twice — and rows with a null episode number are
 dropped rather than merged at 0. A fractional number (5.5 for a special) is preserved.
-`thumbnail` falls back to the show's cover, which is what the site already did client-side.
+`thumbnail` falls back to the show's cover, which is the shape the clients already render.
 `file_path` and `bucket_name` are never serialized.
 
 404: `Show not found.`
@@ -134,8 +134,8 @@ the browser that later receives the callback.
 
 ### `GET /api/auth/google/callback?code&state`
 
-Browser-only. Sets the session cookie and redirects to the site with `?auth_code=...`, or to
-`?auth=failed` / `?auth=cancelled`.
+Browser-only. Sets the session cookie and redirects to the configured return target with
+`?auth_code=...`, or to `?auth=failed` / `?auth=cancelled`.
 
 ### `POST /api/auth/consume-code`
 
@@ -216,7 +216,7 @@ Multi-range requests are refused rather than silently truncated to the first spa
 ### `GET /api/episodes/{id}/subtitles`
 
 Session required. `tracks` is always present, and each `content` is a complete WebVTT document
-because the site parses cues itself rather than using a `<track>` element.
+because clients parse cues themselves rather than using a `<track>` element.
 
 ```json
 { "episodeId": "uuid", "tracks": [ { "id": "embedded-English", "label": "English",
@@ -253,7 +253,7 @@ site shows; the server builds a cached M4A variant on the first request for that
 | `POST /api/hls/{sessionId}/heartbeat` | session | Keeps an idle session alive; returns `{ alive, stats }`. |
 | `DELETE /api/hls/{sessionId}` | session | Kills the process and removes the directory. |
 
-`audioTrackIndex` is genuinely optional: the site omits the key entirely on first play, which
+`audioTrackIndex` is genuinely optional: clients omit the key entirely on first play, which
 means "default track". Capacity exhaustion answers 429 `hls_capacity`.
 
 ---
@@ -272,7 +272,7 @@ id — no endpoint accepts a `user_id` from the client.
 
 ### Watchlist
 
-Rows keep the site's existing shape: `anime_id` is an AniList id (text) and `anime_data` is the
+Rows keep the existing client shape: `anime_id` is an AniList id (text) and `anime_data` is the
 client's own show object, stored and returned verbatim so a card rebuilds without a catalog
 lookup.
 
@@ -283,7 +283,7 @@ lookup.
 | `PATCH /api/me/watchlist/{animeId}` | `{ status }` only. 404 when absent. |
 | `DELETE /api/me/watchlist/{animeId}` | 404 when absent. |
 
-`PUT` is idempotent because the site updates optimistically and never rolls back.
+`PUT` is idempotent because clients update optimistically and never roll back.
 
 ### Progress and history
 
@@ -295,7 +295,7 @@ lookup.
 | `GET /api/me/history?limit=50` | **Top-level array** of continue-watching rows for the desktop player. |
 | `PUT /api/me/history` | `{ show_title, episode_label?, anilist_id?, thumbnail_url?, progress_pct }`; upsert keyed on show + episode label. |
 
-`episode_index` is the site's positional index into its episode list, retained for
+`episode_index` is the client's positional index into its episode list, retained for
 compatibility with rows that already exist; `progress_pct` is clamped to 0-100.
 
 ### Preferences
@@ -309,19 +309,22 @@ compatibility with rows that already exist; `progress_pct` is clamped to 0-100.
 
 ## Library indexing
 
-### `POST /api/rescan` (admin)
+### `POST /api/admin/scan` (admin, JSON)
 
-Runs a scan, then returns the whole library in the `Anime` shape the site maps directly:
+Runs a scan synchronously and returns the scanner result:
 
 ```json
-[ { "id": "uuid", "title": "Frieren", "synopsis": "", "imageUrl": "https://...",
-    "rating": 0, "genres": [], "episodes": 28, "studio": "", "status": "", "year": "",
-    "reason": "From your cloud library",
-    "trailer": { "id": "abc", "site": "youtube", "thumbnail": null } } ]
+{ "scanned": 128, "inserted": 126, "updated": 0, "removed": 2,
+  "errors": [], "durationMs": 4210, "prunedEpisodes": 2, "prunedShows": 0,
+  "subtitleFiles": 14 }
 ```
 
 409 `scan_in_progress` when a scan is already running. Audio prewarm runs afterwards in the
-background.
+background. The admin console uses the asynchronous `POST /admin/library/scan` instead and
+shows the scanner status while it runs; see [Admin console](12-admin-panel.md).
+
+The old website's `POST /api/rescan` endpoint was removed. It returned the whole library in a
+camelCase shape that no shipped client calls.
 
 ### `POST /api/webhooks/storage`
 
@@ -331,8 +334,9 @@ missing or wrong secret.
 
 ### `POST /api/anilist`
 
-`{ query, variables? }` forwarded to AniList's GraphQL endpoint, which the browser cannot call
-directly (no CORS headers). Read-only: a document containing `mutation` or `subscription` —
+`{ query, variables? }` forwarded to AniList's GraphQL endpoint, which a browser cannot call
+directly (no CORS headers), and which the native clients should not call directly either.
+Read-only: a document containing `mutation` or `subscription` —
 including one behind a `#` comment — is refused with 400, and `query` is capped at 10,000
 characters. Upstream status and body are passed through; an unreachable AniList is 502
 `anilist_unreachable`.
@@ -410,7 +414,7 @@ The full operational story — setup, quotas, the `.incoming` directory, imports
 
 | Endpoint | Notes |
 | --- | --- |
-| `GET /api/admin/users?limit=&offset=` | Array of `{ id, email, username, avatar_url, is_admin, can_download, created_at, updated_at }`, newest first. Every account appears, including ones that never opened the site. |
+| `GET /api/admin/users?limit=&offset=` | Array of `{ id, email, username, avatar_url, is_admin, can_download, created_at, updated_at }`, newest first. Every account appears, including ones that never signed in. |
 | `PATCH /api/admin/users/{id}` | `{ "is_admin": true\|false }` and/or `{ "can_download": true\|false }` (the torrent-download entitlement). Refuses self-demotion. |
 | `DELETE /api/admin/shows/{id}` | Deletes the show; its episodes cascade. |
 | `POST /api/admin/scan` | Raw scan result: `{ scanned, inserted, updated, removed, errors, durationMs, prunedEpisodes, prunedShows, subtitleFiles }`. |

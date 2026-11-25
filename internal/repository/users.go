@@ -58,12 +58,12 @@ func (s *Store) PoolStats() PoolStats {
 
 const userColumns = `
 	id::text, email, email_normalized, username, avatar_url, password_hash,
-	is_admin, failed_login_count, locked_until, created_at, updated_at`
+	is_admin, can_download, failed_login_count, locked_until, created_at, updated_at`
 
 func scanUser(row pgx.Row) (*User, error) {
 	var u User
 	err := row.Scan(&u.ID, &u.Email, &u.EmailNormalized, &u.Username, &u.AvatarURL, &u.PasswordHash,
-		&u.IsAdmin, &u.FailedLogins, &u.LockedUntil, &u.CreatedAt, &u.UpdatedAt)
+		&u.IsAdmin, &u.CanDownload, &u.FailedLogins, &u.LockedUntil, &u.CreatedAt, &u.UpdatedAt)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return nil, ErrNotFound
 	}
@@ -92,6 +92,9 @@ func (s *Store) UserByEmailNormalized(ctx context.Context, emailNormalized strin
 
 // UserByID loads an account by primary key.
 func (s *Store) UserByID(ctx context.Context, id string) (*User, error) {
+	if !isUUID(id) {
+		return nil, ErrNotFound
+	}
 	return scanUser(s.pool.QueryRow(ctx, `select `+userColumns+` from animind_users where id = $1::uuid`, id))
 }
 
@@ -147,6 +150,22 @@ func (s *Store) UpdateProfile(ctx context.Context, userID string, username, avat
 func (s *Store) SetAdmin(ctx context.Context, userID string, isAdmin bool) error {
 	tag, err := s.pool.Exec(ctx, `
 		update animind_users set is_admin = $2, updated_at = now() where id = $1::uuid`, userID, isAdmin)
+	if err != nil {
+		return err
+	}
+	if tag.RowsAffected() == 0 {
+		return ErrNotFound
+	}
+	return nil
+}
+
+// SetUserAccess writes both account flags in one statement, so a permission change cannot
+// land half-applied when the second update would fail.
+func (s *Store) SetUserAccess(ctx context.Context, userID string, isAdmin, canDownload bool) error {
+	tag, err := s.pool.Exec(ctx, `
+		update animind_users
+		set is_admin = $2, can_download = $3, updated_at = now()
+		where id = $1::uuid`, userID, isAdmin, canDownload)
 	if err != nil {
 		return err
 	}

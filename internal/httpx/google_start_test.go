@@ -34,7 +34,7 @@ func googleStartServer(t *testing.T) *Server {
 }
 
 // The app-link allowlist is only a return target for the OAuth callback. It must never widen the
-// origins the site itself is allowed to use, and it must never be accepted by accident.
+// origins the web client itself is allowed to use, and it must never be accepted by accident.
 func TestSanitizeReturnTargetAcceptsAnAppLinkOriginOnlyWhenConfigured(t *testing.T) {
 	frontend := []string{"https://fnxdoom.in"}
 	appLinks := []string{"https://app.example.com"}
@@ -87,7 +87,7 @@ func TestGoogleStartRejectsAForeignReturnTarget(t *testing.T) {
 	server := googleStartServer(t)
 
 	// A foreign origin is dropped from the state, so the redirect still starts; the callback then
-	// falls back to the site origin instead of sending the code to the attacker.
+	// falls back to the web origin instead of sending the code to the attacker.
 	res := do(server, http.MethodGet, "/api/auth/google/start?redirect=https://evil.example/steal", nil)
 	if res.Code != http.StatusFound {
 		t.Fatalf("status = %d", res.Code)

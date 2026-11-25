@@ -6,7 +6,7 @@
 //     read, paired with a rotating opaque refresh token. Both are pinned in
 //     desktop_auth_sessions, so revocation is instant, and the format is what the
 //     shipped Qt player parses.
-//   - Web (as_): an opaque bearer token for the site, stored only as a SHA-256 hash,
+//   - Web (as_): an opaque bearer token for web clients, stored only as a SHA-256 hash,
 //     with sliding expiry and a remember-me lifetime.
 //
 // Passwords use argon2id in the PHC string format so parameters can be raised later

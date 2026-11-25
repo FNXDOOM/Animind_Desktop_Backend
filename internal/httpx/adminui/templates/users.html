@@ -1,0 +1,58 @@
+{{define "content"}}
+<section class="card">
+  <div class="card-head">
+    <h2>{{.Total}} account{{if ne .Total 1}}s{{end}}</h2>
+    <form class="search" method="get" action="/admin/users">
+      <input class="input" type="search" name="q" value="{{.Search}}" placeholder="Search email or username" aria-label="Search accounts">
+      <button class="btn" type="submit">Search</button>
+      {{if .Search}}<a class="btn btn-ghost" href="/admin/users">Clear</a>{{end}}
+    </form>
+  </div>
+
+  <div class="table-wrap">
+    <table>
+      <thead>
+        <tr>
+          <th>Account</th>
+          <th>Access</th>
+          <th>App / browser</th>
+          <th>Desktop</th>
+          <th>Joined</th>
+          <th></th>
+        </tr>
+      </thead>
+      <tbody>
+        {{range .Users}}
+        <tr>
+          <td>
+            <div class="identity">
+              <span class="avatar" aria-hidden="true">{{initial .Email}}</span>
+              <span><strong>{{.Username}}</strong><small>{{.Email}}</small></span>
+            </div>
+          </td>
+          <td>
+            {{if .IsAdmin}}<span class="badge badge-accent">Admin</span>{{end}}
+            {{if .CanDownload}}<span class="badge">Downloads</span>{{end}}
+            {{if and (not .IsAdmin) (not .CanDownload)}}<span class="muted">Standard</span>{{end}}
+          </td>
+          <td><span class="count">{{.WebSessions}}</span></td>
+          <td><span class="count">{{.DesktopDevices}}</span></td>
+          <td class="muted">{{fmtTime .CreatedAt}}</td>
+          <td class="row-end"><a class="btn btn-sm" href="/admin/users/{{.ID}}">Manage</a></td>
+        </tr>
+        {{else}}
+        <tr><td colspan="6" class="empty">No accounts match “{{.Search}}”.</td></tr>
+        {{end}}
+      </tbody>
+    </table>
+  </div>
+
+  {{if gt .Pages 1}}
+  <nav class="pager" aria-label="Account pages">
+    {{if .HasPrev}}<a class="btn btn-sm" href="/admin/users?page={{.PrevPage}}{{if .Search}}&amp;q={{.Search}}{{end}}">Previous</a>{{end}}
+    <span>Page {{.Page}} of {{.Pages}}</span>
+    {{if .HasNext}}<a class="btn btn-sm" href="/admin/users?page={{.NextPage}}{{if .Search}}&amp;q={{.Search}}{{end}}">Next</a>{{end}}
+  </nav>
+  {{end}}
+</section>
+{{end}}
