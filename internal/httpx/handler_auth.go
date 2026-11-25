@@ -14,9 +14,8 @@ import (
 
 const googleStateCookieName = "animind_google_state"
 
-// Authentication endpoints. Web clients use a session cookie or a bearer session token; the
-// desktop player a HMAC access token exchanged for a web credential. Passwords never appear
-// in a URL, a log line, or a response body.
+// Authentication endpoints. Web clients use a session cookie or bearer token; the desktop
+// player a HMAC access token. Passwords never appear in a URL, a log line, or a response body.
 
 // sessionResponse is the credential a browser receives.
 type sessionResponse struct {
@@ -88,8 +87,7 @@ func (s *Server) handleLogin(w http.ResponseWriter, r *http.Request) {
 }
 
 // handleLogout revokes the caller's session, then clears the cookie. It sits outside
-// RequireAuth on purpose, so the credential is resolved here and logout still succeeds with
-// an expired or missing one; a bearer session used to survive logout until it expired.
+// RequireAuth so logout still succeeds with an expired or missing credential.
 func (s *Server) handleLogout(w http.ResponseWriter, r *http.Request) {
 	principal := PrincipalFromContext(r.Context())
 	if principal == nil {
@@ -145,7 +143,7 @@ func (s *Server) handleChangePassword(w http.ResponseWriter, r *http.Request) {
 	if err := s.auth.ChangePassword(r.Context(), principal.UserID, req.CurrentPassword, req.NewPassword); err != nil {
 		s.writeAuthError(w, err, "Could not change your password.")
 		return
-	} // Every session was revoked, so this cookie is now dead.
+	} // Every session was revoked, so this cookie is dead.
 	s.clearSessionCookie(w)
 	WriteJSON(w, http.StatusOK, map[string]bool{"success": true})
 }
@@ -154,9 +152,8 @@ type forgotPasswordRequest struct {
 	Email string `json:"email"`
 }
 
-// handleForgotPassword answers identically whether or not the address exists, so the endpoint
-// cannot enumerate accounts. Only a token hash is logged: delivery belongs to the recovery
-// integration, and a log sink must never become a credential store.
+// handleForgotPassword answers identically whether or not the address exists, so it cannot
+// enumerate accounts. Only a token hash is logged; delivery belongs to the recovery integration.
 func (s *Server) handleForgotPassword(w http.ResponseWriter, r *http.Request) {
 	var req forgotPasswordRequest
 	if err := DecodeJSON(r, &req); err != nil {
@@ -169,9 +166,7 @@ func (s *Server) handleForgotPassword(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if found {
-		// The reset token itself is never logged. Delivery is an operator concern for now;
-		// the token hash is deliberately absent so a log sink cannot become a credential
-		// oracle, and the address never reaches this line.
+		// The reset token is never logged, so a log sink cannot become a credential oracle.
 		s.logger.Warn("password reset token issued",
 			slog.String("note", "deliver through the configured recovery channel; it expires in one hour"))
 	}
@@ -202,9 +197,8 @@ func (s *Server) handleResetPassword(w http.ResponseWriter, r *http.Request) {
 
 // ── Google sign-in ───────────────────────────────────────────────────────────
 
-// handleGoogleURL returns the provider redirect for the browser to navigate to. The state is a
-// signed, single-use value binding this browser to the callback, which stops a forged
-// callback from logging someone into another account.
+// handleGoogleURL returns the provider redirect. The state is signed and single-use, binding
+// this browser to the callback so a forged callback cannot sign someone into another account.
 func (s *Server) handleGoogleURL(w http.ResponseWriter, r *http.Request) {
 	if !s.auth.GoogleEnabled() {
 		WriteErrorCode(w, http.StatusNotImplemented, "oauth_not_configured",
@@ -231,8 +225,8 @@ func (s *Server) handleGoogleURL(w http.ResponseWriter, r *http.Request) {
 }
 
 // handleGoogleStart is the browser-facing entry point: it sets the nonce cookie and redirects
-// to the provider, so a native client's Custom Tab completes the web flow. google/url from
-// inside an app cannot work: its cookie never reaches the callback browser's jar.
+// to the provider. google/url cannot work from an app, whose cookie never reaches the callback
+// browser's jar.
 func (s *Server) handleGoogleStart(w http.ResponseWriter, r *http.Request) {
 	if !s.auth.GoogleEnabled() {
 		WriteErrorCode(w, http.StatusNotImplemented, "oauth_not_configured",
@@ -258,10 +252,9 @@ func (s *Server) handleGoogleStart(w http.ResponseWriter, r *http.Request) {
 	http.Redirect(w, r, s.auth.GoogleAuthURL(state), http.StatusFound)
 }
 
-// returnTargets is the only place AppLinkOrigins joins FrontendOrigins. Keeping the merge here means
-// CORS and every other origin check stay limited to the web client's own origins. The API's own
-// PUBLIC_URL is always a safe return target, which is what lets /desktop-auth complete a Google
-// handoff when FRONTEND_URL lists only a separate site.
+// returnTargets is the only place AppLinkOrigins joins FrontendOrigins, so CORS and every other
+// origin check stay limited to the web client's own origins. PUBLIC_URL is always a safe return
+// target.
 func (s *Server) returnTargets() []string {
 	merged := make([]string, 0, len(s.cfg.FrontendOrigins)+len(s.cfg.AppLinkOrigins)+1)
 	if s.cfg.PublicURL != "" {
@@ -337,7 +330,7 @@ func (s *Server) handleGoogleCallback(w http.ResponseWriter, r *http.Request) {
 	http.Redirect(w, r, target+separator+"auth_code="+url.QueryEscape(authCode), http.StatusFound)
 }
 
-// handleConsumeCode trades a one-time OAuth code for a session.
+// consumeCodeRequest is the POST /api/auth/consume-code body.
 type consumeCodeRequest struct {
 	Code string `json:"code"`
 }
@@ -370,8 +363,8 @@ func (s *Server) frontendReturn(target string) string {
 	return ""
 }
 
-// sanitizeReturnTarget accepts a post-login redirect only when it names one of the
-// configured origins, so the callback cannot be turned into an open redirect.
+// sanitizeReturnTarget accepts a post-login redirect only when it names a configured origin,
+// so the callback cannot be turned into an open redirect.
 func sanitizeReturnTarget(raw string, allowed []string) string {
 	trimmed := strings.TrimSpace(raw)
 	if trimmed == "" {
@@ -395,9 +388,9 @@ func sanitizeReturnTarget(raw string, allowed []string) string {
 
 // ── Desktop pairing ──────────────────────────────────────────────────────────
 
-// desktopTokenResponse is the exact wire shape the Qt player parses. It reads access_token,
-// refresh_token, session_id and prefers access_token_expires_at over expires_in, so both
-// fields are sent and the timestamp is ISO-8601.
+// desktopTokenResponse is the exact wire shape the Qt player parses: it reads access_token,
+// refresh_token and session_id, and prefers the ISO-8601 timestamps over expires_in, so both
+// are sent.
 type desktopTokenResponse struct {
 	TokenType             string `json:"token_type"`
 	AccessToken           string `json:"access_token"`
@@ -425,9 +418,9 @@ type desktopExchangeRequest struct {
 	DeviceName string `json:"deviceName"`
 }
 
-// handleDesktopExchange pairs a desktop player with a signed-in account. The credential is
-// either the browser session token or the bridge JWT from /api/auth/desktop/bridge-token;
-// both are issued by this backend, so the exchange proves control of a logged-in browser.
+// handleDesktopExchange pairs a desktop player with a signed-in account. The credential is a
+// browser session token or the bridge JWT; both are issued here, so the exchange proves a
+// logged-in browser.
 func (s *Server) handleDesktopExchange(w http.ResponseWriter, r *http.Request) {
 	bearer := s.credential(r)
 	if bearer == "" {
@@ -498,16 +491,15 @@ func (s *Server) handleDesktopRevoke(w http.ResponseWriter, r *http.Request) {
 }
 
 // handleBridgeToken mints the credential a signed-in browser hands to a desktop player over
-// its loopback callback. The desktop decodes it as a JWT and reads sub, sid and exp, then
-// posts the same value to /api/auth/desktop/exchange.
+// its loopback callback; the desktop posts it to /api/auth/desktop/exchange.
 func (s *Server) handleBridgeToken(w http.ResponseWriter, r *http.Request) {
 	principal, ok := s.requirePrincipal(w, r)
 	if !ok {
 		return
 	}
 	if !principal.IsWeb() {
-		// A desktop token is already device-bound; handing it to another device would pair
-		// two machines to one session.
+		// A desktop token is already device-bound; handing it on would pair two machines
+		// to one session.
 		WriteError(w, http.StatusConflict, "Sign in in a browser first to pair a desktop device.")
 		return
 	}
@@ -604,15 +596,15 @@ func (s *Server) writeAuthError(w http.ResponseWriter, err error, fallback strin
 	}
 }
 
-// serverError logs the real cause and answers with a generic message, so internals such as
-// a connection string or a file path never reach a client.
+// serverError logs the real cause and answers with a generic message, so internals such as a
+// connection string never reach a client.
 func (s *Server) serverError(w http.ResponseWriter, message string, err error) {
 	s.logger.Error("request failed", slog.String("error", err.Error()), slog.String("message", message))
 	WriteErrorDetails(w, http.StatusInternalServerError, message, safeDetail(err, s.cfg.DebugErrors))
 }
 
 // safeDetail exposes the underlying error only when the operator explicitly enabled
-// DEBUG_ERRORS. Environment name alone is not consent to leak internals to clients.
+// DEBUG_ERRORS; the environment name alone is not consent to leak internals.
 func safeDetail(err error, expose bool) string {
 	if !expose || err == nil {
 		return ""

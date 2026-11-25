@@ -5,19 +5,16 @@ import (
 	"time"
 )
 
-// ErrNotFound is returned by every repository method that expected exactly one row.
-// Handlers map it to 404 (or 401 for credentials), so it must stay distinct from a
-// real database failure.
+// ErrNotFound is returned when a query expected exactly one row. Handlers map it to 404
+// (or 401 for credentials), so it must stay distinct from a database failure.
 var ErrNotFound = errors.New("repository: row not found")
 
-// ErrConflict is returned when a compare-and-set update matched no row, for example
-// a download job that left its expected state before the transition ran. Handlers
-// map it to 409.
+// ErrConflict is returned when a compare-and-set matched no row, e.g. a download job
+// that left its expected state before the transition ran. Handlers map it to 409.
 var ErrConflict = errors.New("repository: conflicting state")
 
-// User is an account row. IDs are strings rather than uuid types because every
-// client speaks them as JSON strings and every query casts them explicitly; this
-// keeps the transport, storage and log representations identical.
+// User is an account row. IDs stay strings because clients speak them as JSON and
+// queries cast explicitly, keeping transport, storage and logs identical.
 type User struct {
 	ID              string     `json:"id"`
 	Email           string     `json:"email"`
@@ -56,8 +53,7 @@ func (u *User) Public() *PublicUser {
 	}
 }
 
-// WebSession is a site/browser session. TokenHash is the only stored form of the
-// credential; the plaintext token exists solely in the login response.
+// WebSession is a browser session. TokenHash is the only stored form of the credential.
 type WebSession struct {
 	ID         string     `json:"id"`
 	UserID     string     `json:"user_id"`
@@ -99,8 +95,7 @@ type LinkedIdentity struct {
 	AvatarURL      string `json:"avatar_url"`
 }
 
-// Show is a series row in the indexed library. Field names match the JSON keys both clients
-// already parse, so nothing is renamed at the HTTP edge.
+// Show is a series row; field names match the JSON keys both clients already parse.
 type Show struct {
 	ID               string    `json:"id"`
 	Title            string    `json:"title"`
@@ -137,15 +132,13 @@ type Episode struct {
 	CreatedAt         time.Time `json:"created_at"`
 }
 
-// ShowWithEpisodes is the GET /api/shows/{id} payload: the show object with its
-// episode list attached, matching the flat shape both clients expect.
+// ShowWithEpisodes is the GET /api/shows/{id} payload with its episode list attached.
 type ShowWithEpisodes struct {
 	Show
 	Episodes []Episode `json:"episodes"`
 }
 
-// WatchlistItem mirrors the watchlist row shape clients read: anime_data is the
-// complete show object the client stored, returned unchanged.
+// WatchlistItem mirrors the watchlist row; anime_data is the client's stored show object.
 type WatchlistItem struct {
 	ID        string    `json:"id"`
 	UserID    string    `json:"user_id"`

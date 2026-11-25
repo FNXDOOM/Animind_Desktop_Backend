@@ -264,8 +264,6 @@ func TestAdminSessionRevocation(t *testing.T) {
 	}
 }
 
-// TestLegacyRescanRouteIsGone pins the removal of the old website's scan endpoint. The
-// mobile app uses /api/admin/scan and the console uses /admin/library/scan.
 func TestDesktopAuthPageRendersForAnonymous(t *testing.T) {
 	server := testServer(t)
 	recorder := adminFormRequest(t, server, http.MethodGet, "/desktop-auth", nil)
@@ -283,7 +281,6 @@ func TestDesktopAuthPageRendersForAnonymous(t *testing.T) {
 func TestDesktopAuthPairsAnyAccount(t *testing.T) {
 	server, _, service := sharedHarness(t)
 	acct := signUpAccount(t, service) // not an administrator
-
 	page := adminFormRequest(t, server, http.MethodGet, "/desktop-auth", nil)
 	csrf := adminCookie(page, adminCSRFCookie)
 	if csrf == nil {
@@ -321,6 +318,7 @@ func TestDesktopAuthPairsAnyAccount(t *testing.T) {
 	}
 }
 
+// TestLegacyRescanRouteIsGone pins the removal of the old website's scan endpoint.
 func TestLegacyRescanRouteIsGone(t *testing.T) {
 	server := testServer(t)
 	recorder := adminFormRequest(t, server, http.MethodPost, "/api/rescan", nil)

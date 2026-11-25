@@ -17,10 +17,8 @@ import (
 )
 
 // The credential cache is only interesting in what it must never do: answer for a credential
-// the database has already rejected, or hide a change the database has already made.
-//
-// These run against a real Postgres so the revocations are real SQL, and against Redis as
-// well when REDIS_TEST_URL is set, so the eviction is the real group index rather than a map.
+// the database has already rejected, or hide a change the database has already made. These run
+// against a real Postgres, and Redis too when REDIS_TEST_URL is set.
 
 const testPassword = "Corr3ct-Horse-Battery"
 
@@ -106,9 +104,8 @@ func backendBuilders(t *testing.T) map[string]func(*testing.T) cache.Store {
 
 func discard() *slog.Logger { return slog.New(slog.NewTextHandler(io.Discard, nil)) }
 
-// warm signs a credential in and resolves it twice, so the second resolution demonstrably
-// came from the cache. It fails the test when nothing was cached: otherwise every eviction
-// assertion below could pass simply because the cache never held anything.
+// warm signs a credential in and resolves it twice, so the second resolution came from the
+// cache. It fails when nothing was cached, or eviction assertions could pass vacuously.
 func warm(t *testing.T, service *Service, store cache.Store, email string) (*LoginResult, *Principal) {
 	t.Helper()
 	ctx := context.Background()
@@ -257,9 +254,8 @@ func TestRevocationPathsEvict(t *testing.T) {
 					t.Fatal("the desktop token was never cached")
 				}
 
-				// The access token is a signed {user, session, expiry} tuple, so refreshing
-				// inside the same second re-mints the identical string. Waiting makes this
-				// test mean what it says: the previous credential must stop working.
+				// The access token is a signed {user, session, expiry} tuple, so refreshing in the
+				// same second re-mints the identical string. Waiting makes the assertion meaningful.
 				time.Sleep(1100 * time.Millisecond)
 				rotated, err := service.DesktopRefresh(ctx, pair.RefreshToken)
 				if err != nil {
@@ -302,9 +298,8 @@ func TestRevocationPathsEvict(t *testing.T) {
 	}
 }
 
-// TestIdentityChangesAreVisibleImmediately covers the writes that do not end a credential but
-// do change what it means: an admin flag and a username. Both are part of the cached
-// principal, so without eviction the API would keep answering the old identity.
+// TestIdentityChangesAreVisibleImmediately covers writes that do not end a credential but change
+// what it means: an admin flag and a username. Both are cached, so eviction must make them visible.
 func TestIdentityChangesAreVisibleImmediately(t *testing.T) {
 	for name, build := range backendBuilders(t) {
 		t.Run(name, func(t *testing.T) {
@@ -347,12 +342,9 @@ func TestIdentityChangesAreVisibleImmediately(t *testing.T) {
 	}
 }
 
-// TestCachedCredentialCannotOutliveItsRow is the TTL bound that makes the whole cache safe: an
-// entry may never vouch for a session longer than the row itself does.
-//
-// The row here expires in two seconds while the configured cache TTL is a minute. If
-// remember() ignored the row's expiry, this would fail four seconds later with a cached
-// answer for a session the database has already let go.
+// TestCachedCredentialCannotOutliveItsRow pins the TTL bound that makes the cache safe: an entry
+// may never vouch for a session longer than the row itself does. The row here expires in two
+// seconds while the cache TTL is a minute; a cached answer four seconds later would fail.
 func TestCachedCredentialCannotOutliveItsRow(t *testing.T) {
 	base := config.CacheConfig{
 		Namespace: "animind-auth-test", SessionTTL: time.Minute, MetadataTTL: time.Hour,

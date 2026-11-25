@@ -15,9 +15,8 @@ import (
 // same selection rules as video so an episode and its subs land together.
 var subtitleExts = []string{".srt", ".ass", ".ssa", ".vtt", ".sub"}
 
-// videoExtensions mirrors config.ScannerConfig's VIDEO_EXTENSIONS default
-// (lowercase, no dot): DownloadsConfig carries no env-tuned list, so the
-// allowlist is pinned to the same defaults the scanner ships with.
+// videoExtensions mirrors config.ScannerConfig's VIDEO_EXTENSIONS default, lowercase and
+// dotless, because DownloadsConfig carries no env-tuned list.
 var videoExtensions = []string{"mkv", "mp4", "avi", "webm", "m4v"}
 
 var videoExtensionSet = extensionSet(videoExtensions)
@@ -82,9 +81,8 @@ func validateTorrentPath(path string) error {
 	return nil
 }
 
-// escapesTorrentRoot reports whether a cleaned entry climbs out of the torrent
-// root. Such entries are skipped, not fatal: a weird layout says nothing about
-// the rest of the torrent.
+// escapesTorrentRoot reports whether a cleaned entry climbs out of the torrent root. Such
+// entries are skipped, not fatal: a weird layout says nothing about the rest of the torrent.
 func escapesTorrentRoot(path string) bool {
 	cleaned := filepath.Clean(path)
 	return filepath.IsAbs(cleaned) || cleaned == ".." ||
@@ -96,9 +94,8 @@ func selectableExt(path string) bool {
 	return selectableExtensions[strings.TrimPrefix(strings.ToLower(filepath.Ext(path)), ".")]
 }
 
-// SelectableFiles returns the allowlisted entries inside the torrent root,
-// keeping the largest MaxFiles by size (non-positive = no cap) in ascending
-// index order. Device names and overlong paths error; junk is merely skipped.
+// SelectableFiles returns the allowlisted entries inside the torrent root, keeping the largest
+// MaxFiles by size in ascending index order. Device names and overlong paths error.
 func SelectableFiles(files []EngineFile, cfg config.DownloadsConfig) ([]int, error) {
 	type candidate struct {
 		index int

@@ -18,14 +18,13 @@ import (
 	"animind-backend-go/internal/syncplay"
 )
 
-// The Prometheus listener: what the Grafana dashboard reads. It answers on its own port so it
-// never shares a route table with the public API, and it is unauthenticated — safe only
-// because nginx does not proxy it and compose does not publish it.
+// The Prometheus listener: what the Grafana dashboard reads. It answers on its own
+// unauthenticated port, safe only because nginx does not proxy it and compose does not publish it.
 
 const (
 	metricsNamespace = "animind"
-	// unmatchedRoute collapses requests that hit no route. Without it a path scan would
-	// mint a fresh label value per probe and turn the metrics endpoint into the outage.
+	// unmatchedRoute collapses requests that hit no route, so a path scan cannot mint
+	// unbounded label values.
 	unmatchedRoute = "unmatched"
 )
 
@@ -34,12 +33,10 @@ type metrics struct {
 	registry *prometheus.Registry
 	requests *prometheus.CounterVec
 	duration *prometheus.HistogramVec
-	// inflight counts handlers currently running, which is how a stuck media stream shows up
-	// before it shows up as latency.
+	// inflight counts running handlers, which shows a stuck media stream before latency does.
 	inflight *prometheus.GaugeVec
-	// downloads collectors (spec §7.10). The gauge is set by the manager's progress
-	// ticker, the counters by its progress and failure paths; the histogram is
-	// observed by the search handler around each indexer call.
+	// downloads collectors (spec §7.10): the gauge is set by the manager's progress ticker,
+	// the counters by its drive paths, the histogram around each indexer call.
 	downloadsActive prometheus.Gauge
 	downloadsBytes  prometheus.Counter
 	downloadsFailed prometheus.Counter
@@ -77,8 +74,7 @@ func newMetrics(store cache.Store, hub *syncplay.Hub, db *repository.Store, fall
 		searchSeconds: prometheus.NewHistogram(prometheus.HistogramOpts{
 			Name: "torrent_search_seconds",
 			Help: "End-to-end duration of one /api/torrents/search call, including indexer fan-out.",
-			// A cache hit answers in microseconds, a cold indexer fan-out in
-			// seconds; the buckets must hold both ends without flattening them.
+			// A cache hit answers in microseconds, a cold fan-out in seconds; hold both ends.
 			Buckets: []float64{.001, .005, .01, .025, .05, .1, .25, .5, 1, 2.5, 5, 10},
 		}),
 	}
@@ -89,9 +85,7 @@ func newMetrics(store cache.Store, hub *syncplay.Hub, db *repository.Store, fall
 		collectors.NewProcessCollector(collectors.ProcessCollectorOpts{}),
 	)
 	if jobs != nil {
-		// The manager publishes into the same registry: active is set from
-		// CountActiveDownloadJobs(nil) on each progress tick, bytes_total and
-		// failed_total increment on the manager's own transitions.
+		// The manager publishes into the same registry: active, bytes_total and failed_total.
 		m.registry.MustRegister(m.downloadsActive, m.downloadsBytes, m.downloadsFailed)
 		jobs.SetObserver(m)
 	}
@@ -139,8 +133,8 @@ func newMetrics(store cache.Store, hub *syncplay.Hub, db *repository.Store, fall
 	return m
 }
 
-// The downloads.Observer half of metrics: the manager calls these from its drive
-// loops, so they must stay allocation-free and never block on the store.
+// The downloads.Observer half of metrics: the manager calls these from its drive loops, so
+// they must stay allocation-free and never block on the store.
 
 // ActiveJobs records the manager's CountActiveDownloadJobs(nil) snapshot.
 func (m *metrics) ActiveJobs(n int) { m.downloadsActive.Set(float64(n)) }
@@ -153,8 +147,8 @@ func (m *metrics) JobFailed() { m.downloadsFailed.Inc() }
 
 var _ downloads.Observer = (*metrics)(nil)
 
-// cacheCollector exports the store's outcome counters as proper monotonic counters, which is
-// what lets a dashboard graph a hit ratio with rate() instead of guessing from gauges.
+// cacheCollector exports the store's outcome counters as monotonic counters, so a dashboard
+// can graph a hit ratio with rate() instead of guessing from gauges.
 type cacheCollector struct {
 	store cache.Store
 	// fallback is nil when counting never leaves this process.
@@ -188,20 +182,17 @@ func (c *cacheCollector) Collect(ch chan<- prometheus.Metric) {
 		ch <- prometheus.MustNewConstMetric(cacheOpsDesc, prometheus.CounterValue,
 			float64(entry.value), entry.result, backend)
 	}
-	// The fallback counter lives on the limiter, not the store: it counts verdicts, which is
-	// the thing an operator needs to see climb during a Redis incident.
+	// The fallback counter lives on the limiter, not the store, and must climb during a Redis
+	// incident.
 	if c.fallback != nil {
 		ch <- prometheus.MustNewConstMetric(rateFallbackDesc, prometheus.CounterValue,
 			float64(c.fallback.Fallbacks()))
 	}
 }
 
-// observeRequests labels each request with the matched route pattern.
-//
-// The pattern is read after the handler runs because chi fills it in while routing; sampling it
-// on entry would label everything "unmatched". A watch-party socket records the upgrade, not
-// the connection's life, since the hub hijacks and returns — for long-lived sockets read
-// `animind_watchparty_peers` instead.
+// observeRequests labels each request with the matched route pattern, read after the handler
+// runs because chi fills it in while routing. A watch-party socket records the upgrade, not the
+// connection's life; for long-lived sockets read `animind_watchparty_peers` instead.
 func (s *Server) observeRequests(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if s.metrics == nil {
@@ -221,8 +212,7 @@ func (s *Server) observeRequests(next http.Handler) http.Handler {
 		}
 		seconds := time.Since(start).Seconds()
 		s.metrics.duration.WithLabelValues(route, r.Method).Observe(seconds)
-		// The exact code, not a class: a dashboard that lumps 401 and 429 together cannot
-		// tell a broken client from a limiter doing its job.
+		// The exact code, not a class: a dashboard must tell a broken client from a limiter.
 		s.metrics.requests.WithLabelValues(route, r.Method, strconv.Itoa(recorder.status)).Inc()
 	})
 }
@@ -245,9 +235,8 @@ func (s *Server) metricsHandler() http.Handler {
 	return mux
 }
 
-// libraryCollector exports the size of the catalog. COUNT queries are cheap on a personal
-// library and expensive on a big one, so the answer is held for a minute and a scrape does
-// not necessarily go to Postgres.
+// libraryCollector exports the size of the catalog, cached for a minute so a scrape does not
+// necessarily go to Postgres.
 type libraryCollector struct {
 	db      *repository.Store
 	stale   time.Duration
@@ -281,8 +270,7 @@ func (c *libraryCollector) Describe(ch chan<- *prometheus.Desc) {
 func (c *libraryCollector) Collect(ch chan<- prometheus.Metric) {
 	c.mu.Lock()
 	if time.Since(c.at) > c.stale {
-		// Bounded: a scrape must not hang on a database that has stopped answering, and this
-		// lock is held while the query runs.
+		// Bounded: a scrape must not hang on a database that has stopped answering.
 		ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
 		counts, err := c.db.CountLibrary(ctx)
 		cancel()

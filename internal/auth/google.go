@@ -15,11 +15,11 @@ import (
 	"animind-backend-go/internal/config"
 )
 
-// Google sign-in, spoken directly to Google's OAuth 2.0 endpoints because a hosted
-// identity provider would break this backend's no-third-party rule.
+// Google sign-in, spoken directly to Google's OAuth 2.0 endpoints because a hosted identity
+// provider would break this backend's no-third-party rule.
 //
-// Accounts match on Google subject first and email second, so a user who signed up with
-// a password and later clicks Google gets one account rather than two.
+// Accounts match on Google subject first and email second, so a password signup who later
+// clicks Google keeps one account rather than two.
 
 const (
 	googleAuthEndpoint     = "https://accounts.google.com/o/oauth2/v2/auth"
@@ -54,8 +54,8 @@ func NewGoogle(cfg *config.Config, logger *slog.Logger) *Google {
 	enabled := a.GoogleClientID != "" && a.GoogleClientSecret != ""
 	redirect := a.GoogleRedirectURL
 	if redirect == "" {
-		// The callback is served by this API, not by the browser frontend. PublicIssuer
-		// prefers PUBLIC_URL and only falls back to a frontend origin for local setups.
+		// The callback is served by this API, not the browser frontend; PublicIssuer prefers
+		// PUBLIC_URL and falls back to a frontend origin only for local setups.
 		redirect = strings.TrimSuffix(cfg.PublicIssuer(), "/") + "/api/auth/google/callback"
 	}
 	return &Google{
@@ -164,10 +164,9 @@ func (g *Google) Exchange(ctx context.Context, code string) (*GoogleProfile, err
 	return &profile, nil
 }
 
-// validateGoogleProfile accepts only identities whose email address Google has
-// explicitly verified. The email is used to link an existing local account, so
-// accepting an unverified claim here could attach an identity to an account its
-// holder does not own.
+// validateGoogleProfile accepts only identities whose email Google has explicitly verified.
+// The email can link an existing local account, so an unverified claim could attach an
+// identity to an account its holder does not own.
 func validateGoogleProfile(profile *GoogleProfile) error {
 	if profile == nil || strings.TrimSpace(profile.Subject) == "" || NormalizeEmail(profile.Email) == "" {
 		return ErrGoogleRejected

@@ -1,13 +1,7 @@
 package downloads
 
-// Snapshot is the HTTP layer's read-only view for GET /api/downloads/{id}.
-// The manager owns the handles, so handlers never reach into the engine, and
-// these are the drive loop's own reads, so running concurrently is safe.
-
-// Snapshot returns the live engine view of one job: transfer stats plus the
-// per-file listing. ok is false when the job is not being driven in this
-// session (post-restart, before metadata, or terminal) or has no handle yet;
-// callers then answer from the stored row alone. Files are nil without metadata.
+// Snapshot returns the live engine view of one job: stats plus files. ok is false when the job
+// is not driven in this session or has no handle; Files are nil without metadata.
 func (m *Manager) Snapshot(jobID string) (Stats, []EngineFile, bool) {
 	j := m.lookup(jobID)
 	if j == nil {

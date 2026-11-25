@@ -15,8 +15,7 @@ import (
 )
 
 func testParams() Argon2Params {
-	// Deliberately cheap so the suite stays fast; production defaults are stronger and are
-	// asserted separately in TestDefaultArgon2Params.
+	// Deliberately cheap so the suite stays fast; production defaults are asserted separately.
 	return Argon2Params{Memory: 2048, Time: 1, Threads: 1, KeyLen: 32}
 }
 
@@ -53,8 +52,8 @@ func TestHashAndVerifyPassword(t *testing.T) {
 }
 
 func TestHashPasswordRejectsWeakInput(t *testing.T) {
-	// The returned error names the rule as well as the sentinel, so callers use errors.Is and
-	// the message is fit to show in a form.
+	// The returned error names the rule as well as the sentinel, so calls use errors.Is and the
+	// message is fit to show in a form.
 	if _, err := HashPassword("short", testParams()); !errors.Is(err, ErrWeakPassword) {
 		t.Errorf("short password: got %v, want ErrWeakPassword", err)
 	}
@@ -158,8 +157,7 @@ func TestDesktopAccessTokenRoundTrip(t *testing.T) {
 		t.Errorf("claims = %+v, want user %q session %q", claims, userID, sessionID)
 	}
 
-	// The wire format is a contract with the shipped player, so the exact layout is pinned:
-	// payload decodes to v1.<user>.<session>.<exp>.
+	// The wire format is a contract with the shipped player, pinned here: v1.<user>.<session>.<exp>.
 	body := strings.TrimPrefix(token, DesktopAccessPrefix)
 	payloadPart := body[:strings.LastIndex(body, ".")]
 	raw, err := base64.RawURLEncoding.DecodeString(payloadPart)

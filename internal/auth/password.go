@@ -1,16 +1,8 @@
-// Package auth implements the backend's own authentication: password hashing, token
-// issuance and verification, and the session lifecycle for both clients.
-//
-// Two token families, because the two clients need different things:
-//   - Desktop (adk_/adr_): an HMAC-signed access token verifiable without a database
-//     read, paired with a rotating opaque refresh token. Both are pinned in
-//     desktop_auth_sessions, so revocation is instant, and the format is what the
-//     shipped Qt player parses.
-//   - Web (as_): an opaque bearer token for web clients, stored only as a SHA-256 hash,
-//     with sliding expiry and a remember-me lifetime.
-//
-// Passwords use argon2id in the PHC string format so parameters can be raised later
-// without a migration. Verification is constant-time throughout.
+// Package auth implements the backend's own authentication: password hashing, token issuance
+// and verification, and the session lifecycle for both clients. Desktop tokens (adk_/adr_) are
+// HMAC-signed and pinned in desktop_auth_sessions for instant revocation; web tokens (as_) are
+// opaque and stored only as a SHA-256 hash. Passwords use argon2id in PHC string format so the
+// parameters can be raised without a migration, and verification is constant-time.
 package auth
 
 import (
@@ -25,8 +17,7 @@ import (
 	"golang.org/x/crypto/argon2"
 )
 
-// Password hashing errors. Callers map these to 400/401 responses; none of them
-// should ever be logged with the password attached.
+// Password hashing errors; none should ever be logged with the password attached.
 var (
 	ErrWeakPassword = errors.New("password is too weak")
 	ErrInvalidHash  = errors.New("stored password hash is malformed")
@@ -38,8 +29,7 @@ const (
 	maxPasswordLength = 256
 )
 
-// Argon2Params tunes the password hash. Defaults follow the OWASP recommended
-// "second choice" (m=64MiB, t=3, p=4).
+// Argon2Params tunes the password hash; defaults follow OWASP's "second choice" (m=64MiB, t=3, p=4).
 type Argon2Params struct {
 	Memory  uint32
 	Time    uint32
@@ -52,12 +42,8 @@ func DefaultArgon2Params() Argon2Params {
 	return Argon2Params{Memory: 65536, Time: 3, Threads: 4, KeyLen: 32}
 }
 
-// HashPassword derives an argon2id hash encoded as:
-//
-//	argon2id$v=19$m=<memory>,t=<time>,p=<threads>$<b64 salt>$<b64 hash>
-//
-// The 16 fresh salt bytes keep two users with the same password from sharing
-// comparable bytes in the database.
+// HashPassword derives an argon2id hash in PHC string format. The 16 fresh salt bytes keep two
+// users with the same password from sharing comparable bytes in the database.
 func HashPassword(password string, params Argon2Params) (string, error) {
 	if err := ValidatePasswordStrength(password); err != nil {
 		return "", err
@@ -77,9 +63,8 @@ func HashPassword(password string, params Argon2Params) (string, error) {
 	), nil
 }
 
-// VerifyPassword checks a password against a stored PHC argon2id hash in constant time.
-// It re-derives using the parameters embedded in the hash, so hashes made under older,
-// weaker settings keep working after the configured defaults are raised.
+// VerifyPassword checks a password against a stored hash in constant time. It re-derives using
+// the parameters embedded in the hash, so hashes made under weaker settings keep working.
 func VerifyPassword(password, stored string) (needsRehash bool, err error) {
 	params, salt, hash, err := parseArgon2Hash(stored)
 	if err != nil {
@@ -89,8 +74,7 @@ func VerifyPassword(password, stored string) (needsRehash bool, err error) {
 	if subtle.ConstantTimeCompare(dk, hash) != 1 {
 		return false, ErrHashMismatch
 	}
-	// Ask the caller to upgrade the stored hash when it was created with weaker
-	// parameters than we now require.
+	// Ask the caller to upgrade the stored hash when it was created with weaker parameters.
 	target := DefaultArgon2Params()
 	return params.Memory != target.Memory || params.Time != target.Time ||
 		params.Threads != target.Threads || len(hash) != int(target.KeyLen), nil

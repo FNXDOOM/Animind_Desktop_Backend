@@ -8,8 +8,8 @@ import (
 	"animind-backend-go/internal/repository"
 )
 
-// These four rules decide what a viewer sees in their list, and they used to live inline in
-// handlers where testing them meant a database, a session and a request.
+// These rules decide what a viewer sees in their list; they are pure, so testing them needs
+// no database, session or request.
 
 func TestNormalizeWatchlistStatus(t *testing.T) {
 	cases := []struct {
@@ -46,8 +46,8 @@ func TestNormalizeWatchlistStatus(t *testing.T) {
 }
 
 func TestNormalizeProgress(t *testing.T) {
-	// A client that seeks backwards momentarily can report a negative position; storing it
-	// would make the next resume invalid, so it clamps rather than rejects.
+	// A client seeking backwards can report a negative position; storing it would make the
+	// next resume invalid, so it clamps rather than rejects.
 	id, index, seconds, err := normalizeProgress(" 153564 ", 3, -12)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
@@ -90,22 +90,20 @@ func TestDedupeShowsKeepsTheRicherRow(t *testing.T) {
 	if len(deduped) != 1 {
 		t.Fatalf("expected one show, got %d: %+v", len(deduped), deduped)
 	}
-	// The linked row wins regardless of which arrived first, and the survivor keeps the
-	// position of its group so a title-ordered page stays ordered.
+	// The linked row wins regardless of arrival order, and the survivor keeps its group's
+	// position so a title-ordered page stays ordered.
 	if deduped[0].ID != "a" {
 		t.Errorf("kept %q, want the row with an AniList link and artwork", deduped[0].ID)
 	}
 
-	// Two rows carrying different AniList ids under one title are a data anomaly: only one
-	// link can be right, and a card that appears twice is worse than a card whose artwork may
-	// be the wrong studio's. The title pass keeps the richer row.
+	// Two rows with different AniList ids under one title are a data anomaly: only one link
+	// can be right, and the title pass keeps the richer row.
 	other := repository.Show{ID: "c", Title: "Frieren", AnilistID: intP(99999)}
 	if got := dedupeShows([]repository.Show{linked, other}); len(got) != 1 {
 		t.Errorf("same title with two anilist ids produced %d cards, want 1", len(got))
 	}
 
-	// Distinct titles that share one AniList id (the same entry imported twice under
-	// different spellings) collapse on the external id.
+	// Distinct titles sharing one AniList id (the same entry imported twice) collapse on it.
 	sameLinkedOtherSpelling := repository.Show{ID: "f", Title: "Frieren: Mahoutsukai no Tabiji", AnilistID: intP(51140)}
 	if got := dedupeShows([]repository.Show{linked, sameLinkedOtherSpelling}); len(got) != 1 {
 		t.Errorf("one anilist id produced %d cards, want 1", len(got))
@@ -117,8 +115,7 @@ func TestDedupeShowsKeepsTheRicherRow(t *testing.T) {
 		t.Errorf("distinct shows collapsed: %+v", got)
 	}
 
-	// No link at all: normalized title is the identity, so punctuation and case differences
-	// still collapse.
+	// No link: normalized title is the identity, so punctuation and case differences collapse.
 	reZero := repository.Show{ID: "d", Title: "Re:Zero"}
 	reZeroAlt := repository.Show{ID: "e", Title: "RE ZERO"}
 	if got := dedupeShows([]repository.Show{reZero, reZeroAlt}); len(got) != 1 {

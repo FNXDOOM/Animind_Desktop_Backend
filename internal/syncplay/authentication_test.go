@@ -68,9 +68,8 @@ func TestWebSocketApplicationEventsRequireAuthentication(t *testing.T) {
 	}
 	_ = conn.Close()
 
-	// Authenticate a fresh connection after proving the pre-auth event was ignored. A client
-	// never sends application events before CONNECT, so this also keeps the regression focused
-	// on the normal authenticated wire protocol.
+	// Authenticate a fresh connection after proving the pre-auth event was ignored; a client
+	// never sends application events before CONNECT, so this stays on the normal wire protocol.
 	conn, _, err = websocket.DefaultDialer.Dial(url, nil)
 	if err != nil {
 		t.Fatalf("dial authenticated websocket: %v", err)

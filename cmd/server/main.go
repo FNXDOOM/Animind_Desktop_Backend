@@ -1,10 +1,8 @@
 // Command server runs the AniMind backend: the JSON API for the Android app and the desktop
-// player, plus the embedded admin console. It also serves the /desktop-auth handoff page, and
-// is configured entirely through environment variables.
+// player, plus the embedded admin console and the /desktop-auth handoff page.
 //
-// Startup order is deliberate: configuration, the database and its migrations, the services
-// that read from it, the socket hub, then HTTP. Anything that can fail permanently fails
-// before the listener opens, so a half-configured server never accepts traffic.
+// Startup fails fast: anything that can fail permanently fails before the listener opens, so a
+// half-configured server never accepts traffic.
 package main
 
 import (
@@ -116,9 +114,8 @@ func main() {
 		logger.Info("watch parties enabled", slog.String("path", syncplay.SocketPath))
 	}
 
-	// The manager's publishes and the SSE handler's subscriptions share one event hub, and
-	// trending is shared the same way: a second instance would silently fork the counts. The
-	// real engine exists only in local mode; noop keeps the manager's drive loops harmless.
+	// One event hub and one trending counter are shared by publishers and subscribers; a second
+	// instance would silently fork the counts. Noop keeps the manager's drive loops harmless.
 	eventHub := downloads.NewEventHub()
 	trending := torrent.NewTrending(time.Now)
 
@@ -133,16 +130,14 @@ func main() {
 	} else {
 		engine = downloads.NewNoopEngine()
 	}
-	// libraryRoot must be the library root itself: DOWNLOADS_DIR is only
-	// guaranteed to live under it.
+	// libraryRoot must be the library root itself: DOWNLOADS_DIR only lives under it.
 	downloadManager := downloads.NewManager(store, engine, cfg.Downloads, cfg.Storage.LocalPath, scannerService, eventHub, nil)
 	if err := downloadManager.ResumeFromStore(ctx); err != nil {
 		logger.Warn("download resume did not finish; jobs stay as stored",
 			slog.String("error", err.Error()))
 	}
 
-	// Search needs a Torznab endpoint; without one the service is never
-	// constructed and the handler answers 501.
+	// Search needs a Torznab endpoint; without one the service stays nil and the handler answers 501.
 	torrentService := buildTorrentService(cfg, metadataService, stateCache, trending)
 
 	deps := httpx.Deps{
@@ -175,8 +170,7 @@ func main() {
 		serverErrors <- server.ListenAndServe()
 	}()
 
-	// A first scan on boot is opt-in; when enabled it runs in the background so the API is
-	// reachable immediately.
+	// The startup scan is opt-in and runs in the background so the API is reachable immediately.
 	if cfg.Scanner.Enabled && cfg.Scanner.ScanOnStartup {
 		go func() {
 			scanCtx, cancel := context.WithTimeout(context.Background(), 30*time.Minute)
@@ -201,8 +195,7 @@ func main() {
 	shutdown(hub, jobs, server, hlsManager, downloadManager, engine, eventHub, logger)
 }
 
-// shutdown stops accepting work, then releases the resources that hold processes or sockets
-// open, in that order.
+// shutdown stops accepting work, then releases the processes and sockets below it, in that order.
 func shutdown(hub *syncplay.Hub, jobs *scheduler.Jobs, server *httpx.Server, hls *media.HLSManager, manager *downloads.Manager, engine downloads.Engine, eventHub *downloads.Hub, logger *slog.Logger) {
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
@@ -213,8 +206,8 @@ func shutdown(hub *syncplay.Hub, jobs *scheduler.Jobs, server *httpx.Server, hls
 		manager.Close()
 	}
 	if eventHub != nil {
-		// Closing the SSE subscribers ends their handlers; Shutdown waits for connections to go
-		// idle rather than cutting them, so live streams would block it for its whole 30 s.
+		// Closing SSE subscribers ends their handlers; Shutdown would otherwise wait on live
+		// streams for its whole 30 s.
 		eventHub.Close()
 	}
 	if hub != nil {
@@ -230,8 +223,7 @@ func shutdown(hub *syncplay.Hub, jobs *scheduler.Jobs, server *httpx.Server, hls
 		}
 	}
 	if hls != nil {
-		// Every HLS session is an ffmpeg process; killing them is what prevents orphans
-		// holding segment files after an exit.
+		// Every HLS session is an ffmpeg process; killing them prevents orphaned segment files.
 		hls.Stop()
 	}
 	logger.Info("shutdown complete")
@@ -260,8 +252,7 @@ func summarizeConfig(cfg *config.Config, logger *slog.Logger) {
 	)
 }
 
-// cacheBackend names the store startup would use, without connecting to it: --config must
-// report a configuration, not probe a service.
+// cacheBackend names the store startup would use without connecting: --config reports, not probes.
 func cacheBackend(cfg *config.Config) string {
 	if strings.TrimSpace(cfg.Cache.URL) == "" {
 		return "in-process"
@@ -276,9 +267,8 @@ func getenv(key, fallback string) string {
 	return fallback
 }
 
-// buildTorrentService constructs the Torznab-backed search service, or nil when
-// no indexer is configured. A nil answer means "this deployment has no
-// indexer" — the caller must keep it out of the Deps.Torrent interface.
+// buildTorrentService constructs the Torznab-backed search service, or nil when no indexer is
+// configured; the caller must keep that nil out of the Deps.Torrent interface.
 func buildTorrentService(cfg *config.Config, metadataService *metadata.Service, stateCache cache.Store, trending *torrent.Trending) *torrent.Service {
 	if strings.TrimSpace(cfg.Torrent.URL) == "" {
 		return nil
@@ -289,8 +279,7 @@ func buildTorrentService(cfg *config.Config, metadataService *metadata.Service, 
 }
 
 // wireTorrent places the service in the server deps. The nil check is load-bearing: a nil
-// *torrent.Service stored in the Torrent interface is still non-nil, so an unconditional
-// assignment would silence the handler's 501 ruling and make search panic.
+// *torrent.Service stored in the interface is non-nil, so search would panic instead of 501.
 func wireTorrent(deps *httpx.Deps, service *torrent.Service) {
 	if service == nil {
 		return

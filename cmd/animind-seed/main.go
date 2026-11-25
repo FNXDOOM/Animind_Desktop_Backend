@@ -1,14 +1,8 @@
 // Command animind-seed is a local torrent seeder for end-to-end verification. It builds a
-// metainfo from a directory of small files and seeds it from 127.0.0.1 with DHT, PEX and
-// trackers disabled, so nothing leaves the loopback, then prints the magnet (carrying the
-// seeder's own x.pe address, BEP 9) and the info hash — enough for a verify script to drive a
-// real download job with no tracker infrastructure. It keeps seeding until SIGINT or SIGTERM.
-//
-// Usage:
+// metainfo from a directory, seeds it from 127.0.0.1 with DHT, PEX and trackers disabled, then
+// prints the magnet (carrying x.pe) and info hash until SIGINT or SIGTERM.
 //
 //	animind-seed -dir ./fixture-content [-port 6881] [-json]
-//
-// With -json stdout is one line: {"magnet":"magnet:?xt=urn:btih:...","infoHash":"..."}.
 package main
 
 import (
@@ -31,8 +25,7 @@ import (
 	"github.com/anacrolix/torrent/storage"
 )
 
-// verifyGrace bounds the initial hash check. The fixture is a few hundred
-// kilobytes; anything longer means something is wrong with the storage root.
+// verifyGrace bounds the initial hash check; a longer wait means the storage root is wrong.
 const verifyGrace = 2 * time.Minute
 
 func main() {
@@ -52,8 +45,7 @@ func main() {
 		fatal(fmt.Errorf("-dir %s is not a directory", abs))
 	}
 
-	// Build the metainfo from the directory tree: Name is the base name, so the
-	// directory name is the torrent title the API's release parser will see.
+	// Name is the directory's base name, so it becomes the torrent title the release parser sees.
 	var info metainfo.Info
 	if err := info.BuildFromFilePath(abs); err != nil {
 		fatal(fmt.Errorf("build metainfo from %s: %w", abs, err))
@@ -65,17 +57,15 @@ func main() {
 	mi := metainfo.MetaInfo{InfoBytes: infoBytes}
 	ih := mi.HashInfoBytes()
 
-	// Deterministic local-only swarm: no DHT, no PEX, no trackers, no port
-	// mapping. Peers find the seeder through the magnet's x.pe parameter alone.
+	// Local-only swarm: no DHT, PEX, trackers or port mapping; peers find us via the magnet's x.pe.
 	cfg := torrent.NewDefaultClientConfig()
 	cfg.NoDHT = true
 	cfg.DisablePEX = true
 	cfg.DisableTrackers = true
 	cfg.NoDefaultPortForwarding = true
 	cfg.Seed = true
-	// The literal loopback host is IPv4-only; without this upstream also opens
-	// a tcp6 listener for the same address and fails to start on hosts without
-	// IPv6 ("subsequent listen: listen tcp6").
+	// The literal loopback host is IPv4-only; without this upstream also opens a tcp6 listener
+	// for the same address and fails on hosts without IPv6.
 	cfg.DisableIPv6 = true
 	cfg.SetListenAddr(net.JoinHostPort("127.0.0.1", fmt.Sprint(*port)))
 	cl, err := torrent.NewClient(cfg)
@@ -84,8 +74,7 @@ func main() {
 	}
 	defer cl.Close()
 
-	// The storage root is the PARENT of the seeded directory: the info's Name
-	// is the directory's base, so file paths resolve back onto the real files.
+	// The storage root is the parent: the info's Name is the directory's base name.
 	spec := &torrent.TorrentSpec{
 		AddTorrentOpts: torrent.AddTorrentOpts{
 			InfoHash:  ih,
@@ -99,8 +88,7 @@ func main() {
 		fatal(fmt.Errorf("add torrent: %w", err))
 	}
 
-	// Hash-check the on-disk data before announcing readiness, so the download
-	// side never waits on pieces the seeder has but has not verified.
+	// Verify on-disk data before announcing readiness so downloads never wait on unverified pieces.
 	verifyCtx, cancel := context.WithTimeout(context.Background(), verifyGrace)
 	defer cancel()
 	if err := t.VerifyDataContext(verifyCtx); err != nil {
@@ -127,16 +115,14 @@ func main() {
 		fmt.Printf("magnet=%s\ninfoHash=%s\nlistening=%s\n", payload.Magnet, payload.InfoHash, listen)
 	}
 
-	// Seed until interrupted. The swarm never completes a job without the
-	// seeder alive, so exiting early is the one way this helper can fail a
-	// verification silently.
+	// Seed until interrupted; exiting early is the one way this helper fails a verification
+	// silently.
 	sig := make(chan os.Signal, 1)
 	signal.Notify(sig, os.Interrupt, syscall.SIGTERM)
 	<-sig
 }
 
-// localListenAddr returns the client's 127.0.0.1 listen address with the
-// resolved port (the -port value or whatever the kernel picked for 0).
+// localListenAddr returns the 127.0.0.1 listen address with the resolved port.
 func localListenAddr(cl *torrent.Client) string {
 	for _, addr := range cl.ListenAddrs() {
 		host, port, err := net.SplitHostPort(addr.String())
@@ -147,8 +133,7 @@ func localListenAddr(cl *torrent.Client) string {
 	return ""
 }
 
-// fatal reports startup failures on stderr and exits nonzero; nothing on stdout
-// may precede the payload line, which is what the verify script parses.
+// fatal reports startup failures on stderr; nothing on stdout may precede the payload line.
 func fatal(err error) {
 	fmt.Fprintln(os.Stderr, "animind-seed:", err)
 	os.Exit(1)

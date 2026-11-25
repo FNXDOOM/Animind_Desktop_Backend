@@ -12,9 +12,8 @@ type (
 	Trailer  = metadata.Trailer
 )
 
-// The scanner decides whether a folder is a show it already knows by scoring loose title
-// matches. That ranking is arithmetic, not SQL, so it is tested here; the SQL side is covered
-// by the repository integration suite.
+// The scanner scores loose title matches to decide whether a folder is a known show. That
+// ranking is arithmetic, not SQL, so it is tested here; SQL has the repository suite.
 
 func TestScoreShowCandidateRanksLinkedRicherRowsFirst(t *testing.T) {
 	linked := repository.Show{
@@ -30,8 +29,7 @@ func TestScoreShowCandidateRanksLinkedRicherRowsFirst(t *testing.T) {
 	if scoreShowCandidate(artworkOnly, "Re:Zero") <= scoreShowCandidate(bare, "Re:Zero") {
 		t.Error("artwork must beat an empty row")
 	}
-	// The insert threshold in resolveShow is a score of 9, so an unrelated title must fall
-	// below it rather than silently merging two shows.
+	// The insert threshold in resolveShow is 9, so an unrelated title must stay below it.
 	if score := scoreShowCandidate(bare, "That Other Show"); score >= 9 {
 		t.Errorf("an unrelated title scored %d, which would wrongly reuse the row", score)
 	}
@@ -41,14 +39,12 @@ func TestScoreShowCandidateRanksLinkedRicherRowsFirst(t *testing.T) {
 }
 
 func TestScoreShowCandidateMatchesNormalizedTitles(t *testing.T) {
-	// Punctuation and case differ between a release folder and the official title; the score
-	// must not.
+	// Punctuation and case differ between a release folder and the official title; the score must not.
 	withPunctuation := repository.Show{Title: "Steins;Gate"}
 	if a, b := scoreShowCandidate(withPunctuation, "Steins Gate"), scoreShowCandidate(withPunctuation, "steins;gate"); a != b {
 		t.Errorf("normalization changed the score: %d vs %d", a, b)
 	}
-	// A substring in either direction counts as a partial match, which is how a long release
-	// name still finds the short catalog title.
+	// A substring either way counts as a partial match, so a long release name finds a short title.
 	long := repository.Show{Title: "Re:Zero - Starting Life in Another World"}
 	if score := scoreShowCandidate(long, "Re:Zero"); score < 3 {
 		t.Errorf("substring match scored %d, want the partial credit", score)
@@ -86,8 +82,7 @@ func TestShowIsIncompleteDrivesReEnrichment(t *testing.T) {
 }
 
 func TestShowFromMetadataFallsBackToTheFolderTitle(t *testing.T) {
-	// No provider answer must still produce a usable row, or a scan of an offline library
-	// would index nothing.
+	// No provider answer must still produce a usable row, or an offline library would index nothing.
 	fallback := showFromMetadata(nil, "Mob Psycho 100")
 	if fallback.Title != "Mob Psycho 100" {
 		t.Errorf("title = %q", fallback.Title)

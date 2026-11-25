@@ -200,8 +200,8 @@ func TestAuthenticateRejectsUnknownToken(t *testing.T) {
 	}
 }
 
-// TestRoomSnapshotCarriesTheParentShow pins the field a cross-show joiner needs: the room lookup
-// must name the show, not only the episode, or the client has to guess from a cache it may not have.
+// TestRoomSnapshotCarriesTheParentShow pins the field a cross-show joiner needs: the room
+// lookup must name the show, not only the episode.
 func TestRoomSnapshotCarriesTheParentShow(t *testing.T) {
 	h := newMemHub(t, nil)
 	room, _ := roomWith(h, "ABCDE", "host")

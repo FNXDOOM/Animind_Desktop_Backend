@@ -1,8 +1,7 @@
 // Package media wraps the ffmpeg toolchain: stream probing, subtitle extraction,
 // browser-safe audio variants, and on-demand HLS sessions.
 //
-// Every function runs an external process with its own timeout, and a tool failure is a
-// degraded result rather than a fatal one: a scan still records episodes without ffmpeg.
+// A missing or failing tool degrades a scan rather than failing it.
 package media
 
 import (
@@ -47,10 +46,8 @@ type Stream struct {
 	Tags     map[string]string
 }
 
-// probeOutput models the subset of ffprobe's JSON we read. The types are load-bearing:
-// ffprobe reports `disposition` flags and `bit_rate` as numbers, not booleans or strings,
-// and one mismatch fails the whole decode so every probe comes back empty. See
-// TestProbeDecodesRealFFprobeJSON.
+// probeOutput models the ffprobe JSON we read. Types are load-bearing: disposition and
+// bit_rate are numbers, and one mismatch empties every probe (TestProbeDecodesRealFFprobeJSON).
 type probeOutput struct {
 	Streams []struct {
 		Index       int               `json:"index"`
@@ -164,8 +161,7 @@ func (f *FFmpeg) Run(ctx context.Context, binary string, args ...string) ([]byte
 	return stdout, string(stderr), err
 }
 
-// run executes a command, capturing its output. nice is applied on POSIX hosts so a
-// background conversion cannot starve playback of CPU.
+// run executes a command, applying nice on POSIX so background work cannot starve playback.
 func (f *FFmpeg) run(ctx context.Context, binary string, args ...string) (stdout, stderr []byte, err error) {
 	timeout := f.cfg.FFmpeg.ProcessTimeout
 	if timeout <= 0 {
@@ -192,9 +188,8 @@ func (f *FFmpeg) run(ctx context.Context, binary string, args ...string) (stdout
 	return outBuf.Bytes(), errBuf.Bytes(), err
 }
 
-// toolError converts an exec failure into a readable error and remembers whether the
-// missing-binary case was already reported, so a scan without ffmpeg installed logs one
-// warning instead of one per file.
+// toolError converts an exec failure into a readable error, logging a missing binary once
+// rather than once per file.
 func (f *FFmpeg) toolError(tool string, err error, stderr []byte) error {
 	if errors.Is(err, exec.ErrNotFound) || strings.Contains(err.Error(), "executable file not found") {
 		f.mu.Lock()
@@ -219,10 +214,8 @@ func (f *FFmpeg) toolError(tool string, err error, stderr []byte) error {
 	return fmt.Errorf("media: %s failed: %s", tool, detail)
 }
 
-// BrowserCanProgressivePlay reports whether a browser can play this container without a
-// remux; everything else needs an HLS session or a native player that demuxes the file
-// itself. It sits beside the codec tables because container legality and codec legality are
-// one decision about one file, which the streaming handler must not re-derive.
+// BrowserCanProgressivePlay reports whether a browser can play the container without a
+// remux; anything else needs HLS or a native player.
 func BrowserCanProgressivePlay(path string) bool {
 	switch ExtensionOf(path) {
 	case "mp4", "m4v", "webm":
@@ -242,8 +235,8 @@ func IsBrowserSafeAudioCodec(codec string) bool {
 	return strings.HasPrefix(codec, "mp4a") || strings.HasPrefix(codec, "aac")
 }
 
-// IsMpegTsCopySafeCodec reports whether an audio codec may be copied into MPEG-TS
-// segments. Only AAC and MP3 are legal there; anything else must be transcoded to AAC.
+// IsMpegTsCopySafeCodec reports whether a codec may be copied into MPEG-TS; only AAC and MP3
+// are legal there.
 func IsMpegTsCopySafeCodec(codec string) bool {
 	codec = strings.ToLower(codec)
 	switch codec {
@@ -253,7 +246,7 @@ func IsMpegTsCopySafeCodec(codec string) bool {
 	return strings.HasPrefix(codec, "mp4a") || strings.HasPrefix(codec, "aac")
 }
 
-// imageBasedSubtitleCodecs cannot become timed text. They are skipped rather than
+// imageBasedSubtitleCodecs cannot become timed text, so they are skipped instead of
 // producing an empty VTT file.
 var imageBasedSubtitleCodecs = map[string]bool{
 	"hdmv_pgs_subtitle": true,
@@ -328,8 +321,8 @@ func derefInt(v *int) int {
 	return *v
 }
 
-// shouldUseNice reports whether to lower process priority. nice is a POSIX utility, so on
-// Windows ffmpeg is invoked directly.
+// shouldUseNice reports whether to lower process priority; nice is POSIX-only, so Windows
+// invokes ffmpeg directly.
 func shouldUseNice(level int) bool { return level != 0 && runtime.GOOS != "windows" }
 
 // ExtensionOf returns a lowercase extension without the dot.

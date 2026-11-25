@@ -14,14 +14,12 @@ import (
 	"animind-backend-go/internal/config"
 )
 
-// MyAnimeList is the fallback source. It answers with different field names and no
-// AniList id, so the orchestrator normalises it into the same Metadata shape rather than
-// making the scanner branch per provider.
+// MyAnimeList is the fallback source; the orchestrator normalises its different field names
+// into the same Metadata shape.
 
 const malAPIBase = "https://api.myanimelist.net/v2"
 
-// malFields asks for exactly the subset the library stores. MAL bills itself on field
-// count, so an unbounded request is both slower and unnecessary.
+// malFields asks for exactly the subset the library stores; MAL bills on field count.
 const malFields = "id,title,main_picture,alternative_titles,synopsis,mean,num_episodes,status,start_season,genres,studios"
 
 // MALAnime is the node returned by the MAL search endpoint.
@@ -63,8 +61,7 @@ type MALClient struct {
 	maxRetry int
 }
 
-// NewMAL builds the client. Missing credentials disable it with one log line rather than
-// failing every scan.
+// NewMAL builds the client; missing credentials disable it with one log line.
 func NewMAL(cfg *config.Config, logger *slog.Logger) *MALClient {
 	c := &MALClient{
 		http:     &http.Client{Timeout: cfg.Metadata.MALTimeout},
@@ -120,8 +117,7 @@ func (c *MALClient) once(ctx context.Context, endpoint string) (*MALAnime, error
 		return nil, err
 	}
 	req.Header.Set("Accept", "application/json")
-	// MAL authenticates server-to-server searches with a client id header, not a bearer
-	// token; without it the API answers 403.
+	// MAL authenticates server-to-server searches with a client id header; without it, 403.
 	req.Header.Set("X-MAL-CLIENT-ID", c.clientID)
 
 	resp, err := c.http.Do(req)

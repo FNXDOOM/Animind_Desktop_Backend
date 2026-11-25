@@ -16,14 +16,12 @@ import (
 	"animind-backend-go/internal/storage"
 )
 
-// Playback endpoints. A request unlocks with a session or desktop bearer token, or a signed
-// playback ticket in the query string: neither a <video> element nor mpv can attach an
-// Authorization header, and a ticket is scoped to one episode, not to an account credential.
+// Playback endpoints. A request unlocks with a bearer token or a signed playback ticket
+// scoped to one episode: a <video> element or mpv cannot attach an Authorization header.
 
 // streamTicketResponse is what both clients read before asking for bytes.
 type streamTicketResponse struct {
-	// URL is relative to this API, which the desktop player resolves against its configured
-	// base URL and the client resolves against the API origin.
+	// URL is relative to this API; each client resolves it against its configured base.
 	URL         string `json:"url"`
 	ExpiresIn   int64  `json:"expiresIn"`
 	HLSRequired bool   `json:"hlsRequired"`
@@ -87,14 +85,13 @@ func (s *Server) handleStreamTicket(w http.ResponseWriter, r *http.Request) {
 	})
 }
 
-// hlsRequiredFor reports whether a browser needs the HLS path: the container decision is the
-// media package's, the mode decision ours, since S3 mode always uses the presigned URL.
+// hlsRequiredFor reports whether a browser needs the HLS path; S3 mode always uses the
+// presigned URL.
 func (s *Server) hlsRequiredFor(episode *repository.Episode) bool {
 	return s.cfg.IsLocal() && !media.BrowserCanProgressivePlay(episode.FilePath)
 }
 
-// authorizeStream decides whether a byte request may proceed. It returns the client mode
-// from a ticket when one was presented.
+// authorizeStream decides whether a byte request may proceed, returning a ticket's client mode.
 func (s *Server) authorizeStream(w http.ResponseWriter, r *http.Request, episodeID string) (bool, *auth.StreamTicketPayload) {
 	ticketValue := r.URL.Query().Get("st")
 	if ticketValue != "" {
@@ -175,9 +172,8 @@ func (s *Server) handleStream(w http.ResponseWriter, r *http.Request) {
 	deliveryPath := sourcePath
 	mimeType := mimeTypeForFile(sourcePath)
 
-	// A browser that selected an audio track its codecs cannot decode needs the cached
-	// remux. The native player is always served the original file so it can pick tracks
-	// itself and keep subtitles in the container.
+	// A browser that selected an undecodable audio track needs the cached remux; the native
+	// player is always served the original file so it can pick tracks itself.
 	if trackRequested && !native && s.audio != nil && s.audio.Available() {
 		tracks, probeErr := s.audio.EmbeddedAudioTracks(r.Context(), sourcePath, episode.ID)
 		if probeErr == nil {
@@ -284,8 +280,8 @@ func (s *Server) handleEpisodeAudioTracks(w http.ResponseWriter, r *http.Request
 		return
 	}
 	if !s.cfg.IsLocal() {
-		// S3 playback is a redirect to a presigned URL: the browser demuxes the original
-		// file, so track selection belongs to the media element, not this API.
+		// S3 playback redirects to a presigned URL, so track selection belongs to the media
+		// element, not this API.
 		WriteJSON(w, http.StatusOK, map[string]any{"tracks": []media.AudioTrack{}, "mode": "presigned"})
 		return
 	}
@@ -338,8 +334,8 @@ type hlsSessionResponse struct {
 	PlaylistURL string `json:"playlistUrl"`
 }
 
-// handleCreateHLSSession starts an on-demand remux for a local file. audioTrackIndex is
-// optional: clients send no key at all on first play, which means the first audio stream.
+// handleCreateHLSSession starts an on-demand remux for a local file; a missing
+// audioTrackIndex means the first audio stream.
 func (s *Server) handleCreateHLSSession(w http.ResponseWriter, r *http.Request) {
 	if !s.cfg.IsLocal() {
 		WriteError(w, http.StatusBadRequest, "HLS sessions are only available in local storage mode.")
@@ -399,8 +395,7 @@ func (s *Server) handleCreateHLSSession(w http.ResponseWriter, r *http.Request) 
 	WriteJSON(w, http.StatusOK, hlsSessionResponse{SessionID: sessionID, PlaylistURL: playlistURL})
 }
 
-// requireHLS answers the request when HLS sessions are unavailable, which is the case in S3
-// mode where the manager is never constructed.
+// requireHLS answers the request when HLS sessions are unavailable, as in S3 mode.
 func (s *Server) requireHLS(w http.ResponseWriter) bool {
 	if s.hls == nil {
 		WriteError(w, http.StatusBadRequest, "HLS sessions are only available in local storage mode.")
@@ -423,8 +418,7 @@ func (s *Server) handleHLSPlaylist(w http.ResponseWriter, r *http.Request) {
 
 	playlist, err := s.hls.Playlist(r.Context(), sessionID)
 	if err != nil {
-		// Segments do not exist yet. An empty event playlist is a valid answer that makes a
-		// player poll again rather than treating the session as dead.
+		// Segments do not exist yet; an empty event playlist keeps the player polling.
 		w.WriteHeader(http.StatusOK)
 		_, _ = io.WriteString(w, "#EXTM3U\n#EXT-X-VERSION:3\n#EXT-X-TARGETDURATION:"+
 			strconv.Itoa(int(s.cfg.HLS.SegmentDuration.Seconds()))+"\n#EXT-X-PLAYLIST-TYPE:EVENT\n")
@@ -495,8 +489,7 @@ func (s *Server) handleHLSSeek(w http.ResponseWriter, r *http.Request) {
 	WriteJSON(w, http.StatusOK, map[string]any{"success": true, "time": req.Time})
 }
 
-// handleHLSHeartbeat keeps a session alive across a long buffer gap or a reconnect, which
-// the original backend had no way to do.
+// handleHLSHeartbeat keeps a session alive across a long buffer gap or a reconnect.
 func (s *Server) handleHLSHeartbeat(w http.ResponseWriter, r *http.Request) {
 	if !s.requireHLS(w) {
 		return
@@ -511,8 +504,7 @@ func (s *Server) handleHLSHeartbeat(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if _, err := s.hls.Playlist(r.Context(), sessionID); err != nil {
-		// Touching the playlist is what refreshes the idle clock; a session with no playlist
-		// yet is still alive.
+		// Touching the playlist refreshes the idle clock; a session without one is still alive.
 		s.logger.Debug("HLS heartbeat on a session without a playlist", slog.String("session", sessionID))
 	}
 	stats, _ := s.hls.SessionStats(sessionID)

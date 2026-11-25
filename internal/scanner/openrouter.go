@@ -17,8 +17,7 @@ import (
 )
 
 // OpenRouter is the optional last-resort parser for filenames no deterministic rule
-// matched. It is deliberately conservative: a guess is only accepted above a confidence
-// floor, because a wrong title silently corrupts the catalog.
+// matched; a guess is only accepted above a confidence floor, or it corrupts the catalog.
 
 const openRouterEndpoint = "https://openrouter.ai/api/v1/chat/completions"
 
@@ -58,8 +57,7 @@ func NewOpenRouter(cfg *config.Config, logger *slog.Logger) *OpenRouterClient {
 	}
 }
 
-// responseSchema constrains the model to the exact object the scanner needs. A strict
-// JSON-schema response format removes the parse-then-guess step a free-text answer forces.
+// responseSchema is a strict JSON schema, so the model's answer needs no parse-then-guess step.
 var responseSchema = map[string]any{
 	"type":                 "object",
 	"additionalProperties": false,
@@ -76,8 +74,8 @@ var responseSchema = map[string]any{
 
 const systemPrompt = "You are a strict anime file scanner. You extract structured metadata from noisy anime release paths. Return JSON that matches the schema."
 
-// Infer parses a path with the model. It returns nil when the feature is off, the request
-// fails, or the answer is below the configured confidence floor.
+// Infer parses a path with the model, returning nil when disabled, on failure, or below
+// the configured confidence floor.
 func (c *OpenRouterClient) Infer(ctx context.Context, input Input) *Guess {
 	if !c.cfg.Metadata.OpenRouter.Enabled {
 		return nil
@@ -186,8 +184,8 @@ func (c *OpenRouterClient) Infer(ctx context.Context, input Input) *Guess {
 	return guess
 }
 
-// buildPrompt renders the scanner question. Sibling names give the model the season's
-// episode range, which is what disambiguates "01" from "10".
+// buildPrompt renders the question; sibling names give the model the season's episode
+// range, which disambiguates "01" from "10".
 func buildPrompt(input Input) string {
 	siblings := input.SiblingFileNames
 	if len(siblings) > 40 {

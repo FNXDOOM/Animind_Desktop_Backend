@@ -1,9 +1,5 @@
-// Package downloads defines the torrent engine boundary used by the download
-// manager. The manager only sees the Engine/TorrentHandle interfaces here; the
-// anacrolix adapter behind them is free to change as upstream drifts.
-//
-// One upstream client serves all jobs; each torrent gets its own storage root
-// under <Dir>/<jobID>, which upstream closes on Drop and Client.Close.
+// Package downloads defines the torrent engine boundary: the manager sees only Engine and
+// TorrentHandle, and each torrent stores under <Dir>/<jobID>.
 package downloads
 
 import (
@@ -61,9 +57,8 @@ type TorrentHandle interface {
 	Done() <-chan struct{} // closed when every selected byte is downloaded
 }
 
-// NewNoopEngine returns the disabled engine: construction never fails and every
-// Add is refused with ErrNotEnabled. The manager installs it when downloads are
-// disabled, and tests of the manager use it in place of the real library.
+// NewNoopEngine returns the disabled engine: every Add is refused with ErrNotEnabled.
+// The manager installs it when downloads are disabled and tests use it in place of the library.
 func NewNoopEngine() Engine {
 	return noopEngine{}
 }

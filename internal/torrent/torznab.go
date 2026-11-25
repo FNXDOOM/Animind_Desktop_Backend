@@ -12,9 +12,8 @@ import (
 	"animind-backend-go/internal/scanner"
 )
 
-// The structs stay minimal on purpose: encoding/xml skips unknown elements,
-// and unqualified tags match by local name, so the torznab: namespace on
-// <attr> needs no special handling.
+// The structs stay minimal: encoding/xml skips unknown elements and matches unqualified tags
+// by local name, so the torznab: namespace on <attr> needs no special handling.
 type torznabFeed struct {
 	Channel struct {
 		Items []torznabItem `xml:"item"`

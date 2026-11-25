@@ -22,10 +22,8 @@ import (
 
 // On-demand HLS sessions.
 //
-// Browsers cannot play Matroska, so ffmpeg remuxes to MPEG-TS while the viewer watches:
-// video is always copied, audio only when its codec is legal in MPEG-TS, otherwise AAC.
-// Each session is an OS process, hence the cap with LRU eviction and idle expiry. Native
-// clients demux the source themselves and never reach this path.
+// Browsers cannot play Matroska, so ffmpeg remuxes to MPEG-TS; each session is an OS
+// process, capped with LRU eviction and idle expiry. Native clients never use this path.
 
 // HLS session limits and identifiers.
 var (
@@ -34,8 +32,7 @@ var (
 	playlistFileName    = "playlist.m3u8"
 	segmentNamePatternF = "seg%05d.ts"
 
-	// ErrUnknownSession reports a session id that no longer exists, which the client
-	// treats as "create a new one".
+	// ErrUnknownSession reports a session id that no longer exists; clients create a new one.
 	ErrUnknownSession = errors.New("media: hls session not found")
 	// ErrSessionNotReady reports a playlist that has not produced a segment yet.
 	ErrSessionNotReady = errors.New("media: hls session has no segments yet")
@@ -111,8 +108,7 @@ func NewHLSManager(cfg *config.Config, ffmpeg *FFmpeg, logger *slog.Logger) (*HL
 // RootDir reports where playlists and segments are written.
 func (m *HLSManager) RootDir() string { return m.rootDir }
 
-// Stop ends the idle sweep and destroys every session. Shutdown calls this so no ffmpeg
-// process survives the server.
+// Stop ends the idle sweep and destroys every session so no ffmpeg process survives exit.
 func (m *HLSManager) Stop() {
 	m.stopOnce.Do(func() { close(m.stopCh) })
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
@@ -120,9 +116,8 @@ func (m *HLSManager) Stop() {
 	m.DestroyAll(ctx)
 }
 
-// Create starts a session and returns its id plus the playlist URL to fetch. It blocks
-// until the first segment exists: an empty playlist reads as a broken player rather than
-// a slow start.
+// Create starts a session and returns its id plus the playlist URL. It blocks until the
+// first segment exists, since an empty playlist reads as a broken player.
 func (m *HLSManager) Create(ctx context.Context, sourcePath, episodeID string, audioTrackIndex int, startTime float64, userID string) (string, string, error) {
 	if m.cfg.Storage.Mode != config.StorageLocal {
 		return "", "", ErrNotLocalMode
@@ -154,7 +149,7 @@ func (m *HLSManager) Create(ctx context.Context, sourcePath, episodeID string, a
 	args := m.buildArgs(ctx, sourcePath, audioTrackIndex, startTime, playlist, segmentPattern)
 
 	// exec.Command, not CommandContext: the request ctx is cancelled once Create returns,
-	// and only Destroy, Seek and the idle sweep are meant to stop the remux.
+	// and only Destroy, Seek and the idle sweep stop the remux.
 	cmd := exec.Command(m.ffmpeg.Binary(), args...)
 	cmd.Stderr = newLogPipe(m.logger, id)
 	if err := cmd.Start(); err != nil {
@@ -183,11 +178,8 @@ func (m *HLSManager) Create(ctx context.Context, sourcePath, episodeID string, a
 	return id, "/api/hls/" + id + "/playlist.m3u8", nil
 }
 
-// buildArgs assembles the ffmpeg command line.
-//
-// -hls_playlist_type event makes the playlist append-only so a viewer can scrub backwards
-// to the start of an episode; -hls_flags temp_file prevents a client reading a half-written
-// segment.
+// buildArgs assembles the ffmpeg command line. The playlist is append-only so a viewer can
+// scrub back to the start, and temp_file hides half-written segments.
 func (m *HLSManager) buildArgs(ctx context.Context, sourcePath string, audioTrackIndex int, startTime float64, playlist, segmentPattern string) []string {
 	segmentSeconds := int(m.cfg.HLS.SegmentDuration.Seconds())
 	if segmentSeconds < 2 {
@@ -249,8 +241,8 @@ func (m *HLSManager) awaitFirstSegment(ctx context.Context, playlist string) err
 	return fmt.Errorf("media: HLS session timed out waiting for the first segment (is ffmpeg installed and the source readable?)")
 }
 
-// evictIfNeeded frees a slot when the cap is reached, dropping the least recently used
-// session so a new viewer is not locked out by an abandoned tab.
+// evictIfNeeded frees a slot at the cap, dropping the least recently used session so an
+// abandoned tab cannot lock out a new viewer.
 func (m *HLSManager) evictIfNeeded(ctx context.Context) error {
 	m.mu.Lock()
 	max := m.cfg.HLS.MaxConcurrentSessions
@@ -289,9 +281,8 @@ func (m *HLSManager) evictIfNeeded(ctx context.Context) error {
 	return nil
 }
 
-// Playlist returns the rewritten playlist text for a session. ffmpeg writes absolute
-// segment paths, which a client would resolve against its own host, so each line is
-// reduced to its file name and served from this server's segment route.
+// Playlist returns the rewritten playlist. ffmpeg writes absolute segment paths, so each is
+// reduced to its file name and served by this server's segment route.
 func (m *HLSManager) Playlist(ctx context.Context, id string) (string, error) {
 	entry, err := m.touch(id)
 	if err != nil {
@@ -322,9 +313,8 @@ func (m *HLSManager) Playlist(ctx context.Context, id string) (string, error) {
 	return out.String(), nil
 }
 
-// SegmentPath validates a segment name and returns its on-disk path. The route is
-// reachable with only a session id, so the name is matched against a strict pattern
-// rather than cleaned and joined: a traversal attempt must fail closed.
+// SegmentPath validates a segment name and returns its on-disk path. The route is reachable
+// with only a session id, so the name must match a strict pattern: traversal fails closed.
 func (m *HLSManager) SegmentPath(id, segmentName string) (string, error) {
 	entry, err := m.touch(id)
 	if err != nil {
@@ -341,9 +331,8 @@ func (m *HLSManager) SegmentPath(id, segmentName string) (string, error) {
 	return path, nil
 }
 
-// Seek restarts the session at a new start time. ffmpeg has no in-place seek for an
-// event-type playlist, so the process is killed, its output removed, and a new one
-// started from the requested offset.
+// Seek restarts the session at a new offset. ffmpeg has no in-place seek for an event
+// playlist, so the process is killed, its output removed, and a new one started.
 func (m *HLSManager) Seek(ctx context.Context, id string, timeSeconds float64, userID string) error {
 	m.mu.Lock()
 	entry := m.sessions[id]
@@ -436,8 +425,7 @@ func (m *HLSManager) DestroyAll(ctx context.Context) {
 	_ = os.MkdirAll(m.rootDir, 0o755)
 }
 
-// Has reports whether a session id is live, which the playlist route answers with 404
-// before doing any work.
+// Has reports whether a session id is live; the playlist route answers 404 before work.
 func (m *HLSManager) Has(id string) bool {
 	if !sessionIDPattern.MatchString(id) {
 		return false
@@ -448,8 +436,7 @@ func (m *HLSManager) Has(id string) bool {
 	return entry != nil && !entry.destroy
 }
 
-// Owner reports which account created a session, so the HTTP layer can bind seek,
-// heartbeat and destroy to it.
+// Owner reports which account created a session, so the HTTP layer can bind control to it.
 func (m *HLSManager) Owner(id string) (string, bool) {
 	if !sessionIDPattern.MatchString(id) {
 		return "", false
@@ -463,8 +450,8 @@ func (m *HLSManager) Owner(id string) (string, bool) {
 	return entry.session.UserID, true
 }
 
-// DestroyForUser destroys a session only when the caller owns it. A mismatch is reported
-// as false so the handler can answer 404 without revealing that the id exists.
+// DestroyForUser destroys a session only when the caller owns it; a mismatch reports false
+// so the handler can answer 404 without revealing that the id exists.
 func (m *HLSManager) DestroyForUser(ctx context.Context, id, userID string) bool {
 	m.mu.Lock()
 	entry := m.sessions[id]
@@ -476,8 +463,8 @@ func (m *HLSManager) DestroyForUser(ctx context.Context, id, userID string) bool
 	return true
 }
 
-// SessionStats returns the stats for one session, used by the heartbeat route. It never
-// discloses the other sessions an account does not own.
+// SessionStats returns stats for one session without disclosing sessions the account
+// does not own.
 func (m *HLSManager) SessionStats(id string) (HLSStats, bool) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
@@ -594,8 +581,7 @@ func shortID(id string) string {
 	return id[:8]
 }
 
-// logPipe forwards ffmpeg's stderr into the structured logger, dropping the progress lines
-// ffmpeg emits continuously.
+// logPipe forwards ffmpeg's stderr into the structured logger, dropping progress lines.
 type logPipe struct {
 	logger *slog.Logger
 	id     string

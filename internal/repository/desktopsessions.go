@@ -7,9 +7,8 @@ import (
 	"time"
 )
 
-// Desktop session storage. One row pins the whole credential pair so an access token can be
-// checked against revocation without decoding it twice, a refresh token rotates in place and
-// invalidates its predecessor, and the device labels the desktop app reports travel with it.
+// Desktop session storage. One row pins the whole credential pair, so an access token can
+// be checked against revocation without a second decode.
 
 const desktopSessionColumns = `
 	id::text, user_id::text, session_id, device_id, device_name,
@@ -45,8 +44,8 @@ func (s *Store) CreateDesktopSession(ctx context.Context, userID, sessionID, dev
 		refreshTokenHash, refreshExpiresAt, accessTokenHash, accessExpiresAt))
 }
 
-// DesktopSessionByAccessHash returns a live session matching an access token hash.
-// Expiry and revocation are part of the predicate, so a stale row is not returned.
+// DesktopSessionByAccessHash returns a live session matching an access token hash;
+// expiry and revocation are part of the predicate.
 func (s *Store) DesktopSessionByAccessHash(ctx context.Context, hash string) (*DesktopSession, error) {
 	return scanDesktopSession(s.pool.QueryRow(ctx, `
 		select `+desktopSessionColumns+` from desktop_auth_sessions
@@ -61,9 +60,8 @@ func (s *Store) DesktopSessionByRefreshHash(ctx context.Context, hash string) (*
 		  and refresh_token_expires_at > now() and absolute_expires_at > now()`, hash))
 }
 
-// RevokeDesktopFamilyByReusedHash revokes every session in the family that once owned the
-// presented refresh hash. Called when a rotated-out token is replayed: the caller cannot
-// tell which device is legitimate, so the whole family must re-authenticate.
+// RevokeDesktopFamilyByReusedHash revokes the whole token family when a rotated-out
+// refresh token is replayed: the caller cannot tell which device is legitimate.
 func (s *Store) RevokeDesktopFamilyByReusedHash(ctx context.Context, hash string) (int64, error) {
 	tag, err := s.pool.Exec(ctx, `
 		with hit as (
@@ -80,9 +78,8 @@ func (s *Store) RevokeDesktopFamilyByReusedHash(ctx context.Context, hash string
 	return tag.RowsAffected(), nil
 }
 
-// RotateDesktopSession replaces both token hashes, invalidating the presented refresh
-// token. If this write fails the caller must not return the new tokens, or the device
-// would hold a credential the server cannot verify.
+// RotateDesktopSession replaces both token hashes. If this write fails the caller must
+// not return the new tokens, or the device holds a credential the server cannot verify.
 func (s *Store) RotateDesktopSession(ctx context.Context, id, refreshTokenHash, accessTokenHash string, accessExpiresAt, refreshExpiresAt time.Time) error {
 	tag, err := s.pool.Exec(ctx, `
 		update desktop_auth_sessions
@@ -111,8 +108,8 @@ func (s *Store) RevokeDesktopSessionByAccessToken(ctx context.Context, hash stri
 	return s.revokeDesktop(ctx, `access_token_hash = $1`, hash)
 }
 
-// RevokeDesktopSessionByID revokes a session from its primary key (security screen).
-// The user filter is part of the predicate, so another account's id revokes nothing.
+// RevokeDesktopSessionByID revokes a session by primary key; the user filter is part of
+// the predicate, so another account's id revokes nothing.
 func (s *Store) RevokeDesktopSessionByID(ctx context.Context, id, userID string) (bool, error) {
 	tag, err := s.pool.Exec(ctx, `
 		update desktop_auth_sessions set revoked_at = now(), updated_at = now()
@@ -144,8 +141,8 @@ type DesktopSessionDevice struct {
 	ExpiresAt  time.Time `json:"expires_at"`
 }
 
-// ListDesktopSessions returns a user's live desktop devices. A session past its absolute
-// expiry is not live even when its last rotated refresh token has not expired yet.
+// ListDesktopSessions returns a user's live devices; a session past its absolute expiry
+// is not live even if its last refresh token has not expired.
 func (s *Store) ListDesktopSessions(ctx context.Context, userID string) ([]DesktopSessionDevice, error) {
 	rows, err := s.pool.Query(ctx, `
 		select id::text, session_id, device_id, device_name, created_at, updated_at, refresh_token_expires_at
@@ -170,10 +167,8 @@ func (s *Store) ListDesktopSessions(ctx context.Context, userID string) ([]Deskt
 	return out, rows.Err()
 }
 
-// RevokeAllDesktopSessions revokes every live desktop session for an account. It is
-// called when the account's credential changes (password reset, password change, email
-// change), because a desktop refresh token otherwise outlives the remediation and keeps
-// an attacker signed in for up to the refresh lifetime.
+// RevokeAllDesktopSessions revokes every live desktop session for an account. A desktop
+// refresh token otherwise outlives a password or email change and keeps an attacker in.
 func (s *Store) RevokeAllDesktopSessions(ctx context.Context, userID string) error {
 	_, err := s.pool.Exec(ctx, `
 		update desktop_auth_sessions
@@ -182,9 +177,8 @@ func (s *Store) RevokeAllDesktopSessions(ctx context.Context, userID string) err
 	return err
 }
 
-// CleanupDesktopSessions deletes every revoked row and every refresh token expired before
-// the cutoff. Revoked rows carry no future value, so age does not gate them; the retention
-// window only protects a recently expired session from an in-flight refresh.
+// CleanupDesktopSessions deletes revoked rows and refresh tokens expired before the cutoff.
+// The retention window only protects a recently expired session from an in-flight refresh.
 func (s *Store) CleanupDesktopSessions(ctx context.Context, expiredBefore time.Time) (int64, error) {
 	tag, err := s.pool.Exec(ctx, `
 		delete from desktop_auth_sessions

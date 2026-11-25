@@ -12,9 +12,8 @@ import (
 // ErrNotConfigured is returned by Search when no Torznab endpoint is configured.
 var ErrNotConfigured = errors.New("torrent: indexer not configured")
 
-// Query describes one search request. Resolution, Codec, MinSeeders, Batch and
-// Sort are applied client-side by the search service; the Torznab request only
-// carries Q, Season, Episode and Limit.
+// Query describes one search request. Resolution, Codec, MinSeeders, Batch and Sort are
+// applied client-side; only Q, Season, Episode and Limit reach Torznab.
 type Query struct {
 	Q          string
 	Season     *int

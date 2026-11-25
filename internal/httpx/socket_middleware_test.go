@@ -56,8 +56,8 @@ func socketServer(t *testing.T) *httptest.Server {
 	return recorder
 }
 
-// dialSocket upgrades and consumes the Engine.IO OPEN packet, which every Socket.IO handshake
-// must read before it can send; it returns the connection and that OPEN body.
+// dialSocket upgrades and consumes the Engine.IO OPEN packet every Socket.IO handshake must
+// read; it returns the connection and that OPEN body.
 func dialSocket(t *testing.T, target *httptest.Server) (*websocket.Conn, string) {
 	t.Helper()
 	url := "ws" + strings.TrimPrefix(target.URL, "http") + syncplay.SocketPath + "?EIO=4&transport=websocket"

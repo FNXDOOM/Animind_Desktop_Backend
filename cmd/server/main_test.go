@@ -8,12 +8,8 @@ import (
 	"animind-backend-go/internal/torrent"
 )
 
-// TestTorrentWiringKeepsTypedNilOutOfTheSeam reproduces the production shape of
-// a deployment without TORZNAB_URL end to end: buildTorrentService answers nil,
-// and that nil must never be stored in Deps.Torrent. Any *torrent.Service —
-// including a nil one — inside the Torrent interface is non-nil, so an
-// unconditional assignment would defeat the handler's 501
-// indexer_not_configured ruling and make /api/torrents/search panic instead.
+// TestTorrentWiringKeepsTypedNilOutOfTheSeam covers a deployment without TORZNAB_URL: the nil
+// service must never reach Deps.Torrent, or search panics instead of answering 501.
 func TestTorrentWiringKeepsTypedNilOutOfTheSeam(t *testing.T) {
 	cfg := &config.Config{} // TORZNAB_URL empty
 	if got := buildTorrentService(cfg, nil, nil, nil); got != nil {

@@ -12,8 +12,8 @@ import (
 	"animind-backend-go/internal/cache"
 )
 
-// googleStartServer builds a server with an auth service but no database: the Google entry points
-// sign state and build the provider URL, and never touch the store.
+// googleStartServer builds a server with an auth service but no database: the Google entry
+// points sign state and build the provider URL without touching the store.
 func googleStartServer(t *testing.T) *Server {
 	t.Helper()
 	cfg := testConfig(t)
@@ -33,8 +33,8 @@ func googleStartServer(t *testing.T) *Server {
 	return server
 }
 
-// The app-link allowlist is only a return target for the OAuth callback. It must never widen the
-// origins the web client itself is allowed to use, and it must never be accepted by accident.
+// The app-link allowlist is only a return target for the OAuth callback. It must never widen
+// the origins the web client may use, and never be accepted by accident.
 func TestSanitizeReturnTargetAcceptsAnAppLinkOriginOnlyWhenConfigured(t *testing.T) {
 	frontend := []string{"https://fnxdoom.in"}
 	appLinks := []string{"https://app.example.com"}
@@ -86,7 +86,7 @@ func TestGoogleStartRejectsAForeignReturnTarget(t *testing.T) {
 	t.Setenv("APP_LINK_ORIGINS", "https://app.example.com")
 	server := googleStartServer(t)
 
-	// A foreign origin is dropped from the state, so the redirect still starts; the callback then
+	// A foreign origin is dropped from the state, so the redirect still starts; the callback
 	// falls back to the web origin instead of sending the code to the attacker.
 	res := do(server, http.MethodGet, "/api/auth/google/start?redirect=https://evil.example/steal", nil)
 	if res.Code != http.StatusFound {

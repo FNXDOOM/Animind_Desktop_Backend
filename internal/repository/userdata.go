@@ -5,12 +5,10 @@ import (
 	"encoding/json"
 )
 
-// User-owned viewing data: watchlist, resume progress, continue-watching history and player
-// preferences. Ownership is enforced in SQL, not in the handler — every statement here is
-// filtered by the session's user_id, so a forgotten guard cannot expose another account.
+// User-owned viewing data: watchlist, resume progress, history and player preferences.
+// Ownership is enforced in SQL — every statement filters by the session's user_id.
 
-// ListWatchlist returns a user's saved shows, newest first, with the stored anime
-// payload intact.
+// ListWatchlist returns a user's saved shows, newest first, with the anime payload intact.
 func (s *Store) ListWatchlist(ctx context.Context, userID string) ([]WatchlistItem, error) {
 	rows, err := s.pool.Query(ctx, `
 		select id::text, user_id::text, anime_id, anime_data, status, created_at, updated_at
@@ -34,9 +32,8 @@ func (s *Store) ListWatchlist(ctx context.Context, userID string) ([]WatchlistIt
 	return out, rows.Err()
 }
 
-// UpsertWatchlist saves or replaces a watchlist entry. animeData is the client's own
-// show object, stored verbatim so a later read can rebuild the card without a catalog
-// lookup. The payload is re-serialized by Postgres, which also rejects non-JSON.
+// UpsertWatchlist saves or replaces an entry. animeData is the client's show object stored
+// verbatim, so a later read rebuilds the card without a catalog lookup.
 func (s *Store) UpsertWatchlist(ctx context.Context, userID, animeID string, animeData json.RawMessage, status string) (*WatchlistItem, error) {
 	if status == "" {
 		status = "Plan to Watch"
@@ -83,9 +80,8 @@ func (s *Store) DeleteWatchlistItem(ctx context.Context, userID, animeID string)
 	return nil
 }
 
-// ProgressSeconds returns the stored resume position for one episode, or 0 when the
-// user has never watched it. Callers must not treat a missing row as an error: the
-// player asks before playback and expects a number.
+// ProgressSeconds returns the stored resume position, or 0 when the user never watched it.
+// A missing row is not an error: the player asks before playback and expects a number.
 func (s *Store) ProgressSeconds(ctx context.Context, userID, animeID string, episodeIndex int) (float64, error) {
 	var ts float64
 	err := s.pool.QueryRow(ctx, `
@@ -101,8 +97,8 @@ func (s *Store) ProgressSeconds(ctx context.Context, userID, animeID string, epi
 	return ts, nil
 }
 
-// SaveProgress writes a resume position. This runs on a client timer roughly every
-// five seconds during playback, so it is an upsert with no read-first step.
+// SaveProgress writes a resume position on a client timer, so it is an upsert with no
+// read-first step.
 func (s *Store) SaveProgress(ctx context.Context, userID, animeID string, episodeIndex int, seconds float64) error {
 	_, err := s.pool.Exec(ctx, `
 		insert into progress (user_id, anime_id, episode_index, timestamp, updated_at)
@@ -113,8 +109,7 @@ func (s *Store) SaveProgress(ctx context.Context, userID, animeID string, episod
 	return err
 }
 
-// RecentProgress lists the shows a user has been watching, newest first. It backs
-// GET /api/me/progress/recent.
+// RecentProgress lists recently watched shows, newest first, backing GET /api/me/progress/recent.
 func (s *Store) RecentProgress(ctx context.Context, userID string, limit int) ([]ProgressItem, error) {
 	rows, err := s.pool.Query(ctx, `
 		select anime_id, episode_index, timestamp, updated_at
@@ -138,8 +133,7 @@ func (s *Store) RecentProgress(ctx context.Context, userID string, limit int) ([
 	return out, rows.Err()
 }
 
-// UpsertHistory records a continue-watching entry written by the desktop player.
-// Rows are unique per show and episode label, matching how that client reports state.
+// UpsertHistory records a continue-watching entry; rows are unique per show and episode label.
 func (s *Store) UpsertHistory(ctx context.Context, in HistoryItem) error {
 	_, err := s.pool.Exec(ctx, `
 		insert into watch_history (user_id, anilist_id, show_title, episode_label, thumbnail_url, progress_pct, last_watched)
@@ -177,8 +171,7 @@ func (s *Store) ListHistory(ctx context.Context, userID string, limit int) ([]Hi
 	return out, rows.Err()
 }
 
-// Preferences returns a user's stored player settings, or an empty object when none
-// have been saved yet.
+// Preferences returns stored player settings, or an empty object when none are saved.
 func (s *Store) Preferences(ctx context.Context, userID string) (json.RawMessage, error) {
 	var raw []byte
 	err := s.pool.QueryRow(ctx, `

@@ -30,8 +30,8 @@ func PrincipalFromContext(ctx context.Context) *auth.Principal {
 	return p
 }
 
-// withClient attaches the request's user agent and address for any handler that may
-// create a session. RequireAuth does the same for requests that only resolve one.
+// withClient attaches the request's user agent and address for handlers that may create a
+// session. RequireAuth does the same for requests that only resolve one.
 func (s *Server) withClient(r *http.Request) context.Context {
 	return auth.WithClient(r.Context(), auth.Client{
 		UserAgent: r.UserAgent(),
@@ -40,8 +40,8 @@ func (s *Server) withClient(r *http.Request) context.Context {
 }
 
 // RequireAuth resolves the bearer credential and stops the request when it is missing or
-// invalid. The wording echoes the original backend because the desktop player treats 401 as a
-// hard stop with no retry, so the message is the only diagnostic a user ever sees.
+// invalid. The wording echoes the original backend: the desktop player treats 401 as a hard
+// stop with no retry, so the message is the only diagnostic a user ever sees.
 func (s *Server) RequireAuth(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		token := s.credential(r)
@@ -78,9 +78,8 @@ func (s *Server) RequireAdmin(next http.Handler) http.Handler {
 	})
 }
 
-// CORS answers web clients and the desktop player. The player's Qt calls send no Origin at all,
-// and a missing Origin has to stay allowed, since an over-equal check would reject every
-// desktop request.
+// CORS answers web clients and the desktop player. The player's Qt calls send no Origin at
+// all, and a missing Origin has to stay allowed.
 func (s *Server) CORS(next http.Handler) http.Handler {
 	allowedHeaders := "Content-Type, Authorization, x-webhook-secret, Accept, Range"
 	methods := "GET, POST, PATCH, PUT, DELETE, OPTIONS"
@@ -90,7 +89,7 @@ func (s *Server) CORS(next http.Handler) http.Handler {
 		if origin != "" {
 			h := w.Header()
 			if s.cfg.WildcardOrigin() {
-				// A wildcard is a public API, not a credentialed one. Never reflect an
+				// A wildcard is a public API, not a credentialed one: never reflect an
 				// arbitrary origin together with Allow-Credentials.
 				h.Set("Access-Control-Allow-Origin", "*")
 				h.Set("Access-Control-Allow-Methods", methods)
@@ -163,17 +162,16 @@ func (r *statusRecorder) Write(p []byte) (int, error) {
 	return n, err
 }
 
-// Flush passes streaming through to the underlying writer, which the media and HLS
-// handlers rely on.
+// Flush passes streaming through to the underlying writer, which the media and HLS handlers
+// rely on.
 func (r *statusRecorder) Flush() {
 	if f, ok := r.ResponseWriter.(http.Flusher); ok {
 		f.Flush()
 	}
 }
 
-// Hijack must be forwarded or the wrapper hides it: embedding an interface only promotes
-// that interface's methods, so a websocket upgrade through this middleware would find no
-// hijacker and fail with a 500 before the hub ever ran.
+// Hijack must be forwarded or the wrapper hides it: embedding an interface only promotes that
+// interface's methods, so a websocket upgrade would find no hijacker and fail with a 500.
 func (r *statusRecorder) Hijack() (net.Conn, *bufio.ReadWriter, error) {
 	h, ok := r.ResponseWriter.(http.Hijacker)
 	if !ok {
@@ -211,8 +209,8 @@ func MaxBody(limit int64) func(http.Handler) http.Handler {
 	}
 }
 
-// securityHeadersForMedia relaxes no-store for cacheable media segments while keeping
-// sniffing off.
+// securityHeadersForMedia relaxes no-store for cacheable media segments while keeping sniffing
+// off.
 func securityHeadersForMedia(w http.ResponseWriter, cacheable bool) {
 	h := w.Header()
 	h.Set("X-Content-Type-Options", "nosniff")

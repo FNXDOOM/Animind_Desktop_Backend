@@ -13,12 +13,10 @@ import (
 	"animind-backend-go/internal/repository"
 )
 
-// User-owned data endpoints, replacing the site's old direct database writes with an
-// externally issued JWT. The ownership check lives here: every statement filters on the
+// User-owned data endpoints. Ownership is enforced here: every statement filters on the
 // session's user id, never an id the request supplied.
 
-// watchlistItemResponse is a saved show. anime_data is the exact object the client stored,
-// which is what its cards are built from.
+// watchlistItemResponse is a saved show; anime_data is the exact object the client stored.
 type watchlistItemResponse struct {
 	ID        string          `json:"id"`
 	UserID    string          `json:"user_id"`
@@ -34,8 +32,8 @@ var watchlistStatuses = map[string]bool{
 	"Watching": true, "Completed": true, "Plan to Watch": true, "Dropped": true,
 }
 
-// normalizeWatchlistStatus validates a status and applies the default. It is a pure function
-// so the whitelist and the default can be tested without a database or a session.
+// normalizeWatchlistStatus validates a status and applies the default; it is pure so it
+// tests without a database or a session.
 func normalizeWatchlistStatus(raw string) (string, error) {
 	status := strings.TrimSpace(raw)
 	if status == "" {
@@ -47,8 +45,7 @@ func normalizeWatchlistStatus(raw string) (string, error) {
 	return status, nil
 }
 
-// normalizeProgress validates a resume write and clamps a negative position, which a seeking
-// client can produce.
+// normalizeProgress validates a resume write and clamps a negative position from a seeking client.
 func normalizeProgress(animeID string, episodeIndex int, seconds float64) (string, int, float64, error) {
 	trimmed := strings.TrimSpace(animeID)
 	if trimmed == "" {
@@ -68,8 +65,7 @@ func (s *Server) handleDeleteAccount(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		return
 	}
-	// Deleting a user cascades their watchlist, progress, history, preferences, sessions and
-	// party rows, so no orphan can keep a claim on the account's identifiers.
+	// Deleting a user cascades every owned row, so no orphan keeps a claim on the identifiers.
 	if err := s.auth.DeleteAccount(r.Context(), principal.UserID); err != nil {
 		s.serverError(w, "Failed to delete account.", err)
 		return
@@ -258,9 +254,8 @@ func (s *Server) handleDeleteWatchlist(w http.ResponseWriter, r *http.Request) {
 	WriteJSON(w, http.StatusOK, map[string]bool{"success": true})
 }
 
-// handleGetProgress returns one resume position. episode_index is the client's positional
-// index into its own episode list, stored as-is for compatibility with the client's existing
-// rows; new clients should prefer the history endpoint, which keys on a show title.
+// handleGetProgress returns one resume position. episode_index is stored as-is for
+// compatibility with existing client rows; new clients should use the history endpoint.
 func (s *Server) handleGetProgress(w http.ResponseWriter, r *http.Request) {
 	principal, ok := s.requirePrincipal(w, r)
 	if !ok {
@@ -302,8 +297,7 @@ func (s *Server) handlePutProgress(w http.ResponseWriter, r *http.Request) {
 		WriteError(w, http.StatusBadRequest, err.Error())
 		return
 	}
-	// Progress is written on a client timer; the rate limiter covers the volume, so this
-	// handler stays as cheap as a single upsert.
+	// Progress is written on a client timer; the rate limiter covers the volume.
 	if err := s.store.SaveProgress(r.Context(), principal.UserID, animeID, episodeIndex, seconds); err != nil {
 		s.serverError(w, "Could not save your progress.", err)
 		return
@@ -339,7 +333,7 @@ func (s *Server) handleListHistory(w http.ResponseWriter, r *http.Request) {
 	if items == nil {
 		items = []repository.HistoryItem{}
 	}
-	// The desktop player parses a top-level array exactly like the REST gateway it replaced.
+	// The desktop player parses a top-level array.
 	WriteJSON(w, http.StatusOK, items)
 }
 
@@ -404,8 +398,8 @@ func (s *Server) handleGetPreferences(w http.ResponseWriter, r *http.Request) {
 	_, _ = w.Write(doc)
 }
 
-// handlePutPreferences stores player settings so volume, speed, subtitle and audio choices
-// follow the account instead of one browser profile.
+// handlePutPreferences stores player settings so volume, speed and track choices follow the
+// account instead of one browser profile.
 func (s *Server) handlePutPreferences(w http.ResponseWriter, r *http.Request) {
 	principal, ok := s.requirePrincipal(w, r)
 	if !ok {

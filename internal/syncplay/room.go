@@ -33,16 +33,18 @@ type Participant struct {
 	Ready         bool    `json:"ready"`
 	Stalling      bool    `json:"stalling"`
 
-	// PingMs is this member's round trip; the start is scheduled off the room's highest so the peer that hears last still keeps up.
+	// PingMs is this member's round trip; the start is scheduled off the room's highest so the
+	// peer that hears last still keeps up.
 	PingMs int64 `json:"pingMs"`
 
 	// IgnoreWait marks a member the gate does not hold for; shown in the roster.
 	IgnoreWait bool `json:"ignoreWait"`
 
-	// DriftMS is position minus the canonical clock at the last heartbeat; published for humans,nothing decides from it.
+	// DriftMS is position minus the canonical clock at the last heartbeat; published for humans,
+	// nothing decides from it.
 	DriftMS float64 `json:"driftMs"`
 
-	// ClockOffsetMS is the member's own belief about its clock error published so it is legible outside that member.
+	// ClockOffsetMS is the member's own clock-error belief, published so it is legible outside it.
 
 	ClockOffsetMS   int64     `json:"clockOffsetMs"`
 	LastHeartbeatAt time.Time `json:"-"`
@@ -84,11 +86,13 @@ type Room struct {
 	stallingPeers    map[string]bool
 	stallGraceTimers map[string]*time.Timer
 
-	// seq counts broadcasts so clients can order packets that overtook each other; it only ever increases.
+	// seq counts broadcasts so clients can order packets that overtook each other; it only
+	// ever increases.
 	seq int64
 	// everActed separates "never played" from "paused", which the wire cannot tell apart.
 	everActed bool
-	// durationSeconds is the episode length, used to shrink the buffer goal near the end; zero means unknown and leaves the goal at its configured value.
+	// durationSeconds is the episode length, used to shrink the buffer goal near the end; zero
+	// means unknown and leaves the goal at its configured value.
 
 	durationSeconds float64
 
@@ -132,7 +136,8 @@ type gatePayload struct {
 	ReadyCount        int            `json:"readyCount"`
 	GroupState        groupState     `json:"groupState"`
 	SentAt            int64          `json:"sentAt"`
-	// WaitDeadlineMs is when the gate closes by itself, so a client shows time remaining not a spinner.
+	// WaitDeadlineMs is when the gate closes by itself, so a client shows time remaining, not
+	// a spinner.
 	WaitDeadlineMs int64 `json:"waitDeadlineMs,omitempty"`
 }
 
@@ -147,7 +152,8 @@ type syncPayload struct {
 	ScheduledPlayAt int64 `json:"scheduledPlayAt,omitempty"`
 }
 
-// allReadyPayload closes a buffer gate so the web client, which listens by name, ends it with one scheduled start rather than a resume per member.
+// allReadyPayload closes a buffer gate so the web client, which listens by name, ends it with
+// one scheduled start rather than a resume per member.
 
 type allReadyPayload struct {
 	stamped
@@ -238,7 +244,8 @@ type statesPayload struct {
 type softCorrectPayload struct {
 	stamped
 	CurrentTime float64 `json:"currentTime"`
-	// FromUserID and DriftMS attribute the correction, so it reads as the group working, not a glitch.
+	// FromUserID and DriftMS attribute the correction, so it reads as the group working, not a
+	// glitch.
 	FromUserID string  `json:"fromUserId,omitempty"`
 	DriftMS    float64 `json:"driftMs,omitempty"`
 	SentAt     int64   `json:"sentAt"`
@@ -974,8 +981,8 @@ func (h *Hub) handleHeartbeat(p *peer, in inbound, room *Room) {
 		room.durationSeconds = *req.DurationSeconds
 	}
 
-	// Only the host moves the canonical clock while playing; a paused room keeps the
-	// position its last pause set.
+	// Only the host moves the canonical clock while playing; a paused room keeps the position
+	// its last pause set.
 	if p.sid == room.hostSocketID && room.isPlaying {
 		room.currentTime = req.CurrentTime
 	}

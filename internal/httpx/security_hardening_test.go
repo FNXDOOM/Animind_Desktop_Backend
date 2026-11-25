@@ -9,8 +9,8 @@ import (
 	"time"
 )
 
-// TestClientIPHandlesIPv6 pins the transport-address parsing. Cutting at the first colon
-// returned "[2001" for an IPv6 peer, collapsing unrelated clients into one rate-limit key.
+// TestClientIPHandlesIPv6 pins IPv6 parsing: cutting at the first colon returned "[2001" and
+// collapsed unrelated clients into one rate-limit key.
 func TestClientIPHandlesIPv6(t *testing.T) {
 	cases := []struct{ remote, want string }{
 		{"192.0.2.10:5555", "192.0.2.10"},
@@ -38,8 +38,8 @@ func TestClientIPHandlesIPv6(t *testing.T) {
 	}
 }
 
-// TestCORSWithWildcardNeverAllowsCredentials pins the browser boundary: a wildcard is a
-// public API, never a credentialed one.
+// TestCORSWithWildcardNeverAllowsCredentials pins the browser boundary: a wildcard is a public
+// API, never a credentialed one.
 func TestCORSWithWildcardNeverAllowsCredentials(t *testing.T) {
 	server := testServerWith(t, func(d *Deps) {
 		d.Config.FrontendOrigins = []string{"*"}
@@ -54,8 +54,8 @@ func TestCORSWithWildcardNeverAllowsCredentials(t *testing.T) {
 	}
 }
 
-// TestSocketHandshakeIsRateLimited proves the socket route is behind the same per-route
-// limiter as the REST surface. Before the fix, every handshake created a peer.
+// TestSocketHandshakeIsRateLimited proves the socket route sits behind the same per-route
+// limiter as the REST surface.
 func TestSocketHandshakeIsRateLimited(t *testing.T) {
 	server := socketServer(t)
 	base := server.URL + "/api/socket.io?EIO=4&transport=polling"
@@ -103,8 +103,8 @@ func TestSecureDeploymentIgnoresLegacySessionCookie(t *testing.T) {
 	}
 }
 
-// TestSessionCookieUsesHostPrefixWhenSecure pins the cookie hygiene: a Secure deployment
-// uses the __Host- name, which no sibling subdomain can overwrite.
+// TestSessionCookieUsesHostPrefixWhenSecure pins the cookie hygiene: a Secure deployment uses
+// the __Host- name, which no sibling subdomain can overwrite.
 func TestSessionCookieUsesHostPrefixWhenSecure(t *testing.T) {
 	server := testServerWith(t, func(d *Deps) {
 		d.Config.Auth.SecureCookies = true
@@ -124,8 +124,8 @@ func TestSessionCookieUsesHostPrefixWhenSecure(t *testing.T) {
 	}
 }
 
-// TestDebugErrorDetailsAreOptIn guards the error-disclosure boundary. The default config
-// must not expose the underlying error even outside a production environment.
+// TestDebugErrorDetailsAreOptIn guards the error-disclosure boundary: the default config must
+// not expose the underlying error even outside a production environment.
 func TestDebugErrorDetailsAreOptIn(t *testing.T) {
 	if safeDetail(io.ErrUnexpectedEOF, false) != "" {
 		t.Fatal("safeDetail exposed an error without DEBUG_ERRORS")

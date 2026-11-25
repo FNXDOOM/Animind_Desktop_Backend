@@ -9,9 +9,8 @@ import (
 	"unicode/utf8"
 )
 
-// Trending counts normalized search queries over a rolling 7-day window. It is in-process
-// by design (spec §7.3): with several replicas each reports its own counts, and no user
-// identifier is ever recorded — only the query text itself.
+// Trending counts normalized search queries over a rolling 7-day window. It is in-process by
+// design: with several replicas each reports its own counts, and no user id is recorded.
 type Trending struct {
 	mu   sync.Mutex
 	days map[string]map[string]int // UTC date -> normalized query -> hits
@@ -28,9 +27,8 @@ func NewTrending(now func() time.Time) *Trending {
 
 const trendingDayFormat = "2006-01-02"
 
-// Record counts one search query. The query is normalized (trim, lowercase, strip
-// punctuation, collapse whitespace) and ignored outside the 2–80 rune range, so control
-// characters and one-letter floods never reach the endpoint.
+// Record counts one search query. The query is normalized and ignored outside the 2–80 rune
+// range, so control characters and one-letter floods never reach the endpoint.
 func (t *Trending) Record(query string) {
 	q := normalizeTrendingQuery(query)
 	if n := utf8.RuneCountInString(q); n < 2 || n > 80 {
@@ -47,9 +45,8 @@ func (t *Trending) Record(query string) {
 	bucket[q]++
 }
 
-// Top returns up to n queries hit inside the last seven days (today inclusive), descending
-// by count. Equal counts settle alphabetically: the buckets are a map, so Top must break
-// ties itself to stay deterministic.
+// Top returns up to n queries hit in the last seven days, descending by count. Equal counts
+// settle alphabetically: the buckets are a map, so Top must break ties itself.
 func (t *Trending) Top(n int) []string {
 	if n <= 0 {
 		return nil

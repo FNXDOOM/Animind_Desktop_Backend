@@ -42,9 +42,8 @@ func TestHubCoalescesPerJob(t *testing.T) {
 	for i := 0; i < 50; i++ {
 		hub.Publish(userID, JobEvent{ID: "j1", State: "downloading", Progress: float64(i) * 2})
 	}
-	// The first publish delivers at once, the rest must coalesce: only a
-	// handful of events may arrive and the final published state must be the
-	// last one delivered.
+	// The first publish delivers at once, the rest must coalesce: a handful of events may
+	// arrive, and the last published state must be the last delivered.
 	var got []JobEvent
 	deadline := time.After(2 * time.Second)
 loop:
@@ -190,9 +189,8 @@ func TestHubCapsSubscribers(t *testing.T) {
 }
 
 func TestHubCloseEndsEveryStream(t *testing.T) {
-	// Shutdown must be able to end the SSE streams itself: until every
-	// subscriber channel closes, its handler keeps the connection open and
-	// server.Shutdown blocks for its whole timeout window.
+	// Shutdown must end the SSE streams itself: until each subscriber channel closes, its
+	// handler keeps the connection open and server.Shutdown blocks for its whole timeout.
 	hub := NewEventHub()
 	userID := "user-close"
 	ch1, _, cancel1, ok1 := hub.Subscribe(userID)

@@ -16,12 +16,8 @@ import (
 	"animind-backend-go/internal/config"
 )
 
-// These run against a real Redis because their subject is the Lua and the group set: the
-// pieces that make counting and eviction correct across processes cannot be proven against
-// the in-process store.
-//
-// Point REDIS_TEST_URL at a disposable database (its own URL_DATABASE= number) to run them;
-// they skip otherwise, so a checkout without Redis stays green.
+// These run against a real Redis: the Lua window and group sets cannot be proven against the
+// in-process store. Point REDIS_TEST_URL at a disposable database; they skip otherwise.
 
 func discardLogger() *slog.Logger { return slog.New(slog.NewTextHandler(io.Discard, nil)) }
 

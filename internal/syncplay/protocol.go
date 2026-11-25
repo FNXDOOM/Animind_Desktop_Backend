@@ -1,7 +1,5 @@
 // Package syncplay runs watch parties on a server-authoritative clock. Socket.IO v4 is
-// hand-rolled because the deployed client needs Engine.IO framing over both WebSocket and
-// long-polling. Room state is in memory, since live playback is pointless to persist; the
-// database keeps a best-effort audit trail, so a failed write warns instead of stopping it.
+// hand-rolled for Engine.IO framing; room state is in memory with a best-effort DB audit trail.
 package syncplay
 
 import (
@@ -119,9 +117,8 @@ func (p *peer) enqueue(frame string) {
 	select {
 	case p.out <- frame:
 	default:
-		// A stale heartbeat is safe to lose; a state change is not, and nothing is
-		// retransmitted from here. A client that notices a gap calls requestSync, and the
-		// seq stamped on every broadcast lets it discard anything that arrives late.
+		// A stale heartbeat is safe to lose, a state change is not, and nothing is retransmitted
+		// from here; a client noticing a gap calls requestSync and seq lets it drop late packets.
 		p.logger.Debug("dropping socket packet for a slow client",
 			slog.String("sid", p.sid), slog.String("peer", p.userID))
 	}
@@ -182,9 +179,8 @@ func encodeAck(id int, payload any) (string, error) {
 	return fmt.Sprintf("%s%d%s", string(sioEventAck), id, string(body)), nil
 }
 
-// decodeMessage parses one or more concatenated socket.io packets in an Engine.IO message, which
-// is how socket.io-client sends polling batches. It splits on the packet-type byte, always a
-// digit and never the start of a JSON body.
+// decodeMessage parses concatenated socket.io packets in an Engine.IO message, which is how
+// socket.io-client sends polling batches. It splits on the packet-type byte.
 func decodeMessage(payload string) ([]inbound, error) {
 	var out []inbound
 	remaining := payload
@@ -546,9 +542,8 @@ func (h *Hub) handleSocketPacket(p *peer, body string) bool {
 	case sioDisconnect:
 		return false
 	case sioEvent:
-		// Application events are valid only after the CONNECT packet authenticates. Pre-auth
-		// events are ignored, not answered, to leave the deployed wire protocol untouched;
-		// the client can still authenticate normally afterward.
+		// Application events are valid only after CONNECT authenticates. Pre-auth events are
+		// ignored, not answered, leaving the deployed wire protocol untouched.
 		if !p.authenticated.Load() {
 			h.logger.Debug("ignoring socket event before authentication", slog.String("sid", p.sid))
 			return true

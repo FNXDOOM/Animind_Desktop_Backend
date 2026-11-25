@@ -19,9 +19,8 @@ import (
 	"animind-backend-go/internal/syncplay"
 )
 
-// Catalog, administration and diagnostics.
-// The catalog is intentionally public: both clients render it before sign-in. Cards and
-// detail rows never carry a file path or bucket name.
+// Catalog, administration and diagnostics. The catalog is public: both clients render it
+// before sign-in, and cards never carry a file path or bucket name.
 
 // showListItem is one catalog card.
 type showListItem struct {
@@ -58,8 +57,7 @@ func (s *Server) handleHealth(w http.ResponseWriter, r *http.Request) {
 		"uptime":    time.Since(s.startedAt).Round(time.Second).String(),
 		"storage":   string(s.cfg.Storage.Mode),
 	}
-	// A database that stops answering makes the API useless; report it as degraded rather
-	// than claiming health.
+	// A database that stops answering makes the API useless, so report degraded.
 	ctx, cancel := context.WithTimeout(r.Context(), 3*time.Second)
 	defer cancel()
 	if err := s.store.Ping(ctx); err != nil {
@@ -73,8 +71,7 @@ func (s *Server) handleHealth(w http.ResponseWriter, r *http.Request) {
 	WriteJSON(w, http.StatusOK, response)
 }
 
-// handleListShows returns a page of the catalog, duplicate series collapsed the way the
-// original backend did.
+// handleListShows returns a page of the catalog with duplicate series collapsed.
 func (s *Server) handleListShows(w http.ResponseWriter, r *http.Request) {
 	limit := QueryInt(r, "limit", 50, 1, 200)
 	offset := QueryInt(r, "offset", 0, 0, 1_000_000)
@@ -102,9 +99,8 @@ func (s *Server) handleListShows(w http.ResponseWriter, r *http.Request) {
 	})
 }
 
-// dedupeShows collapses rows describing the same series, keeping the richer one and the
-// incoming title order. Duplicates arrive two ways, one AniList id under two title spellings
-// and one title indexed twice, so two passes run; the scanner is where they never appear.
+// dedupeShows collapses rows describing the same series, keeping the richer one and incoming
+// title order; duplicates arrive as one AniList id under two spellings, or one title twice.
 func dedupeShows(shows []repository.Show) []repository.Show {
 	type entry struct {
 		show repository.Show
@@ -136,8 +132,7 @@ func dedupeShows(shows []repository.Show) []repository.Show {
 	byTitle := func(show repository.Show) string { return "title:" + metadata.NormalizeTitleKey(show.Title) }
 	byAnilist := func(show repository.Show) string {
 		if show.AnilistID == nil {
-			// Rows with no external link are not identifiable this way, so each keeps its own
-			// slot and the title pass below decides.
+			// Rows with no external link keep their own slot; the title pass decides.
 			return fmt.Sprintf("unlinked:%s", show.ID)
 		}
 		return fmt.Sprintf("anilist:%d", *show.AnilistID)
@@ -146,8 +141,7 @@ func dedupeShows(shows []repository.Show) []repository.Show {
 	return merge(merge(shows, byAnilist), byTitle)
 }
 
-// showRank scores a row's richness. The dedupe pass keeps whichever row could render the
-// better card.
+// showRank scores a row's richness so dedupe keeps the row that renders the better card.
 func showRank(show repository.Show) int {
 	score := 0
 	if show.AnilistID != nil {
@@ -180,9 +174,8 @@ type episodeListItem struct {
 	CreatedAt     time.Time `json:"created_at"`
 }
 
-// handleShowByID returns one show with its episodes, de-duplicated on (season, content type,
-// episode number): a fractional number keeps its fraction, so a special labelled 5.5 must not
-// merge into episode 5.
+// handleShowByID returns one show with its episodes de-duplicated on (season, content type,
+// episode number); a fractional number keeps its fraction, so 5.5 never merges into 5.
 func (s *Server) handleShowByID(w http.ResponseWriter, r *http.Request) {
 	id := Param(r, "id")
 	show, err := s.store.ShowByIDText(r.Context(), id)
@@ -205,8 +198,7 @@ func (s *Server) handleShowByID(w http.ResponseWriter, r *http.Request) {
 	items := make([]episodeListItem, 0, len(episodes))
 	for _, episode := range episodes {
 		if episode.EpisodeNumber == nil {
-			// A row with no number cannot be placed in a list; merging it at 0 would hide a
-			// real episode.
+			// A row with no number cannot be placed in a list; merging it at 0 hides a real episode.
 			continue
 		}
 		number := normalizeEpisodeNumber(*episode.EpisodeNumber)
@@ -223,8 +215,7 @@ func (s *Server) handleShowByID(w http.ResponseWriter, r *http.Request) {
 
 		thumbnail := episode.Thumbnail
 		if thumbnail == nil || *thumbnail == "" {
-			// Neither client has per-episode artwork, so the show cover is served rather
-			// than leaving the card blank.
+			// Neither client has per-episode artwork, so the show cover fills the card.
 			thumbnail = show.CoverImageURL
 		}
 		items = append(items, episodeListItem{
@@ -255,9 +246,8 @@ func normalizeSeason(value int) int {
 	return value
 }
 
-// handleAniListProxy forwards a read-only GraphQL document to AniList, which a browser
-// cannot call directly because AniList sends no CORS headers. Only queries are accepted: a
-// mutation here could write to an AniList account, which this server holds no token for.
+// handleAniListProxy forwards a read-only GraphQL document to AniList, which sends no CORS
+// headers. Only queries pass: this server holds no AniList token for a mutation.
 func (s *Server) handleAniListProxy(w http.ResponseWriter, r *http.Request) {
 	var body struct {
 		Query     string          `json:"query"`
@@ -302,9 +292,8 @@ func (s *Server) handleAniListProxy(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// AniList answers the same document identically for everybody, and clients re-request
-	// the same search and detail queries as a user browses. Relaying every one of them cost an
-	// outbound call per click and left AniList's rate limit as the clients' capacity limit.
+	// AniList answers the same document identically for everybody, so caching every search
+	// and detail query avoids an outbound call per click and AniList's rate limit.
 	cacheKey := cache.AniListKey(string(encoded))
 	if document, ok := s.cachedAniList(r.Context(), cacheKey); ok {
 		w.Header().Set("Content-Type", "application/json; charset=utf-8")
@@ -339,15 +328,13 @@ func (s *Server) handleAniListProxy(w http.ResponseWriter, r *http.Request) {
 		s.serverError(w, "Could not read the AniList response.", err)
 		return
 	}
-	// Cache only documents small enough to be a bounded memory cost. The cache also
-	// enforces a byte budget, but refusing an oversized document here keeps a single
-	// response from evicting the rest of the metadata working set.
+	// Cache only documents small enough to bound memory: an oversized response could evict
+	// the rest of the metadata working set.
 	const maxCachedAniListBytes = 256 << 10
 	if response.StatusCode != http.StatusOK {
 		s.logger.Warn("AniList upstream responded badly", slog.Int("status", response.StatusCode))
 	} else if len(upstream) <= maxCachedAniListBytes && isUsableGraphQLDocument(upstream) {
-		// Only a good document is stored: caching an empty match would hide the title from
-		// every later search for half a day.
+		// Only a good document is stored; an empty match would hide the title for half a day.
 		s.rememberAniList(r.Context(), cacheKey, upstream)
 	}
 	w.Header().Set("X-Cache", "MISS")
@@ -377,9 +364,8 @@ func (s *Server) rememberAniList(ctx context.Context, key string, document []byt
 	}
 }
 
-// isUsableGraphQLDocument reports a response worth remembering: JSON carrying data and no
-// top-level errors. AniList answers some failures with 200 and an errors array, which must
-// not become a half-day of silence.
+// isUsableGraphQLDocument reports a response worth remembering: JSON with data and no
+// top-level errors, since AniList answers some failures with 200 and an errors array.
 func isUsableGraphQLDocument(body []byte) bool {
 	var envelope struct {
 		Data   json.RawMessage `json:"data"`
@@ -394,8 +380,7 @@ func isUsableGraphQLDocument(body []byte) bool {
 	return len(envelope.Data) > 0 && string(envelope.Data) != "null"
 }
 
-// isReadOnlyGraphQL rejects documents that mutate, including one hidden inside a comment
-// or a fragment, which is why comments are stripped before the check.
+// isReadOnlyGraphQL rejects mutating documents, so comments are stripped before the check.
 func isReadOnlyGraphQL(query string) bool {
 	var lines []string
 	for _, line := range strings.Split(query, "\n") {
@@ -409,13 +394,12 @@ func isReadOnlyGraphQL(query string) bool {
 	return !strings.Contains(lowered, "mutation") && !strings.Contains(lowered, "subscription")
 }
 
-// handleStorageWebhook triggers a scan when the object store reports a new file. It answers
-// before scanning: a bucket waiting on a scan would retry the notification, and scans are
-// serialized anyway.
+// handleStorageWebhook triggers a scan on a new object; it answers before scanning because a
+// bucket waiting on a scan would retry the notification.
 func (s *Server) handleStorageWebhook(w http.ResponseWriter, r *http.Request) {
 	secret := r.Header.Get("x-webhook-secret")
-	// Constant-time comparison: this is a shared secret, and a byte-at-a-time mismatch would
-	// turn the endpoint into an oracle for recovering it.
+	// Constant-time comparison: a byte-at-a-time mismatch would turn the endpoint into an
+	// oracle for recovering this shared secret.
 	if subtle.ConstantTimeCompare([]byte(secret), []byte(s.cfg.WebhookSecret)) != 1 {
 		WriteError(w, http.StatusUnauthorized, "Invalid webhook secret.")
 		return
@@ -431,9 +415,8 @@ func (s *Server) handleStorageWebhook(w http.ResponseWriter, r *http.Request) {
 	}()
 }
 
-// runLibraryScan performs a scan and schedules the audio prewarm that keeps the first play of
-// a newly indexed episode from waiting on ffmpeg. It is shared by the admin JSON endpoint and
-// the admin console; both call the scanner, which serializes overlapping runs.
+// runLibraryScan performs a scan, then schedules the audio prewarm that keeps a new episode's
+// first play from waiting on ffmpeg; the scanner serializes overlapping runs.
 func (s *Server) runLibraryScan(ctx context.Context) (*scanner.Result, error) {
 	if s.scanner == nil {
 		return nil, errors.New("scanner is not configured")
@@ -443,8 +426,7 @@ func (s *Server) runLibraryScan(ctx context.Context) (*scanner.Result, error) {
 		return nil, err
 	}
 
-	// Prewarming is best-effort and runs after the scan: first playback of a new episode
-	// would otherwise wait on an ffmpeg transcode.
+	// Prewarming is best-effort; without it a new episode's first play waits on ffmpeg.
 	if s.cfg.IsLocal() && s.cfg.AudioCache.PrewarmEnabled && s.audio != nil && s.storage != nil {
 		targets := s.scanner.PrewarmTargets()
 		if len(targets) > 0 {
@@ -473,7 +455,7 @@ func (s *Server) handleAdminScan(w http.ResponseWriter, r *http.Request) {
 }
 
 // handleAdminUsers lists accounts from the user table, so an account that never opened the
-// site appears too; it replaces the old profile-row list.
+// site appears too.
 func (s *Server) handleAdminUsers(w http.ResponseWriter, r *http.Request) {
 	limit := QueryInt(r, "limit", 100, 1, 200)
 	offset := QueryInt(r, "offset", 0, 0, 100_000)
@@ -486,9 +468,8 @@ func (s *Server) handleAdminUsers(w http.ResponseWriter, r *http.Request) {
 }
 
 type setAdminRequest struct {
-	// IsAdmin is optional: nil leaves the flag untouched, so a
-	// {"can_download": ...}-only PATCH cannot demote an admin target and the
-	// legacy {"is_admin": ...} payload keeps its exact old behaviour.
+	// IsAdmin is optional: nil leaves the flag untouched, so a can_download-only PATCH
+	// cannot demote an admin target.
 	IsAdmin *bool `json:"is_admin"`
 	// CanDownload is optional: nil leaves the entitlement untouched.
 	CanDownload *bool `json:"can_download"`
@@ -502,8 +483,8 @@ func (s *Server) handleAdminSetUserAdmin(w http.ResponseWriter, r *http.Request)
 	}
 	target := Param(r, "id")
 	principal := PrincipalFromContext(r.Context())
-	// The self-demote guard fires only when this request would actually change
-	// is_admin: toggling can_download on self is legitimate.
+	// The self-demote guard fires only when this request would actually change is_admin;
+	// toggling can_download on self is legitimate.
 	if principal != nil && target == principal.UserID && req.IsAdmin != nil && !*req.IsAdmin {
 		WriteError(w, http.StatusBadRequest, "You cannot remove your own admin access.")
 		return
@@ -528,8 +509,7 @@ func (s *Server) handleAdminSetUserAdmin(w http.ResponseWriter, r *http.Request)
 			return
 		}
 	}
-	// IsAdmin and can_download are part of the cached identity, so a change must
-	// evict it or the change lands a minute late.
+	// IsAdmin and can_download live in the cached identity, so a change must evict it.
 	s.auth.InvalidateUser(r.Context(), target)
 	WriteJSON(w, http.StatusOK, map[string]bool{"success": true})
 }
@@ -547,8 +527,7 @@ func (s *Server) handleAdminDeleteShow(w http.ResponseWriter, r *http.Request) {
 	WriteJSON(w, http.StatusOK, map[string]bool{"success": true})
 }
 
-// handleAdminMetrics reports real operational numbers, replacing the hard-coded dashboard
-// values the old site showed. The admin console reads the same tables through its own pages.
+// handleAdminMetrics reports real operational numbers for the admin dashboard.
 func (s *Server) handleAdminMetrics(w http.ResponseWriter, r *http.Request) {
 	shows, episodes, err := s.store.LibraryCounts(r.Context())
 	if err != nil {
@@ -598,8 +577,7 @@ func (s *Server) handleAdminCleanupCaches(w http.ResponseWriter, r *http.Request
 	WriteJSON(w, http.StatusOK, result)
 }
 
-// handleRoomLookup answers whether a room code is live and which episode it is on, so a
-// client can validate a code before asking the user to open a show.
+// handleRoomLookup answers whether a room code is live and which episode it is on.
 func (s *Server) handleRoomLookup(w http.ResponseWriter, r *http.Request) {
 	code := strings.ToUpper(strings.TrimSpace(Param(r, "code")))
 	if code == "" {
@@ -612,8 +590,7 @@ func (s *Server) handleRoomLookup(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 	}
-	// A code that is not live may still have been a room, which distinguishes "expired" from
-	// "never existed".
+	// A dead code may still have been a room, which distinguishes expired from never existed.
 	if s.hub != nil {
 		if stored, err := s.hub.PersistedRoom(code); err == nil && stored != nil {
 			WriteErrorCode(w, http.StatusGone, "room_ended", "That watch party has ended.")

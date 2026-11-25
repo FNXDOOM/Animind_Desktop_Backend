@@ -15,21 +15,16 @@ import (
 
 // Subtitle handling.
 //
-// Subtitles are extracted once at scan time into a canonical tree, so playback never pays
-// for an ffmpeg run and a re-scan does not redo the work:
-//
-//	<Show>/Subtitles/Episode 05/English.vtt
-//	<Show>/Subtitles/Season 03/Episode 05/English.vtt   (season > 1)
-//
-// Hand-written SRT sidecars next to the video are still read, and converted on the way out.
+// Subtitles are extracted once at scan time into a canonical tree, so playback never runs
+// ffmpeg and a re-scan does not redo the work. Hand-written SRT sidecars are still read.
 
 // SubtitleTrack is one usable subtitle for a client.
 type SubtitleTrack struct {
 	ID       string `json:"id"`
 	Label    string `json:"label"`
 	Language string `json:"language"`
-	// Content is a complete WebVTT document. The site renders cues itself rather than
-	// using a track element, so the text must be inline in the response.
+	// Content is a complete WebVTT document, inline because the site renders cues itself
+	// rather than using a track element.
 	Content string `json:"content"`
 }
 
@@ -39,8 +34,7 @@ const (
 	vttExtension     = ".vtt"
 )
 
-// EpisodeFolderName formats the per-episode directory, widening to three digits only past
-// 99 so a 1000-episode series still sorts.
+// EpisodeFolderName formats the per-episode directory, widening past 99 so long series sort.
 func EpisodeFolderName(number float64) string {
 	whole := int(number)
 	width := 2
@@ -53,8 +47,7 @@ func EpisodeFolderName(number float64) string {
 // SeasonFolderName formats the per-season directory.
 func SeasonFolderName(season int) string { return fmt.Sprintf("Season %02d", season) }
 
-// SubtitleDirRelative returns the canonical subtitle directory for a video, relative to
-// the library root.
+// SubtitleDirRelative returns the canonical subtitle directory, relative to the library root.
 func SubtitleDirRelative(videoRelPath string, season int, episode float64) string {
 	root := strings.Split(filepath.ToSlash(videoRelPath), "/")[0]
 	if root == "" {
@@ -68,9 +61,8 @@ func SubtitleDirRelative(videoRelPath string, season int, episode float64) strin
 	return filepath.FromSlash(strings.Join(parts, "/"))
 }
 
-// ExtractEmbeddedSubtitles converts a video's embedded subtitle streams into WebVTT files
-// on disk. It is a no-op when the directory already holds subtitles, when the target is
-// read-only, or when ffmpeg cannot read the file.
+// ExtractEmbeddedSubtitles converts a video's embedded subtitle streams into WebVTT files.
+// It is a no-op when subtitles exist, the target is read-only, or ffmpeg cannot read the file.
 func (f *FFmpeg) ExtractEmbeddedSubtitles(ctx context.Context, store *storage.Service, videoRelPath string, episode float64, season int) error {
 	if !store.IsLocal() {
 		// Sidecar extraction needs a writable directory on the host.
@@ -138,9 +130,8 @@ func (f *FFmpeg) ExtractEmbeddedSubtitles(ctx context.Context, store *storage.Se
 	return nil
 }
 
-// writeSubtitleVTT renders one stream to a WebVTT file. ASS and SSA use the in-process
-// converter because ffmpeg's own ASS-to-VTT path keeps sign and karaoke lines, which
-// clutter an episode; everything else uses ffmpeg's webvtt muxer.
+// writeSubtitleVTT renders one stream to WebVTT. ASS/SSA use the in-process converter
+// because ffmpeg's path keeps sign and karaoke lines; everything else uses the webvtt muxer.
 func (f *FFmpeg) writeSubtitleVTT(ctx context.Context, videoPath string, stream Stream, outPath string) error {
 	switch strings.ToLower(stream.Codec) {
 	case "ass", "ssa":
@@ -167,8 +158,7 @@ func (f *FFmpeg) writeSubtitleVTT(ctx context.Context, videoPath string, stream 
 	}
 }
 
-// dirIsWritable probes a directory by creating and removing a file. Checking the mode bits
-// would be wrong on the ACL-backed mounts these libraries usually live on.
+// dirIsWritable probes a directory by writing a file; mode bits are wrong on ACL-backed mounts.
 func dirIsWritable(dir string) bool {
 	probe := filepath.Join(dir, ".write-probe")
 	if err := os.MkdirAll(dir, 0o755); err != nil {
@@ -190,8 +180,8 @@ func sanitizeName(name string) string {
 	return cleaned
 }
 
-// SubtitleTracks collects every subtitle available for one episode: the canonical
-// extracted directory, its legacy spellings, and any sidecar files beside the video.
+// SubtitleTracks collects subtitles for one episode: the canonical directory, legacy
+// spellings, and sidecar files beside the video.
 func (f *FFmpeg) SubtitleTracks(ctx context.Context, store *storage.Service, videoRelPath string, season int, episode float64) ([]SubtitleTrack, error) {
 	base := strings.Split(filepath.ToSlash(videoRelPath), "/")
 	fileName := base[len(base)-1]
@@ -339,8 +329,8 @@ func StripExtensionFromName(name string) string {
 	return name
 }
 
-// ConvertSRTToVTT turns an SRT document into WebVTT. The two formats differ only in the
-// header, the comma-vs-dot timestamp separator, and the cue index lines.
+// ConvertSRTToVTT turns SRT into WebVTT; the formats differ in the header, timestamp
+// separator, and cue index lines.
 func ConvertSRTToVTT(srt string) string {
 	normalized := strings.ReplaceAll(srt, "\r\n", "\n")
 	var out strings.Builder
@@ -353,8 +343,7 @@ func ConvertSRTToVTT(srt string) string {
 	return out.String()
 }
 
-// assStyleBlocklist matches style names used for typesetting rather than dialogue: signs,
-// karaoke, openings and credits. Cues in those styles are dropped.
+// assStyleBlocklist matches typesetting styles (signs, karaoke, credits); those cues are dropped.
 var assStyleBlocklist = regexp.MustCompile(`(?i)sign|caption|title|song|op|ed|opening|ending|karaoke|kara|romaji|credit|note|info|typeset|on\s?screen|screen`)
 
 var (
@@ -369,10 +358,8 @@ var (
 	punctuationPattern = regexp.MustCompile(`^[\s\W]+$`)
 )
 
-// ConvertAssToVTT renders ASS/SSA dialogue into WebVTT. Only [Events] lines are read, and
-// the section's own Format line locates the fields because column order is not fixed
-// across release groups. Drawing commands, override blocks and blacklisted styles are
-// dropped, and consecutive duplicate cues collapse.
+// ConvertAssToVTT renders ASS/SSA dialogue into WebVTT. The section's Format line locates
+// fields since column order varies; drawings, blacklisted styles and duplicate cues drop.
 func ConvertAssToVTT(ass string) string {
 	lines := strings.Split(strings.ReplaceAll(ass, "\r\n", "\n"), "\n")
 
@@ -473,8 +460,7 @@ func stripAssTags(text string) string {
 	return strings.TrimSpace(out)
 }
 
-// looksLikeJunk rejects cues that are only timing noise or punctuation, which ASS karaoke
-// and effect lines commonly produce.
+// looksLikeJunk rejects cues that are only timing noise or punctuation from karaoke lines.
 func looksLikeJunk(text string) bool {
 	if punctuationPattern.MatchString(text) {
 		return true

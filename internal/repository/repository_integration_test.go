@@ -19,12 +19,8 @@ import (
 // discardLogger keeps migration and repository output out of the test log.
 func discardLogger() *slog.Logger { return slog.New(slog.NewTextHandler(io.Discard, nil)) }
 
-// Integration tests run against a real Postgres, because the behaviour worth verifying here
-// is the SQL itself: constraint names the upserts target, cascade deletes, and the
-// ownership filters that authorize user data.
-//
-// Point POSTGRES_TEST_DATABASE_URL at a disposable database to run them. They are skipped
-// otherwise so a checkout without a database still has a green suite.
+// Integration tests run against a real Postgres because the SQL itself is what matters:
+// constraint names, cascades and ownership filters. Set POSTGRES_TEST_DATABASE_URL to run them.
 func newTestStore(t *testing.T) *Store {
 	t.Helper()
 	url := os.Getenv("POSTGRES_TEST_DATABASE_URL")
@@ -36,9 +32,8 @@ func newTestStore(t *testing.T) *Store {
 	t.Setenv("DESKTOP_TOKEN_SIGNING_KEY", strings.Repeat("k", 48))
 	t.Setenv("STORAGE_MODE", "local")
 	t.Setenv("LOCAL_STORAGE_PATH", t.TempDir())
-	// Keep the pool small: `go test` runs packages concurrently and each database-backed
-	// package opens its own pool, so a production-sized pool here can exhaust
-	// Postgres' max_connections and stall unrelated suites.
+	// Keep the pool small: packages test concurrently and each opens its own pool, so a
+	// production-sized pool can exhaust max_connections and stall unrelated suites.
 	t.Setenv("DB_MAX_CONNS", "2")
 
 	cfg, err := config.Load()
@@ -57,8 +52,7 @@ func newTestStore(t *testing.T) *Store {
 	t.Cleanup(db.Close)
 
 	store := New(db)
-	// Each run starts from a clean slate: the tests create accounts on a unique email
-	// suffix, but sessions and library rows would otherwise accumulate.
+	// Each run starts clean: emails are unique per test, but sessions and library rows accumulate.
 	if _, err := db.Pool.Exec(ctx, `
 		truncate table watch_parties, watch_party_participants, user_preferences,
 		         watch_history, progress, watchlist, desktop_auth_sessions,
@@ -220,8 +214,7 @@ func TestDesktopSessionRotationAndCleanup(t *testing.T) {
 		t.Errorf("the new refresh token must work: %v", err)
 	}
 
-	// A second desktop session for the same account is allowed, which is what device lists
-	// are for.
+	// A second desktop session for the same account is allowed, which is what device lists are for.
 	if _, err := store.CreateDesktopSession(ctx, user.ID, "session-2", "other-machine", "Laptop",
 		"refresh-hash-3", "access-hash-3", time.Now().Add(time.Hour), time.Now().Add(720*time.Hour)); err != nil {
 		t.Fatalf("second device: %v", err)
@@ -535,8 +528,7 @@ func TestWatchPartyRecordsAndTTLDelete(t *testing.T) {
 	if err := store.RecordPartyParticipant(ctx, "ABCDE", other.ID); err != nil {
 		t.Fatalf("participant: %v", err)
 	}
-	// A duplicate room code is a primary-key violation, which is how a code collision is
-	// meant to surface.
+	// A duplicate room code is a primary-key violation, which is how a collision surfaces.
 	if err := store.CreateParty(ctx, "ABCDE", other.ID, "Other", nil); err == nil {
 		t.Error("a colliding room code must not overwrite the live room")
 	}

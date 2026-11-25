@@ -8,9 +8,8 @@ import (
 	"strings"
 )
 
-// The library queries are shared by the catalog endpoints, the scanner, and the
-// streaming handlers, so they live together and are the only place episode file
-// paths are read.
+// These queries are shared by the catalog endpoints, the scanner and the streaming
+// handlers, and are the only place episode file paths are read.
 
 const showColumns = `
 	id::text, title, synopsis, cover_image_url, genres, rating::float8, episode_count,
@@ -49,9 +48,8 @@ func scanEpisode(row scanner) (*Episode, error) {
 	return &e, nil
 }
 
-// showFilter builds the optional WHERE clause shared by the catalog page and the admin count.
-// Keeping the escaping in one place means a search for "%" cannot turn into a full-table scan
-// on one path but not the other.
+// showFilter builds the optional WHERE clause shared by the catalog page and admin count,
+// so wildcard escaping is identical on both paths.
 func showFilter(search, genre string) (string, []any) {
 	var clauses []string
 	args := make([]any, 0, 2)
@@ -70,9 +68,8 @@ func showFilter(search, genre string) (string, []any) {
 	return " where " + strings.Join(clauses, " and "), args
 }
 
-// ListShows returns the catalog page plus the unpaginated total. search matches title, studio
-// or synopsis and genre filters the genres array; both are optional. The dedupe-by-identity
-// pass belongs to the HTTP layer, not here, so the raw total stays honest.
+// ListShows returns the catalog page plus the unpaginated total. search matches title,
+// studio or synopsis; genre filters the genres array. Both are optional.
 func (s *Store) ListShows(ctx context.Context, limit, offset int, search, genre string) ([]Show, int64, error) {
 	var total int64
 	if err := s.pool.QueryRow(ctx, `select count(*) from shows`).Scan(&total); err != nil {
@@ -103,8 +100,7 @@ func (s *Store) ListShows(ctx context.Context, limit, offset int, search, genre 
 	return out, total, rows.Err()
 }
 
-// CountShows returns the total matching a catalog filter. The public ListShows keeps its
-// historical unfiltered total; the admin library page needs the filtered number for its pager.
+// CountShows returns the total matching a catalog filter, which the admin pager needs.
 func (s *Store) CountShows(ctx context.Context, search, genre string) (int64, error) {
 	where, args := showFilter(search, genre)
 	var total int64
@@ -117,8 +113,7 @@ func (s *Store) ShowByID(ctx context.Context, id string) (*Show, error) {
 	return scanShow(s.pool.QueryRow(ctx, `select `+showColumns+` from shows where id = $1::uuid`, id))
 }
 
-// ShowByIDText is ShowByID but tolerant of a non-uuid id, so a malformed path
-// parameter reports "not found" instead of a database error.
+// ShowByIDText is ShowByID but reports a malformed id as not-found.
 func (s *Store) ShowByIDText(ctx context.Context, id string) (*Show, error) {
 	if !isUUID(id) {
 		return nil, ErrNotFound
@@ -126,9 +121,8 @@ func (s *Store) ShowByIDText(ctx context.Context, id string) (*Show, error) {
 	return s.ShowByID(ctx, id)
 }
 
-// EpisodesForShow returns every episode of a show ordered for playback. The 10000 limit is
-// deliberate: a long-running series must not be silently truncated the way the original
-// backend's 1000-row default page did.
+// EpisodesForShow returns every episode ordered for playback. The 10000 limit is
+// deliberate: a long-running series must not be silently truncated.
 func (s *Store) EpisodesForShow(ctx context.Context, showID string) ([]Episode, error) {
 	rows, err := s.pool.Query(ctx, `
 		select `+episodeColumns+` from episodes
@@ -171,8 +165,7 @@ func (s *Store) EpisodeExists(ctx context.Context, id string) bool {
 	return err == nil && exists
 }
 
-// DeleteShow removes a show; its episodes cascade, and any watch party pointing at it
-// keeps its row but loses the reference.
+// DeleteShow removes a show; episodes cascade and watch parties lose the reference.
 func (s *Store) DeleteShow(ctx context.Context, id string) error {
 	if !isUUID(id) {
 		return ErrNotFound
@@ -194,15 +187,14 @@ func (s *Store) ShowByTitle(ctx context.Context, title string) (*Show, error) {
 	return scanShow(s.pool.QueryRow(ctx, `select `+showColumns+` from shows where lower(trim(title)) = lower(trim($1)) limit 1`, title))
 }
 
-// ShowByAnilistID finds a show already linked to an external entry, which is how the
-// scanner avoids creating a duplicate when a release name differs from the official one.
+// ShowByAnilistID finds a show already linked to an external entry, avoiding a duplicate.
 func (s *Store) ShowByAnilistID(ctx context.Context, anilistID int) (*Show, error) {
 	return scanShow(s.pool.QueryRow(ctx,
 		`select `+showColumns+` from shows where anilist_id = $1 limit 1`, anilistID))
 }
 
-// ShowCandidates returns loose title matches for scoring. A release folder rarely
-// equals the official title, so the scanner ranks these rather than trusting SQL.
+// ShowCandidates returns loose title matches for scoring; release folders rarely
+// equal official titles.
 func (s *Store) ShowCandidates(ctx context.Context, title string, limit int) ([]Show, error) {
 	// Collapse the title into a per-word wildcard pattern, e.g. "Frieren S1" -> "%frieren%s1%".
 	words := strings.Fields(strings.ToLower(title))
@@ -230,8 +222,8 @@ func (s *Store) ShowCandidates(ctx context.Context, title string, limit int) ([]
 	return out, rows.Err()
 }
 
-// CreateShow inserts a show. A unique-violation on title is returned as-is so the
-// scanner can re-read the winning row from a concurrent scan.
+// CreateShow inserts a show. A title unique violation is returned as-is so the scanner
+// can re-read the winning row from a concurrent scan.
 func (s *Store) CreateShow(ctx context.Context, in Show) (*Show, error) {
 	return scanShow(s.pool.QueryRow(ctx, `
 		insert into shows (title, synopsis, cover_image_url, genres, rating, episode_count,
@@ -242,8 +234,7 @@ func (s *Store) CreateShow(ctx context.Context, in Show) (*Show, error) {
 		in.Studio, in.Status, in.Year, in.AnilistID, in.TrailerID, in.TrailerSite, in.TrailerThumbnail))
 }
 
-// FillShowMetadata writes only the metadata fields that are still empty, so a scan
-// never overwrites good data with a weaker source.
+// FillShowMetadata writes only empty metadata fields, so a scan never overwrites good data.
 func (s *Store) FillShowMetadata(ctx context.Context, id string, in Show) error {
 	_, err := s.pool.Exec(ctx, `
 		update shows set
@@ -265,9 +256,8 @@ func (s *Store) FillShowMetadata(ctx context.Context, id string, in Show) error 
 	return err
 }
 
-// UpsertEpisode inserts or replaces one episode keyed by show, season, content type
-// and episode number. Re-scanning a library must be idempotent, and a moved file must
-// update the row rather than duplicate it.
+// UpsertEpisode inserts or replaces an episode keyed by show, season, content type and
+// number. Re-scanning is idempotent, and a moved file updates rather than duplicates.
 func (s *Store) UpsertEpisode(ctx context.Context, in Episode) (*Episode, error) {
 	return scanEpisode(s.pool.QueryRow(ctx, `
 		insert into episodes (show_id, season_number, content_type, episode_number, file_path,
@@ -382,9 +372,8 @@ func (s *Store) DeleteShowsByID(ctx context.Context, ids []string) (int64, error
 	return tag.RowsAffected(), nil
 }
 
-// escapeLike neutralises the wildcards inside a user-supplied search term. Values are always
-// passed as parameters, so this is not injection: it stops a literal "%" from turning the
-// search into a full table scan.
+// escapeLike neutralises wildcards in a user search term. Values are always parameters, so
+// this is not injection: it stops a literal "%" from forcing a full table scan.
 func escapeLike(value string) string {
 	return strings.NewReplacer(`\`, `\\`, `%`, `\%`, `_`, `\_`).Replace(value)
 }
@@ -396,8 +385,7 @@ type LibraryStats struct {
 	Users    int64
 }
 
-// CountLibrary answers the catalog and account totals in one round trip, which is what makes
-// it safe to call from a scrape.
+// CountLibrary answers the catalog and account totals in one round trip for scrapes.
 func (s *Store) CountLibrary(ctx context.Context) (LibraryStats, error) {
 	var counts LibraryStats
 	err := s.pool.QueryRow(ctx, `

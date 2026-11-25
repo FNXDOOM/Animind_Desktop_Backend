@@ -30,9 +30,8 @@ const (
 )
 
 var (
-	// ErrForbidden answers the 403 class: the actor is neither the job's owner
-	// nor an admin. Enforced by the user-action methods right after the row is
-	// loaded, before any state check.
+	// ErrForbidden answers the 403 class: the actor is neither the job's owner nor an admin.
+	// The user-action methods check it right after loading the row.
 	ErrForbidden = errors.New("downloads: forbidden")
 	// ErrDiskFull answers the 507 class: the download root lacks headroom.
 	ErrDiskFull = errors.New("downloads: insufficient_disk")
@@ -43,15 +42,13 @@ var (
 	ErrDuplicate = errors.New("downloads: duplicate")
 	// ErrTooManyActive answers the 403 quota class, global or per user.
 	ErrTooManyActive = errors.New("downloads: too_many_active")
-	// ErrInvalidSelection answers the 400 invalid_file_selection class: the
-	// requested indexes cannot name files of this torrent. Everything else a
-	// selection touches (store, engine) is a server fault and must not wear it.
+	// ErrInvalidSelection answers the 400 invalid_file_selection class: the requested indexes
+	// cannot name files of this torrent. Store and engine faults must not wear it.
 	ErrInvalidSelection = errors.New("downloads: invalid_file_selection")
 )
 
-// DuplicateJobError reports a Create refused because the same info hash is
-// already an active job for the user. JobID names the existing job so the HTTP
-// layer can point the client at it without parsing error text.
+// DuplicateJobError reports a Create refused because the same info hash is already an active
+// job for the user; JobID names that job so the HTTP layer need not parse error text.
 type DuplicateJobError struct{ JobID string }
 
 // Error renders the duplicate as a sentence; the job id in it is for logs, and callers
@@ -106,16 +103,14 @@ type scanRunner interface {
 // build here instead of at wiring time.
 var _ scanRunner = (*scanner.Service)(nil)
 
-// Observer is the metric seam between the manager and the process's Prometheus
-// registry (spec §7.10). A missing observer disables every hook, and all
-// methods run from drive goroutines, so they must be cheap and non-blocking.
+// Observer is the metric seam to the process's Prometheus registry. A missing observer
+// disables every hook; methods run from drive goroutines, so they must be cheap.
 type Observer interface {
 	// ActiveJobs records the CountActiveDownloadJobs(nil) snapshot taken each
 	// progress ticker pass (and for free from Create's own quota check).
 	ActiveJobs(n int)
-	// BytesDownloaded accounts the bytes completed since the previous progress
-	// tick; the delta is computed here so the counter stays monotonic without
-	// double counting across restarts.
+	// BytesDownloaded accounts bytes completed since the previous tick; the delta is computed
+	// here so the counter stays monotonic across restarts.
 	BytesDownloaded(delta int64)
 	// JobFailed accounts one transition into failed.
 	JobFailed()
@@ -125,16 +120,14 @@ type Observer interface {
 // concrete type; a pointer to a struct holding the interface sidesteps both.
 type observerBox struct{ o Observer }
 
-// Manager owns the download_jobs state machine: quotas and dedupe on Create, one
-// drive goroutine per live job, startup resume, and hub publications. It never
-// writes download_jobs outside the repository methods on the store seam.
+// Manager owns the download_jobs state machine: quotas and dedupe on Create, one drive
+// goroutine per live job, startup resume, and hub publications.
 type Manager struct {
 	store  store
 	engine Engine
 	cfg    config.DownloadsConfig
-	// libraryRoot is the real library root, threaded rather than derived from
-	// cfg.Dir: Task 1 only pins DOWNLOADS_DIR somewhere under it. An empty root
-	// fails imports closed.
+	// libraryRoot is the real library root, threaded rather than derived from cfg.Dir, which is
+	// only pinned somewhere under it. An empty root fails imports closed.
 	libraryRoot string
 	scanner     scanRunner
 	shows       showResolver // show_id lookups; nil when the store can't answer them
@@ -156,9 +149,8 @@ type Manager struct {
 	jobs map[string]*jobRun
 }
 
-// NewManager wires the production manager. libraryRoot must be the configured
-// library root (cfg.Storage.LocalPath at wiring time), not anything derived
-// from cfg.Dir: DOWNLOADS_DIR is only guaranteed to live under it.
+// NewManager wires the production manager. libraryRoot must be the configured library root
+// (cfg.Storage.LocalPath), not anything derived from cfg.Dir.
 func NewManager(store *repository.Store, engine Engine, cfg config.DownloadsConfig, libraryRoot string, scanner scanRunner, hub eventPublisher, diskFree func(path string, min int64) (bool, error)) *Manager {
 	return newManager(dbStore{store}, engine, cfg, libraryRoot, scanner, hub, diskFree)
 }
@@ -183,14 +175,12 @@ func newManager(st store, engine Engine, cfg config.DownloadsConfig, libraryRoot
 	}
 }
 
-// Close stops every drive goroutine; the wiring calls it on shutdown next to
-// engine.Close. Rows in non-terminal states survive and are picked up by
-// ResumeFromStore on the next start.
+// Close stops every drive goroutine. Non-terminal rows survive and ResumeFromStore picks
+// them up on the next start.
 func (m *Manager) Close() { m.stopAll() }
 
-// SetObserver installs the metric hooks. Called by the HTTP wiring after the
-// process's registry exists, which may be after ResumeFromStore already started
-// drive loops — hence the atomic.
+// SetObserver installs the metric hooks, possibly after ResumeFromStore already started drive
+// loops — hence the atomic.
 func (m *Manager) SetObserver(o Observer) {
 	if o == nil {
 		return
@@ -206,17 +196,15 @@ func (m *Manager) obs() Observer {
 	return nil
 }
 
-// jobRun is the live side of one job: the engine handle plus the drive
-// generation. Guarded fields are touched by HTTP goroutines while the drive
-// goroutine runs.
+// jobRun is the live side of one job: the engine handle plus the drive generation. Guarded
+// fields are touched by HTTP goroutines while the drive goroutine runs.
 type jobRun struct {
 	id     uuid.UUID
 	userID string
 	magnet string
 
-	// metricLast keeps the bytes counter a delta, not a cumulative re-add;
-	// metricInit is true for fresh jobs (count from zero), false for adopted
-	// runs (first reading seeds). Both are under mu: drive generations overlap.
+	// metricLast keeps the bytes counter a delta; metricInit is true for fresh jobs and false
+	// for adopted runs, whose first reading seeds the baseline. Both are under mu.
 	metricLast int64
 	metricInit bool
 
@@ -282,9 +270,8 @@ func (m *Manager) launch(j *jobRun) {
 
 // ── Create ───────────────────────────────────────────────────────────────────
 
-// Create validates in the spec §7.5 order — disk, size, per-user, global,
-// duplicate — all before the row is written, then enqueues the drive loop.
-// Rejected requests never leave rows behind.
+// Create validates in the spec §7.5 order — disk, size, per-user, global, duplicate — before
+// the row is written, then enqueues the drive loop. Rejections leave no rows behind.
 func (m *Manager) Create(ctx context.Context, req Request) (repository.DownloadJob, error) {
 	if !m.cfg.Enabled {
 		return repository.DownloadJob{}, ErrNotEnabled
@@ -336,9 +323,8 @@ func (m *Manager) Create(ctx context.Context, req Request) (repository.DownloadJ
 	if err != nil {
 		return repository.DownloadJob{}, fmt.Errorf("downloads: create job: %w", err)
 	}
-	// The row now counts toward the active set: publish the gauge without
-	// waiting for a progress ticker to discover it. One extra count per create
-	// is nothing against how rare creates are.
+	// The row now counts toward the active set: publish the gauge without waiting for a
+	// progress ticker. One extra count per create is nothing against how rare creates are.
 	if o := m.obs(); o != nil {
 		if n, err := m.store.CountActiveDownloadJobs(ctx, nil); err == nil {
 			o.ActiveJobs(n)
@@ -349,9 +335,8 @@ func (m *Manager) Create(ctx context.Context, req Request) (repository.DownloadJ
 	if err != nil {
 		return job, fmt.Errorf("downloads: job id %q: %w", job.ID, err)
 	}
-	// A job created here counts from zero: every byte the engine reports from
-	// now on was downloaded here. Adopted (post-restart) runs seed their
-	// baseline at the first reading instead — their data predates us.
+	// A fresh job counts from zero; adopted (post-restart) runs seed their baseline at the
+	// first reading instead, since their data predates us.
 	m.launch(m.register(&jobRun{
 		id: id, userID: job.UserID, magnet: magnetFor(req.Magnet, job),
 		metricInit: true, metricLast: 0,
@@ -370,9 +355,8 @@ func magnetFor(magnet string, job repository.DownloadJob) string {
 
 // ── user actions ─────────────────────────────────────────────────────────────
 
-// authorized loads the row and enforces ownership before any state work: the
-// actor must own the job or hold the admin bypass. A mismatch answers
-// ErrForbidden without leaking anything else about the row.
+// authorized loads the row and enforces ownership before any state work: owner or admin,
+// else ErrForbidden without leaking anything else about the row.
 func (m *Manager) authorized(ctx context.Context, jobID, actorUserID string, isAdmin bool) (repository.DownloadJob, error) {
 	job, err := m.store.GetDownloadJob(ctx, jobID)
 	if err != nil {
@@ -447,9 +431,8 @@ func (m *Manager) runFor(job repository.DownloadJob) (*jobRun, error) {
 	return m.register(&jobRun{id: id, userID: job.UserID, magnet: magnetFor("", job)}), nil
 }
 
-// resumeTarget sends a paused row to downloading when it has a stored
-// selection and back to awaiting_selection without one: in downloading a
-// selection-less row would strand, since Done() only fires for selected bytes.
+// resumeTarget sends a paused row to downloading when it has a stored selection and back to
+// awaiting_selection without one, where Done() could never fire.
 func resumeTarget(job repository.DownloadJob) string {
 	if len(job.SelectedFiles) > 0 {
 		return StateDownloading
@@ -457,9 +440,8 @@ func resumeTarget(job repository.DownloadJob) string {
 	return StateAwaitingSelection
 }
 
-// Cancel stops a live job from any non-terminal or paused state, or removes a
-// terminal row outright. deleteFiles additionally drops the engine torrent's
-// data and the job directory.
+// Cancel stops a live job from any non-terminal or paused state, or removes a terminal row.
+// deleteFiles also drops the engine torrent's data and the job directory.
 func (m *Manager) Cancel(ctx context.Context, jobID, actorUserID string, isAdmin, deleteFiles bool) error {
 	job, err := m.authorized(ctx, jobID, actorUserID, isAdmin)
 	if err != nil {
@@ -527,9 +509,8 @@ func (m *Manager) SelectFiles(ctx context.Context, jobID, actorUserID string, is
 	return updated, nil
 }
 
-// validateSelection refuses an unfulfillable selection as ErrInvalidSelection
-// before any state is written; range checks need a live handle, so a selection
-// racing a restart falls to the engine's Select. An engine fault is not one.
+// validateSelection refuses an unfulfillable selection as ErrInvalidSelection before any state
+// is written; range checks need a live handle, so a racing restart falls to engine.Select.
 func (m *Manager) validateSelection(jobID string, indexes []int) error {
 	if len(indexes) == 0 {
 		return ErrInvalidSelection
@@ -559,9 +540,8 @@ func (m *Manager) validateSelection(jobID string, indexes []int) error {
 
 // ── startup ──────────────────────────────────────────────────────────────────
 
-// ResumeFromStore re-drives resumable rows: paused ones are CASed to their
-// selection-aware target, the rest re-enter at their own state, ready is left
-// alone. The CAS lives here so no drive loop can un-pause a row on its own.
+// ResumeFromStore re-drives resumable rows: paused ones are CASed to their selection-aware
+// target, the rest re-enter at their own state. Ready is left alone.
 func (m *Manager) ResumeFromStore(ctx context.Context) error {
 	jobs, err := m.store.ListResumableDownloadJobs(ctx)
 	if err != nil {
@@ -603,8 +583,7 @@ func (m *Manager) drive(ctx context.Context, j *jobRun) {
 			job = next
 
 		case StateFetchingMetadata:
-			// The metadata-wait budget lives inside engine.Add; a timeout or any
-			// other Add failure fails the job from here.
+			// engine.Add owns the metadata wait; a timeout or any Add failure fails the job here.
 			if _, ok := m.ensureHandle(ctx, j, job); !ok {
 				return
 			}
@@ -651,8 +630,7 @@ func (m *Manager) drive(ctx context.Context, j *jobRun) {
 			if !m.watch(ctx, j, job) {
 				return
 			}
-			// A job finishing inside one tick interval never ticks at all, so read
-			// the engine once more to land bytes_total on the job's full size.
+			// A job finishing inside one tick never ticks, so read once more to land bytes_total.
 			if h := j.currentHandle(); h != nil {
 				m.observeProgress(j, h.Stats())
 			}
@@ -694,24 +672,21 @@ func (m *Manager) drive(ctx context.Context, j *jobRun) {
 			if _, ok := m.hop(ctx, j, StateImporting, StateReady); !ok {
 				return
 			}
-			// Terminal: the row's work is done, but the engine's torrent is
-			// still live and — the client being built with Seed=true and a
-			// default UpKbps — would seed it for the life of the process.
+			// Terminal: the row is done, but the torrent is still live and would seed for the life
+			// of the process (Seed=true, default UpKbps).
 			m.stopTransfers(j)
 			return // terminal: the drive loop's work is done
 
 		default:
-			// Terminal, paused, or unknown. Only Resume/ResumeFromStore leave
-			// paused: a generation observing paused (after the CAS, before its
-			// stop) must not un-pause the job underneath the user.
+			// Terminal, paused, or unknown. Only Resume/ResumeFromStore leave paused; a generation
+			// observing paused must not un-pause the job underneath the user.
 			return
 		}
 	}
 }
 
-// hop performs one state-machine edge as a compare-and-set and publishes the
-// new state. A conflict means the user paused or cancelled meanwhile: the loop
-// must stop silently, the user's action wins.
+// hop performs one state-machine edge as a compare-and-set and publishes the new state. A
+// conflict means the user paused or cancelled: stop silently, the user's action wins.
 func (m *Manager) hop(ctx context.Context, j *jobRun, from, to string) (repository.DownloadJob, bool) {
 	job, err := m.store.TransitionDownloadJob(ctx, j.id.String(), from, to)
 	if err != nil {
@@ -731,9 +706,8 @@ func (m *Manager) watch(ctx context.Context, j *jobRun, job repository.DownloadJ
 	if !ok {
 		return false
 	}
-	// Seed the adopted (post-restart) run's baseline here, at downloading
-	// entry: bytes already on disk were not downloaded by this process and must
-	// not enter bytes_total.
+	// Seed the adopted run's baseline at downloading entry: bytes already on disk were not
+	// downloaded by this process and must not enter bytes_total.
 	m.observeProgress(j, h.Stats())
 	ticker := time.NewTicker(m.tick)
 	defer ticker.Stop()
@@ -745,9 +719,8 @@ func (m *Manager) watch(ctx context.Context, j *jobRun, job repository.DownloadJ
 			return true
 		case <-ticker.C:
 			if ctx.Err() != nil {
-				// Superseded generation: a pause (or pause+resume) launched a
-				// new drive loop for this row; never let this stale one write
-				// a progress tick into a row it no longer owns.
+				// Superseded generation: a pause launched a new drive loop for this row, so this
+				// stale one must not write a progress tick into a row it no longer owns.
 				return false
 			}
 			st := h.Stats()
@@ -764,9 +737,8 @@ func (m *Manager) watch(ctx context.Context, j *jobRun, job repository.DownloadJ
 	}
 }
 
-// ensureHandle returns the torrent handle, re-Adding when the engine no longer
-// knows the torrent (post-restart). A stored selection is replayed so Done()
-// can fire again — the engine only completes selected bytes.
+// ensureHandle returns the torrent handle, re-Adding when the engine no longer knows the
+// torrent (post-restart). A stored selection is replayed so Done() can fire again.
 func (m *Manager) ensureHandle(ctx context.Context, j *jobRun, job repository.DownloadJob) (TorrentHandle, bool) {
 	if h := j.currentHandle(); h != nil {
 		return h, true
@@ -786,9 +758,8 @@ func (m *Manager) ensureHandle(ctx context.Context, j *jobRun, job repository.Do
 	return h, true
 }
 
-// failJob records the code, then flips the row to failed via CAS. Both steps
-// are best effort: once a concurrent pause or cancel wins the CAS, it owns the
-// row and the failure is dropped.
+// failJob records the code, then flips the row to failed via CAS. Both steps are best effort:
+// once a concurrent pause or cancel wins the CAS, it owns the row.
 func (m *Manager) failJob(ctx context.Context, j *jobRun, from, code string) {
 	if ctx.Err() != nil {
 		return // superseded: the user's action decides the outcome
@@ -798,8 +769,8 @@ func (m *Manager) failJob(ctx context.Context, j *jobRun, from, code string) {
 	if err != nil {
 		return
 	}
-	// Failed is terminal too: a torrent that already holds metadata must not
-	// keep downloading its selected pieces until the process restarts.
+	// Failed is terminal too: a torrent that already holds metadata must not keep downloading
+	// its selected pieces until the process restarts.
 	m.stopTransfers(j)
 	if o := m.obs(); o != nil {
 		o.JobFailed() // the row won the CAS, so the failure is real
@@ -807,9 +778,8 @@ func (m *Manager) failJob(ctx context.Context, j *jobRun, from, code string) {
 	m.publish(job)
 }
 
-// stopTransfers halts a terminal row's torrent in both directions. Pause (not
-// Drop) keeps it registered so Cancel owns the single Drop and per-job storage
-// is not closed twice; a row without a handle has no live torrent here.
+// stopTransfers halts a terminal row's torrent in both directions. Pause (not Drop) keeps it
+// registered so Cancel owns the single Drop and storage is not closed twice.
 func (m *Manager) stopTransfers(j *jobRun) {
 	h := j.currentHandle()
 	if h == nil {
@@ -835,9 +805,8 @@ func codeFor(err error) string {
 
 // ── metrics hooks ────────────────────────────────────────────────────────────
 
-// observeProgress turns one engine reading into the bytes_total delta. A
-// generation's first reading seeds the baseline instead of counting, so a
-// resumed job's pre-existing data is never re-counted.
+// observeProgress turns one engine reading into the bytes_total delta; a generation's first
+// reading seeds the baseline so a resumed job's existing data is never re-counted.
 func (m *Manager) observeProgress(j *jobRun, st Stats) {
 	o := m.obs()
 	if o == nil {
@@ -855,9 +824,8 @@ func (m *Manager) observeProgress(j *jobRun, st Stats) {
 	}
 }
 
-// observeActive publishes the active-job gauge from the quota's own count.
-// One store query per job per tick beats guessing from memory and is noise at
-// this scale (a couple of jobs, a 500 ms tick).
+// observeActive publishes the active-job gauge from the quota's own count. One store query
+// per job per tick is noise at this scale.
 func (m *Manager) observeActive(ctx context.Context) {
 	o := m.obs()
 	if o == nil {
@@ -907,9 +875,8 @@ func eventFor(job repository.DownloadJob, st *Stats) JobEvent {
 
 // ── helpers ──────────────────────────────────────────────────────────────────
 
-// defaultVideoExts is the video-only half of files.go's selection allowlist:
-// the auto-select heuristic must tell one episode from a pack, so subtitles
-// stay out of the count.
+// defaultVideoExts is the video-only half of files.go's allowlist: the auto-select heuristic
+// must tell one episode from a pack, so subtitles stay out.
 var defaultVideoExts = videoExtensionSet
 
 func countVideoFiles(files []EngineFile) int {
@@ -955,9 +922,8 @@ func removeJobDir(root, jobID string) error {
 // tests can pin the boundary without touching a real filesystem.
 var freeDiskBytesOf = freeDiskBytes
 
-// statfsFree is the production diskFree: the root must keep min bytes of
-// headroom beyond whatever the job itself will occupy. The boundary is
-// inclusive per spec — free >= max(jobSize, 0) + MinFreeBytes passes.
+// statfsFree is the production diskFree: the root must keep min bytes of headroom beyond what
+// the job itself will occupy. The boundary is inclusive: free >= min.
 func statfsFree(path string, min int64) (bool, error) {
 	free, err := freeDiskBytesOf(path)
 	if err != nil {

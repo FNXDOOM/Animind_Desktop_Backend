@@ -16,12 +16,10 @@ import (
 	"animind-backend-go/internal/repository"
 )
 
-// Download surface: create, list, get, patch, delete and the SSE stream. Every route needs a
-// session; create and delete also need the can_download entitlement, admins exempt. A foreign
-// job id answers 404 like a missing row, so the id space cannot be probed.
+// Download surface: create, list, get, patch, delete and the SSE stream. Create and delete
+// need the can_download entitlement; a foreign job id answers 404 like a missing row.
 
-// downloadsManagerAPI is the narrow seam the download handlers need from the
-// job manager; *downloads.Manager satisfies it as-is.
+// downloadsManagerAPI is the narrow seam the handlers need from the job manager.
 type downloadsManagerAPI interface {
 	Create(ctx context.Context, req downloads.Request) (repository.DownloadJob, error)
 	Pause(ctx context.Context, jobID, actorUserID string, isAdmin bool) (repository.DownloadJob, error)
@@ -33,8 +31,7 @@ type downloadsManagerAPI interface {
 
 var _ downloadsManagerAPI = (*downloads.Manager)(nil)
 
-// downloadsJobStore is the read seam the download handlers need from the
-// repository; *repository.Store satisfies it as-is.
+// downloadsJobStore is the read seam the handlers need from the repository.
 type downloadsJobStore interface {
 	ListDownloadJobs(ctx context.Context, userID *string, all bool, limit int) ([]repository.DownloadJob, error)
 	GetDownloadJob(ctx context.Context, id string) (repository.DownloadJob, error)
@@ -42,9 +39,8 @@ type downloadsJobStore interface {
 
 var _ downloadsJobStore = (*repository.Store)(nil)
 
-// downloadEntitlement answers whether one account may start (and delete) torrent downloads.
-// The store exposes can_download as a single-row read; the adapter keeps the HTTP layer
-// decoupled from the repository type.
+// downloadEntitlement answers whether one account may start and delete torrent downloads;
+// the adapter keeps the HTTP layer decoupled from the repository type.
 type downloadEntitlement interface {
 	CanDownload(ctx context.Context, userID string) (bool, error)
 }
@@ -67,8 +63,8 @@ func (s *Server) canDownload(ctx context.Context, userID string) (bool, error) {
 	return s.entitlements.CanDownload(ctx, userID)
 }
 
-// downloadsUnavailable short-circuits every download route in s3 mode, where
-// there is no local disk for the engine to write to.
+// downloadsUnavailable short-circuits every download route when downloads are off, as in
+// s3 mode where there is no local disk.
 func (s *Server) downloadsUnavailable(w http.ResponseWriter) bool {
 	if s.cfg.Downloads.Enabled {
 		return false
@@ -84,9 +80,8 @@ type createDownloadRequest struct {
 	ResultID string `json:"resultId"`
 }
 
-// handleDownloadCreate resolves the opaque result id back into the magnet and
-// hands the request to the manager. The magnet exists only inside this call —
-// the client sees the job, never the link.
+// handleDownloadCreate resolves the opaque result id into the magnet and hands the request
+// to the manager; the client sees the job, never the link.
 func (s *Server) handleDownloadCreate(w http.ResponseWriter, r *http.Request) {
 	if s.downloadsUnavailable(w) {
 		return
@@ -108,8 +103,7 @@ func (s *Server) handleDownloadCreate(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 	// Entitlement first, so a rejected caller never learns the indexer configuration; then
-	// the nil guard: with no TORZNAB_URL there is no result index to resolve, and an
-	// entitled create must answer 501 instead of panicking on the nil seam.
+	// the nil guard, since no TORZNAB_URL means no result index and a 501 instead of a panic.
 	if s.torrent == nil {
 		WriteErrorCode(w, http.StatusNotImplemented, "indexer_not_configured",
 			"No Torznab indexer is configured on this server.")
@@ -129,8 +123,8 @@ func (s *Server) handleDownloadCreate(w http.ResponseWriter, r *http.Request) {
 	}
 	userID, err := uuid.Parse(principal.UserID)
 	if err != nil {
-		// The principal's id comes from the account row, so this is unreachable
-		// in practice; refusing beats writing a malformed user_id.
+		// The principal's id comes from the account row, so this is unreachable in practice;
+		// refusing beats writing a malformed user_id.
 		WriteError(w, http.StatusBadRequest, "Invalid account.")
 		return
 	}
@@ -146,9 +140,8 @@ func (s *Server) handleDownloadCreate(w http.ResponseWriter, r *http.Request) {
 	WriteJSON(w, http.StatusCreated, s.jobResponse(job))
 }
 
-// writeCreateError maps the manager's validation order onto status codes. The
-// duplicate case carries the existing job's id so the client can open it
-// instead of re-adding the same torrent.
+// writeCreateError maps manager validation onto status codes; the duplicate case carries the
+// existing job's id so the client can open it.
 func (s *Server) writeCreateError(w http.ResponseWriter, err error) {
 	switch {
 	case errors.Is(err, downloads.ErrNotEnabled):
@@ -165,8 +158,7 @@ func (s *Server) writeCreateError(w http.ResponseWriter, err error) {
 		WriteErrorCode(w, http.StatusForbidden, "download_forbidden",
 			"The download quota is already in use. Cancel a job and try again.")
 	case errors.Is(err, downloads.ErrDuplicate):
-		// The typed error carries the existing job's id, so the client can open
-		// it instead of re-adding the same torrent.
+		// The typed error carries the existing job's id.
 		var dup *downloads.DuplicateJobError
 		jobID := ""
 		if errors.As(err, &dup) {
@@ -177,8 +169,8 @@ func (s *Server) writeCreateError(w http.ResponseWriter, err error) {
 			"existingJobId": jobID,
 		})
 	case repository.IsUniqueViolation(err):
-		// A concurrent create on another replica won the partial unique index; the
-		// client can retry and will then receive the typed duplicate with its id.
+		// A concurrent create on another replica won the partial unique index; a retry then
+		// receives the typed duplicate with its id.
 		WriteErrorCode(w, http.StatusConflict, "duplicate_download",
 			"You already have this torrent queued or downloading.")
 	default:
@@ -188,8 +180,7 @@ func (s *Server) writeCreateError(w http.ResponseWriter, err error) {
 
 // ── List / get ───────────────────────────────────────────────────────────────
 
-// handleDownloadList returns the caller's jobs newest first. An admin may pass
-// all=true to list every account's jobs.
+// handleDownloadList returns the caller's jobs newest first; an admin may pass all=true.
 func (s *Server) handleDownloadList(w http.ResponseWriter, r *http.Request) {
 	if s.downloadsUnavailable(w) {
 		return
@@ -228,8 +219,8 @@ func (s *Server) handleDownloadGet(w http.ResponseWriter, r *http.Request) {
 	WriteJSON(w, http.StatusOK, s.jobResponse(job))
 }
 
-// loadOwnedJob fetches the row and enforces ownership: a foreign job answers
-// 404 exactly like a missing one, so probing ids learns nothing.
+// loadOwnedJob enforces ownership: a foreign job answers 404 exactly like a missing one, so
+// probing ids learns nothing.
 func (s *Server) loadOwnedJob(w http.ResponseWriter, r *http.Request) (repository.DownloadJob, *auth.Principal, bool) {
 	principal, ok := s.requirePrincipal(w, r)
 	if !ok {
@@ -258,9 +249,8 @@ type patchDownloadRequest struct {
 	FileIndexes []int  `json:"fileIndexes"`
 }
 
-// handleDownloadPatch applies pause/resume, or records a file selection for a
-// pack waiting in awaiting_selection. The manager re-checks ownership and the
-// state machine behind this handler.
+// handleDownloadPatch applies pause/resume or records a file selection for a pack awaiting
+// one; the manager re-checks ownership and the state machine.
 func (s *Server) handleDownloadPatch(w http.ResponseWriter, r *http.Request) {
 	if s.downloadsUnavailable(w) {
 		return
@@ -305,9 +295,8 @@ func (s *Server) handleDownloadPatch(w http.ResponseWriter, r *http.Request) {
 		}
 		updated, err := s.downloads.SelectFiles(r.Context(), job.ID, principal.UserID, isAdmin, req.FileIndexes)
 		if err != nil {
-			// A selection the torrent cannot honour is the only user-fixable failure here, so
-			// it wears 400 invalid_file_selection; everything else keeps its own class and a
-			// server fault never masquerades as a bad request.
+			// A selection the torrent cannot honour is the only user-fixable failure, so it
+			// wears 400; a server fault never masquerades as a bad request.
 			if errors.Is(err, downloads.ErrInvalidSelection) {
 				WriteErrorCode(w, http.StatusBadRequest, "invalid_file_selection",
 					"The server could not select those files for this torrent.")
@@ -327,8 +316,7 @@ func (s *Server) handleDownloadPatch(w http.ResponseWriter, r *http.Request) {
 }
 
 // writeJobActionError maps manager action failures onto responses. ErrForbidden keeps its 403
-// even though ownership was already checked: the manager is the authority, and a 403 here can
-// only mean its check saw something the row read did not.
+// because the manager is the authority, not the row read.
 func (s *Server) writeJobActionError(w http.ResponseWriter, err error) {
 	switch {
 	case errors.Is(err, repository.ErrNotFound):
@@ -345,9 +333,8 @@ func (s *Server) writeJobActionError(w http.ResponseWriter, err error) {
 
 // ── Delete ───────────────────────────────────────────────────────────────────
 
-// handleDownloadDelete cancels a live job or removes a finished one. With
-// deleteFiles=true the engine's data and the job directory go with it, and a
-// library scan runs afterwards so pruned files leave the catalog.
+// handleDownloadDelete cancels a live job or removes a finished one; deleteFiles=true also
+// deletes the data, and a library scan then prunes the catalog.
 func (s *Server) handleDownloadDelete(w http.ResponseWriter, r *http.Request) {
 	if s.downloadsUnavailable(w) {
 		return
@@ -356,8 +343,8 @@ func (s *Server) handleDownloadDelete(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		return
 	}
-	// Cancelling is a mutation of the download surface, so it honours the same
-	// entitlement as creating: without it only an admin may remove jobs.
+	// Cancelling is a mutation, so it honours the same entitlement as creating; without it
+	// only an admin may remove jobs.
 	if !principal.IsAdmin {
 		allowed, err := s.canDownload(r.Context(), principal.UserID)
 		if err != nil {
@@ -391,8 +378,8 @@ func (s *Server) handleDownloadDelete(w http.ResponseWriter, r *http.Request) {
 	WriteJSON(w, http.StatusOK, map[string]bool{"success": true})
 }
 
-// rescanAfterDelete prunes catalog rows for files the cancellation removed. It
-// is best-effort and background: the delete itself already succeeded.
+// rescanAfterDelete prunes catalog rows for removed files. It is best-effort and background:
+// the delete itself already succeeded.
 func (s *Server) rescanAfterDelete() {
 	if s.scanner == nil {
 		return
@@ -417,9 +404,8 @@ func parseBoolParam(r *http.Request, key string) bool {
 
 // ── SSE ──────────────────────────────────────────────────────────────────────
 
-// handleDownloadEvents streams the user's job events: a snapshot of the last known state per
-// job, then live frames, with a comment heartbeat every 15 s so intermediaries do not close
-// the stream. Disconnect cancels the subscription, which closes the channel.
+// handleDownloadEvents streams a snapshot of each job's last state, then live frames, with a
+// 15 s heartbeat so intermediaries keep the stream open.
 func (s *Server) handleDownloadEvents(w http.ResponseWriter, r *http.Request) {
 	if s.downloadsUnavailable(w) {
 		return
@@ -473,8 +459,8 @@ func (s *Server) handleDownloadEvents(w http.ResponseWriter, r *http.Request) {
 	}
 }
 
-// writeSSEEvent writes one frame. Events carry state, progress and rates —
-// never magnets or filesystem paths.
+// writeSSEEvent writes one frame; events carry state, progress and rates, never magnets or
+// filesystem paths.
 func writeSSEEvent(w http.ResponseWriter, event string, ev downloads.JobEvent) {
 	data, err := json.Marshal(ev)
 	if err != nil {
@@ -494,9 +480,8 @@ type jobFile struct {
 	ProgressBytes int64  `json:"progressBytes"`
 }
 
-// jobResponse is the §7.7 wire shape of one download job: the stored row merged
-// with the live engine view when the manager is driving the job in this
-// session.
+// jobResponse is the wire shape of one download job: the stored row merged with the live
+// engine view when the manager drives the job in this session.
 type jobResponse struct {
 	ID            string     `json:"id"`
 	ResultTitle   string     `json:"resultTitle"`
@@ -517,9 +502,8 @@ type jobResponse struct {
 	Files         []jobFile  `json:"files"`
 }
 
-// jobResponse merges the row with the live engine snapshot: rates and per-file
-// progress only exist in memory, while progress_bytes and size_bytes are the
-// durable values the store holds.
+// jobResponse merges the row with the live engine snapshot: rates and per-file progress
+// exist only in memory, while progress_bytes and size_bytes are durable.
 func (s *Server) jobResponse(job repository.DownloadJob) jobResponse {
 	resp := jobResponse{
 		ID: job.ID, ResultTitle: job.ResultTitle, InfoHash: job.InfoHash, State: job.State,

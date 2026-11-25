@@ -19,11 +19,9 @@ import (
 
 // Browser-safe audio variants.
 //
-// A browser plays only AAC or MP3 from an MP4 while most releases carry Opus or Vorbis, so
-// the first playback of a track builds a cached remux that later requests reuse; a scan can
-// pre-build them. Variants live at <library>/.animind-audio-cache/<episodeID>/
-// a<index>-<mode>-<hash>.mp4 beside a metadata.json, and the hash covers the source file's
-// size and mtime, so a replaced episode cannot serve a stale audio track.
+// Browsers play only AAC or MP3 from MP4, so the first playback of an Opus/Vorbis track
+// builds a cached remux reused later, keyed by source size and mtime so a replaced episode
+// cannot serve a stale track.
 
 // AudioTrack describes one audio stream and its playback requirements.
 type AudioTrack struct {
@@ -45,8 +43,7 @@ type AudioCache struct {
 	cacheRoot string
 }
 
-// NewAudioCache builds the cache manager for local mode. In S3 mode caching is unavailable
-// because there is no writable library directory, and presigned URLs are used instead.
+// NewAudioCache builds the cache manager; S3 mode has no writable library directory.
 func NewAudioCache(cfg *config.Config, ffmpeg *FFmpeg) *AudioCache {
 	return &AudioCache{
 		cfg:       cfg,
@@ -134,8 +131,8 @@ func variantHash(signature string) string {
 	return hex.EncodeToString(sum[:])[:12]
 }
 
-// GetOrCreateVariant produces (or reuses) a browser-playable file for one audio track and
-// returns its path. A track a browser can already play returns the source unchanged.
+// GetOrCreateVariant produces or reuses a browser-playable file for one audio track; a
+// track a browser can already play returns the source unchanged.
 func (a *AudioCache) GetOrCreateVariant(ctx context.Context, videoPath, episodeID string, trackIndex int, browserSafe bool) (string, error) {
 	if a.cacheDisabled() {
 		return videoPath, nil
@@ -161,8 +158,7 @@ func (a *AudioCache) GetOrCreateVariant(ctx context.Context, videoPath, episodeI
 		return "", fmt.Errorf("media: create audio cache dir: %w", err)
 	}
 
-	// A copy is tried first: most modern releases carry AAC already, and copying is
-	// instant. Only when that fails does the transcode run.
+	// A copy is tried first: most modern releases carry AAC already, and copying is instant.
 	if browserSafe {
 		if err := a.runVariantCopy(ctx, videoPath, trackIndex, target); err == nil {
 			a.recordTrack(episodeID, trackMetadata{
@@ -174,8 +170,7 @@ func (a *AudioCache) GetOrCreateVariant(ctx context.Context, videoPath, episodeI
 	}
 
 	tempTarget := target + ".partial"
-	// -f mp4 is required because the temporary name is not a recognised container extension:
-	// without an explicit muxer ffmpeg answers "Unable to choose an output for ...".
+	// -f mp4 is required: the .partial name has no recognised container extension.
 	args := []string{"-y", "-v", "error", "-i", videoPath,
 		"-map", "0:v:0", "-map", fmt.Sprintf("0:%d", trackIndex),
 		"-c:v", "copy", "-c:a", "aac", "-b:a", "320k", "-movflags", "+faststart",
@@ -215,8 +210,7 @@ func (a *AudioCache) runVariantCopy(ctx context.Context, videoPath string, track
 	return os.Rename(tempTarget, target)
 }
 
-// readMetadata loads an episode's cache index. A corrupt file is treated as empty: the
-// variants are still on disk and will be re-recorded on next use.
+// readMetadata loads an episode's cache index; a corrupt file is treated as empty.
 func (a *AudioCache) readMetadata(episodeID string) map[int]trackMetadata {
 	out := map[int]trackMetadata{}
 	raw, err := os.ReadFile(filepath.Join(a.episodeDir(episodeID), "metadata.json"))
@@ -254,8 +248,7 @@ func (a *AudioCache) recordTrack(episodeID string, entry trackMetadata) {
 	_ = os.WriteFile(filepath.Join(dir, "metadata.json"), raw, 0o644)
 }
 
-// PrewarmEpisode builds variants for the tracks a browser could not play, preferring
-// Japanese audio because that is the dub most viewers switch to first.
+// PrewarmEpisode builds variants for tracks a browser could not play, Japanese audio first.
 func (a *AudioCache) PrewarmEpisode(ctx context.Context, videoPath, episodeID string) int {
 	if a.cacheDisabled() || !a.cfg.AudioCache.PrewarmEnabled {
 		return 0
@@ -301,8 +294,7 @@ func (a *AudioCache) PrewarmEpisode(ctx context.Context, videoPath, episodeID st
 	return built
 }
 
-// PrewarmLibrary processes the episodes a scan touched, honouring the configured limits.
-// Duplicates by episode id collapse to the first occurrence.
+// PrewarmLibrary processes episodes a scan touched, honouring configured limits.
 func (a *AudioCache) PrewarmLibrary(ctx context.Context, store *storage.Service, episodes []PrewarmTarget) int {
 	if a.cacheDisabled() || !a.cfg.AudioCache.PrewarmEnabled || len(episodes) == 0 {
 		return 0
@@ -346,10 +338,8 @@ type CacheCleanupResult struct {
 	PrunedEntries int
 }
 
-// CleanupByTTL deletes cached variants nobody played recently, rewrites the index so it
-// never points at a removed file, and drops empty episode directories. This is what stops
-// a long-running library from accumulating a transcode of every audio track in the
-// catalogue.
+// CleanupByTTL deletes unused variants, prunes the index so it never points at a removed
+// file, and drops empty episode directories.
 func (a *AudioCache) CleanupByTTL(ttl time.Duration) (CacheCleanupResult, error) {
 	var result CacheCleanupResult
 	if a.cacheDisabled() {

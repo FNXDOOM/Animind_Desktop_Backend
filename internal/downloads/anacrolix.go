@@ -36,10 +36,8 @@ var (
 	_ TorrentHandle = (*anacrolixHandle)(nil)
 )
 
-// AnacrolixEngine adapts github.com/anacrolix/torrent to Engine: one client
-// for every job, each torrent storing under <Dir>/<jobID> via its own
-// AddTorrentOpts.Storage, never the client DataDir. Upstream keys torrents by
-// infohash, so a second live job for the same hash is refused, not shared.
+// AnacrolixEngine adapts github.com/anacrolix/torrent to Engine: one client, each torrent
+// stored under <Dir>/<jobID>, never the client DataDir. A live infohash is never shared.
 type AnacrolixEngine struct {
 	cfg config.DownloadsConfig
 	cli *torrent.Client
@@ -48,9 +46,8 @@ type AnacrolixEngine struct {
 	jobs map[uuid.UUID]*anacrolixHandle
 }
 
-// NewAnacrolixEngine builds the client from cfg's DHT/PEX/UTP knobs. UPnP/NAT
-// port mapping is hard-disabled — the engine must never punch holes in the
-// operator's network — though local TCP/UDP ports are still bound.
+// NewAnacrolixEngine builds the client from cfg's DHT/PEX/UTP knobs. UPnP/NAT mapping is
+// hard-disabled so the engine never punches holes in the operator's network.
 func NewAnacrolixEngine(cfg config.DownloadsConfig) (*AnacrolixEngine, error) {
 	cli, err := torrent.NewClient(newClientConfig(cfg))
 	if err != nil {
@@ -68,12 +65,10 @@ func newClientConfig(cfg config.DownloadsConfig) *torrent.ClientConfig {
 	cliConf.NoDHT = !cfg.DHT
 	cliConf.DisablePEX = !cfg.PEX
 	cliConf.DisableUTP = !cfg.UTP
-	// No port mapping: without this upstream launches go cl.forwardPort() and
-	// may add a UPnP/NAT-PMP mapping on the operator's router.
+	// No port mapping: upstream would otherwise forward a port on the operator's router.
 	cliConf.NoDefaultPortForwarding = true
-	// Empty host = wildcard per network: "0.0.0.0" fails upstream's tcp6 listen
-	// on dual-stack hosts. Ephemeral ports can land in a Windows excluded range
-	// and kill startup (measured: udp4 :64437), hence DOWNLOADS_LISTEN_ADDR.
+	// Empty host = wildcard per network; a literal 0.0.0.0 fails upstream's tcp6 listen on
+	// dual-stack hosts. Ephemeral ports can land in a Windows excluded range, hence ListenAddr.
 	addr := cfg.ListenAddr
 	if addr == "" {
 		addr = ":0"
@@ -82,9 +77,8 @@ func newClientConfig(cfg config.DownloadsConfig) *torrent.ClientConfig {
 	// Seeding continues after completion; the manager stops it at the
 	// configured ratio/minutes.
 	cliConf.Seed = true
-	// Upstream: DownloadRateLimiter nil means no limiting; UploadRateLimiter is
-	// dereferenced unconditionally, so an unlimited upload keeps the default
-	// Inf limiter instead of nil.
+	// Upstream treats a nil DownloadRateLimiter as unlimited but dereferences
+	// UploadRateLimiter, so an unlimited upload keeps the default Inf limiter.
 	if cfg.DownKbps != 0 {
 		cliConf.DownloadRateLimiter = limiter(cfg.DownKbps)
 	}
@@ -94,9 +88,8 @@ func newClientConfig(cfg config.DownloadsConfig) *torrent.ClientConfig {
 	return cliConf
 }
 
-// Add resolves the magnet and blocks until metadata is available, the 120s
-// engine timeout expires, or ctx is done. Files are never downloaded here;
-// that starts when the manager calls Select.
+// Add resolves the magnet and blocks until metadata is available, the 120s timeout expires
+// or ctx is done. Files only start downloading when the manager calls Select.
 func (e *AnacrolixEngine) Add(ctx context.Context, jobID uuid.UUID, magnet string) (TorrentHandle, error) {
 	if !magnetPattern.MatchString(magnet) {
 		return nil, fmt.Errorf("downloads: not a magnet")
@@ -105,9 +98,8 @@ func (e *AnacrolixEngine) Add(ctx context.Context, jobID uuid.UUID, magnet strin
 	if err := os.MkdirAll(jobDir, 0o755); err != nil {
 		return nil, fmt.Errorf("downloads: create job dir: %w", err)
 	}
-	// Every failure before the job is registered must remove the placeholder
-	// dir again: the job never started, so nothing may be left on disk under
-	// <Dir>/<jobID>. (The timeout/ctx paths below use abandon for the same.)
+	// Every failure before registration must remove the placeholder dir: the job never
+	// started, so nothing may be left under <Dir>/<jobID>.
 	spec, err := torrent.TorrentSpecFromMagnetUri(magnet)
 	if err != nil {
 		_ = os.Remove(jobDir)
@@ -135,8 +127,7 @@ func (e *AnacrolixEngine) Add(ctx context.Context, jobID uuid.UUID, magnet strin
 		e.abandon(t, jobDir)
 		return nil, ctx.Err()
 	}
-	// Nothing may download before Select: enforce the contract by construction
-	// instead of relying on upstream's initial priorities happening to be none.
+	// Nothing downloads before Select: enforce the contract rather than trust upstream defaults.
 	for _, f := range t.Files() {
 		f.SetPriority(torrent.PiecePriorityNone)
 	}
@@ -157,17 +148,15 @@ func (e *AnacrolixEngine) Close() error {
 	return errors.Join(errs...)
 }
 
-// abandon drops a torrent whose metadata never arrived. os.Remove only
-// succeeds on an empty dir, so it cleans up the placeholder without ever
-// deleting data pieces that made it to disk.
+// abandon drops a torrent whose metadata never arrived; os.Remove only succeeds on an empty
+// dir, so it removes the placeholder without touching any data pieces.
 func (e *AnacrolixEngine) abandon(t *torrent.Torrent, jobDir string) {
 	t.Drop()
 	_ = os.Remove(jobDir)
 }
 
-// limiter converts a kbps knob into upstream's *rate.Limiter fields. A nil
-// return is safe for DownloadRateLimiter (upstream documents nil as unlimited)
-// but not for UploadRateLimiter, which callers must never assign.
+// limiter converts a kbps knob into upstream's *rate.Limiter. A nil return is safe for
+// DownloadRateLimiter but not for UploadRateLimiter, which callers must never assign.
 func limiter(kbps int64) *rate.Limiter {
 	if kbps == 0 {
 		return nil
@@ -175,8 +164,8 @@ func limiter(kbps int64) *rate.Limiter {
 	return rate.NewLimiter(rate.Limit(float64(kbps)*1024), 64<<10)
 }
 
-// anacrolixHandle drives one torrent. File indexes are stable: the file list
-// is captured (sorted by path) once at metadata time and reused everywhere.
+// anacrolixHandle drives one torrent. File indexes are stable: the file list is captured,
+// sorted by path, once at metadata time and reused everywhere.
 type anacrolixHandle struct {
 	e     *AnacrolixEngine
 	jobID uuid.UUID
@@ -215,28 +204,24 @@ func newAnacrolixHandle(e *AnacrolixEngine, jobID uuid.UUID, dir string, t *torr
 	return h
 }
 
-// engineFileElement is the minimal upstream-file view the EngineFile mapping
-// needs: torrent.File has unexported fields, no constructor, and its
-// BytesCompleted needs a live client, so tests use synthetic files here.
+// engineFileElement is the minimal upstream-file view the EngineFile mapping needs:
+// torrent.File has unexported fields and no constructor, so tests use synthetic files.
 type engineFileElement interface {
 	Path() string
 	Length() int64
 	BytesCompleted() int64
 }
 
-// sortFilesByPath orders the file list by path with SliceStable so Index means
-// the same thing across Files/Select/manager restarts, and a malformed
-// metainfo's duplicate paths cannot reshuffle indexes.
+// sortFilesByPath orders files by path with SliceStable, so Index means the same thing across
+// Files/Select/manager restarts and duplicate paths cannot reshuffle indexes.
 func sortFilesByPath[T engineFileElement](files []T) {
 	sort.SliceStable(files, func(i, j int) bool {
 		return files[i].Path() < files[j].Path()
 	})
 }
 
-// engineFiles maps upstream files, in the handle's sorted order, to
-// EngineFiles. Path(), not DisplayPath(): DisplayPath drops the torrent-name
-// directory upstream stores files under, so import paths would not resolve on
-// disk. Clean matches the platform separator and guards malformed metainfo.
+// engineFiles maps upstream files, in sorted order, to EngineFiles. Path(), not DisplayPath():
+// DisplayPath drops the torrent-name directory, so import paths would not resolve on disk.
 func engineFiles[T engineFileElement](files []T) []EngineFile {
 	out := make([]EngineFile, 0, len(files))
 	for i, f := range files {
@@ -259,9 +244,8 @@ func (h *anacrolixHandle) Files() ([]EngineFile, error) {
 	return engineFiles(h.files), nil
 }
 
-// Select downloads only the given indexes: selected files are raised to normal
-// priority, everything else is set to never-download. It validates the whole
-// selection before touching any priority.
+// Select downloads only the given indexes: selected files go to normal priority, everything
+// else to never-download. The whole selection is validated before any priority changes.
 func (h *anacrolixHandle) Select(indexes []int) error {
 	if h.t.Info() == nil {
 		return errors.New("downloads: torrent metadata not available")
@@ -289,8 +273,8 @@ func (h *anacrolixHandle) Select(indexes []int) error {
 	return nil
 }
 
-// Stats samples the torrent. Rates are derived from upstream's wire counters
-// between consecutive calls, so the first call reports zero rates.
+// Stats samples the torrent. Rates derive from upstream's wire counters between consecutive
+// calls, so the first call reports zero rates.
 func (h *anacrolixHandle) Stats() Stats {
 	ts := h.t.Stats()
 	s := Stats{
@@ -345,8 +329,8 @@ func (h *anacrolixHandle) Verify(ctx context.Context) error {
 	return h.t.VerifyDataContext(ctx)
 }
 
-// Drop removes the torrent from the client and unregisters the job. Upstream
-// closes the per-job storage during Drop, so the deferred RemoveAll is safe.
+// Drop removes the torrent from the client and unregisters the job. Upstream closes the
+// per-job storage during Drop, so the deferred RemoveAll is safe.
 func (h *anacrolixHandle) Drop(deleteFiles bool) error {
 	h.t.Drop()
 	h.e.mu.Lock()
@@ -360,9 +344,8 @@ func (h *anacrolixHandle) Drop(deleteFiles bool) error {
 	return nil
 }
 
-// Done closes its channel once every selected byte is downloaded; with no
-// selection it never fires. The watcher is one-shot and stops silently if the
-// torrent closes. BytesMissing is unusable — upstream counts unselected files.
+// Done closes its channel once every selected byte is downloaded; with no selection it never
+// fires. BytesMissing is unusable because upstream counts unselected files.
 func (h *anacrolixHandle) Done() <-chan struct{} {
 	h.doneOnce.Do(func() {
 		h.done = make(chan struct{})

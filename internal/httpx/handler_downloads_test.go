@@ -18,10 +18,8 @@ import (
 	"animind-backend-go/internal/torrent"
 )
 
-// Handler tests for the download surface: create, list, get, patch, delete and
-// the SSE stream. Everything runs on fakes over the narrow interfaces the
-// handlers consume, so no database is involved; the admin PATCH persistence
-// test at the bottom uses the gated M4 harness.
+// Handler tests for the download surface: create, list, get, patch, delete and the SSE
+// stream, all on fakes; the admin PATCH persistence test uses the gated M4 harness.
 
 // Account ids are uuids because the manager's request carries uuid.UUID.
 const (
@@ -283,8 +281,7 @@ func TestDownloadCreateAndGuards(t *testing.T) {
 			{"quota", downloads.ErrTooManyActive, http.StatusForbidden, "download_forbidden", ""},
 			{"disabled", downloads.ErrNotEnabled, http.StatusNotImplemented, "downloads_unavailable", ""},
 			{"duplicate", &downloads.DuplicateJobError{JobID: otherJobUUID}, http.StatusConflict, "", otherJobUUID},
-			// A wrapped sentinel without the typed id still answers 409; the
-			// payload simply has no job id to offer.
+			// A wrapped sentinel without the typed id still answers 409, with no job id.
 			{"duplicate without a typed id", fmt.Errorf("wrapped: %w", downloads.ErrDuplicate), http.StatusConflict, "", ""},
 		}
 		for _, tc := range cases {
@@ -458,8 +455,7 @@ func TestDownloadListGetPatchDeleteAndSSE(t *testing.T) {
 			t.Fatalf("select conflict = %d, want 409", rec.Code)
 		}
 
-		// A selection the torrent cannot honour is the only user-fixable failure:
-		// 400 invalid_file_selection.
+		// A selection the torrent cannot honour is the only user-fixable failure: 400.
 		fake.selectErr = downloads.ErrInvalidSelection
 		rec = callAs(t, caller, srv.handleDownloadPatch, http.MethodPatch,
 			"/api/downloads/"+jobUUID, map[string]string{"id": jobUUID}, map[string]any{"fileIndexes": []int{0}})
@@ -469,8 +465,7 @@ func TestDownloadListGetPatchDeleteAndSSE(t *testing.T) {
 		}
 		assertCode(t, rec.Body.Bytes(), "invalid_file_selection")
 
-		// A server fault must never wear the 400 selection code: an unknown
-		// failure keeps its 500 class through the shared mapping.
+		// A server fault must never wear the 400 selection code; it keeps its 500 class.
 		fake.selectErr = errors.New("downloads: store unavailable")
 		rec = callAs(t, caller, srv.handleDownloadPatch, http.MethodPatch,
 			"/api/downloads/"+jobUUID, map[string]string{"id": jobUUID}, map[string]any{"fileIndexes": []int{0}})
@@ -528,8 +523,8 @@ func TestDownloadListGetPatchDeleteAndSSE(t *testing.T) {
 			t.Errorf("cancel forwarded wrong: %+v", fake)
 		}
 
-		// A user without the entitlement may not cancel either — here they own
-		// the job, so the refusal is the entitlement check, not ownership.
+		// A user without the entitlement may not cancel either; here they own the job, so the
+		// refusal is the entitlement check, not ownership.
 		blocked := user(userThreeID)
 		srv.entitlements = blocked.entitlements()
 		installJobStore(srv, storedJob(jobUUID, userThreeID))
@@ -613,8 +608,8 @@ func TestDownloadListGetPatchDeleteAndSSE(t *testing.T) {
 	})
 }
 
-// waitUntil spins until cond holds, failing the test after two seconds. SSE
-// handlers run on their own goroutine, so a plain assertion would race them.
+// waitUntil spins until cond holds, failing after two seconds; SSE handlers run on their own
+// goroutine, so a plain assertion would race them.
 func waitUntil(t *testing.T, cond func() bool, message string) {
 	t.Helper()
 	deadline := time.Now().Add(2 * time.Second)
@@ -627,8 +622,7 @@ func waitUntil(t *testing.T, cond func() bool, message string) {
 	t.Fatal(message)
 }
 
-// syncRecorder wraps a ResponseRecorder in a mutex: the SSE handler runs on its
-// own goroutine while the test polls the frames it has written so far.
+// syncRecorder wraps a ResponseRecorder in a mutex: the SSE handler writes from its own goroutine.
 type syncRecorder struct {
 	mu  sync.Mutex
 	rec *httptest.ResponseRecorder
@@ -667,12 +661,8 @@ func (s *syncRecorder) header() http.Header {
 
 // ── Admin PATCH (persistence is DB-gated) ────────────────────────────────────
 
-// promoteAdmin does the raw store write and then evicts the cached identity.
-// IsAdmin is part of the cached principal, so any writer outside the admin
-// PATCH handler — including this test's direct repository write, exactly like
-// the e2e harness's SQL promotion — must reproduce the eviction the HTTP
-// handler performs (see handleAdminSetUserAdmin), or RequireAdmin keeps
-// answering the pre-promotion identity until the TTL.
+// promoteAdmin writes the flag and evicts the cached identity: IsAdmin is part of the cached
+// principal, so any writer outside handleAdminSetUserAdmin must reproduce the eviction.
 func promoteAdmin(t *testing.T, store *repository.Store, service *auth.Service, userID string) {
 	t.Helper()
 	if err := store.SetAdmin(context.Background(), userID, true); err != nil {
@@ -681,9 +671,8 @@ func promoteAdmin(t *testing.T, store *repository.Store, service *auth.Service, 
 	service.InvalidateUser(context.Background(), userID)
 }
 
-// TestAdminPatchCanDownloadPersists runs the admin entitlement toggle through
-// the real store, mirroring the M4 auth-flow harness. It skips without
-// POSTGRES_TEST_DATABASE_URL, like every other database suite.
+// TestAdminPatchCanDownloadPersists runs the admin entitlement toggle through the real store,
+// skipping without POSTGRES_TEST_DATABASE_URL like every other database suite.
 func TestAdminPatchCanDownloadPersists(t *testing.T) {
 	srv, store, service := sharedHarness(t)
 	admin := signUpAccount(t, service)
@@ -716,8 +705,7 @@ func TestAdminPatchCanDownloadPersists(t *testing.T) {
 	}
 }
 
-// meUserID resolves an account's user id through one authenticated call, so a
-// test never has to parse the signup result shape.
+// meUserID resolves an account's user id through one authenticated call.
 func meUserID(t *testing.T, srv *Server, acc account) string {
 	t.Helper()
 	rec := acc.do(t, srv, http.MethodGet, "/api/auth/me", nil)
@@ -768,9 +756,8 @@ func isAdminOf(t *testing.T, store *repository.Store, userID string) bool {
 	return false
 }
 
-// TestSetAdminRequestShape pins the payload contract the review tightened:
-// is_admin is optional, so a can_download-only PATCH decodes with no is_admin
-// change at all instead of an implied false.
+// TestSetAdminRequestShape pins the payload contract: is_admin is optional, so a
+// can_download-only PATCH decodes with no implied false.
 func TestSetAdminRequestShape(t *testing.T) {
 	var req setAdminRequest
 	if err := json.Unmarshal([]byte(`{"can_download":true}`), &req); err != nil {
@@ -792,11 +779,8 @@ func TestSetAdminRequestShape(t *testing.T) {
 	}
 }
 
-// TestAdminPatchIsAdminOptional runs the semantics the optional is_admin buys,
-// through the real store: a can_download-only PATCH must not demote an admin
-// target, an admin may toggle their own can_download, and the legacy
-// {"is_admin": ...} flow keeps its behaviour including the self-demote guard.
-// DB-gated like every suite that writes through the repository.
+// TestAdminPatchIsAdminOptional runs the optional is_admin semantics through the real store:
+// a can_download-only PATCH must not demote, and the legacy flow keeps the self-demote guard.
 func TestAdminPatchIsAdminOptional(t *testing.T) {
 	srv, store, service := sharedHarness(t)
 
@@ -846,8 +830,7 @@ func TestAdminPatchIsAdminOptional(t *testing.T) {
 			t.Error("legacy is_admin promotion did not persist")
 		}
 
-		// The self-demote guard still fires when the request really changes
-		// is_admin on self.
+		// The self-demote guard still fires when the request really changes is_admin on self.
 		rec = admin.do(t, srv, http.MethodPatch, "/api/admin/users/"+adminID, map[string]any{"is_admin": false})
 		if rec.Code != http.StatusBadRequest {
 			t.Fatalf("self demote = %d, want 400 (body %s)", rec.Code, rec.Body.String())

@@ -27,13 +27,12 @@ import (
 	"animind-backend-go/internal/torrent"
 )
 
-// Server is the assembled HTTP API: routes, middleware and every dependency a handler
-// needs. Handlers are methods on it, so a route table reads as a list of endpoints rather
-// than a list of constructors.
+// Server is the assembled HTTP API: routes, middleware and every dependency a handler needs.
+// Handlers are methods on it, so a route table reads as a list of endpoints.
 
-// SessionCookieName is the cookie a browser session is stored in. When secure cookies are
-// enabled the prefixed form is used: __Host- forces Secure, Path=/ and no Domain, which
-// stops a sibling subdomain from overwriting the session.
+// SessionCookieName is the cookie a browser session is stored in. With secure cookies the
+// prefixed form is used: __Host- forces Secure, Path=/ and no Domain, so no sibling subdomain
+// can overwrite the session.
 const (
 	SessionCookieName       = "animind_session"
 	SecureSessionCookieName = "__Host-" + SessionCookieName
@@ -42,9 +41,8 @@ const (
 // maxJSONBody bounds one request body.
 const maxJSONBody = int64(1 << 20)
 
-// Deps are the collaborators the API needs; each field's own comment carries what happens
-// when it is nil. A nil Cache keeps rate-limit windows inside this process rather than in a
-// shared store.
+// Deps are the collaborators the API needs; each field's own comment carries what happens when
+// it is nil. A nil Cache keeps rate-limit windows inside this process.
 type Deps struct {
 	Config  *config.Config
 	Store   *repository.Store
@@ -59,15 +57,12 @@ type Deps struct {
 	Hub     *syncplay.Hub
 	Logger  *slog.Logger
 
-	// Torrent serves /api/torrents/search; nil (or an empty TORZNAB_URL) answers 501.
-	// The narrow interface is what the handlers consume; *torrent.Service is the
-	// production implementation.
+	// Torrent serves /api/torrents/search; nil (or an empty TORZNAB_URL) answers 501. The
+	// narrow interface is what the handlers consume.
 	Torrent torrentServiceAPI
-	// Downloads drives the torrent job state machine; the handlers answer 501 when
-	// downloads are disabled.
+	// Downloads drives the torrent job state machine; the handlers answer 501 when disabled.
 	Downloads *downloads.Manager
-	// Trending is the same counter instance the Torrent service records into — a
-	// second instance would silently fork the counts.
+	// Trending is the same instance the Torrent service records into; a second would fork the counts.
 	Trending *torrent.Trending
 	// EventHub is the same SSE hub the Downloads manager publishes into.
 	EventHub *downloads.Hub
@@ -90,9 +85,8 @@ type Server struct {
 	logger    *slog.Logger
 	startedAt time.Time
 
-	// The download surface sits behind narrow interfaces so handler tests can
-	// fake the collaborators without a database. *torrent.Service and
-	// *downloads.Manager satisfy them as-is.
+	// The download surface sits behind narrow interfaces so handler tests can fake the
+	// collaborators without a database.
 	torrent      torrentServiceAPI
 	downloads    downloadsManagerAPI
 	eventsHub    *downloads.Hub
@@ -104,8 +98,8 @@ type Server struct {
 	// complex search but short enough to release a worker.
 	aniListHTTP *http.Client
 
-	// metrics collects the counters the Prometheus listener exports. Nil when metrics are
-	// disabled, and every record call is a no-op then.
+	// metrics collects what the Prometheus listener exports. Nil when metrics are disabled,
+	// and every record call is then a no-op.
 	metrics *metrics
 
 	httpServer *http.Server
@@ -143,17 +137,17 @@ func New(deps Deps) *Server {
 		s.entitlements = storeEntitlements{store: deps.Store}
 	}
 	if deps.Config.Metrics.Enabled {
-		// The download manager joins the same registry: newMetrics registers the
-		// downloads collectors and hands itself over as the manager's observer.
+		// The download manager joins the same registry: newMetrics registers its collectors
+		// and hands itself over as the manager's observer.
 		s.metrics = newMetrics(deps.Cache, deps.Hub, deps.Store, s.limiter.fallback, deps.Downloads)
 	}
 	return s
 }
 
 // credential extracts the bearer token, falling back to the session cookie. The cookie exists
-// because an SPA must sometimes not hold the token at all; the desktop player only ever sends
-// the header. In a Secure deployment only the __Host- cookie is read: accepting the legacy
-// host-only name would let a sibling subdomain set a fixed session cookie.
+// because an SPA must sometimes not hold the token at all. In a Secure deployment only the
+// __Host- cookie is read: accepting the legacy name would let a sibling subdomain set a fixed
+// session cookie.
 func (s *Server) credential(r *http.Request) string {
 	if token := BearerToken(r); token != "" {
 		return token
@@ -175,9 +169,8 @@ func (s *Server) rate(limiter *RateLimiter) func(http.Handler) http.Handler {
 
 // Router builds the chi route table.
 //
-// Per-route limiters are applied here, ahead of the auth handlers they protect. Paths and JSON
-// shapes are unchanged from the Node backend wherever a shipped client parses them, and
-// /api/auth/* plus /api/me/* replace Clerk and the browser's direct database access.
+// Per-route limiters are applied ahead of the auth handlers they protect. Paths and JSON
+// shapes are unchanged from the Node backend wherever a shipped client parses them.
 func (s *Server) Router() chi.Router {
 	r := chi.NewRouter()
 
@@ -213,14 +206,14 @@ func (s *Server) Router() chi.Router {
 			authz.With(s.rate(s.limiter.Login)).Post("/password/forgot", s.handleForgotPassword)
 			authz.With(s.rate(s.limiter.Login)).Post("/password/reset", s.handleResetPassword)
 
-			// Desktop device pairing and renewal. exchange requires a signed-in web
-			// credential; refresh and revoke are keyed by their own tokens.
+			// Desktop device pairing and renewal. exchange needs a signed-in web credential;
+			// refresh and revoke are keyed by their own tokens.
 			authz.With(s.rate(s.limiter.Login)).Post("/desktop/exchange", s.handleDesktopExchange)
 			authz.With(s.rate(s.limiter.Login)).Post("/desktop/refresh", s.handleDesktopRefresh)
 			authz.With(s.rate(s.limiter.Login)).Post("/desktop/revoke", s.handleDesktopRevoke)
 
-			// Everything below needs a session. Group keeps the middleware scoped to these
-			// routes, since chi forbids Use() after routes have been registered on a mux.
+			// Everything below needs a session. Group keeps the middleware scoped, since chi
+			// forbids Use() after routes are registered on a mux.
 			authz.Group(func(privileged chi.Router) {
 				privileged.Use(s.RequireAuth)
 				privileged.With(s.rate(s.limiter.UserData)).Get("/me", s.handleCurrentUser)
@@ -231,16 +224,16 @@ func (s *Server) Router() chi.Router {
 			})
 		})
 
-		// Playback. The stream route authenticates with either a bearer token or a signed
-		// ticket, because a media element cannot set a header.
+		// Playback. The stream route authenticates with a bearer token or a signed ticket,
+		// because a media element cannot set a header.
 		api.With(s.rate(s.limiter.StreamTicket), s.RequireAuth).Get("/episodes/{id}/stream-ticket", s.handleStreamTicket)
 		api.With(s.rate(s.limiter.MediaStream)).Get("/episodes/{id}/stream", s.handleStream)
 		api.With(s.rate(s.limiter.HLSSession), s.RequireAuth).Post("/episodes/{id}/hls-session", s.handleCreateHLSSession)
 		api.With(s.rate(s.limiter.PublicRead), s.RequireAuth).Get("/episodes/{id}/subtitles", s.handleEpisodeSubtitles)
 		api.With(s.rate(s.limiter.PublicRead), s.RequireAuth).Get("/episodes/{id}/audio-tracks", s.handleEpisodeAudioTracks)
 
-		// HLS playlist and segments are addressed by an opaque session id that only the
-		// create call can mint, so they stay unauthenticated but unguessable.
+		// HLS playlist and segments are addressed by an opaque session id only the create
+		// call can mint, so they stay unauthenticated but unguessable.
 		api.With(s.rate(s.limiter.HLSSegment)).Get("/hls/{sessionId}/playlist.m3u8", s.handleHLSPlaylist)
 		api.With(s.rate(s.limiter.HLSSegment)).Get("/hls/{sessionId}/{segment}", s.handleHLSSegment)
 		api.With(s.rate(s.limiter.HLSSession), s.RequireAuth).Post("/hls/{sessionId}/seek", s.handleHLSSeek)
@@ -270,9 +263,8 @@ func (s *Server) Router() chi.Router {
 		// user to open the matching episode.
 		api.With(s.rate(s.limiter.PublicRead), s.RequireAuth).Get("/syncplay/rooms/{code}", s.handleRoomLookup)
 
-		// Torrent search and downloads. Both are local-storage features: in s3 mode
-		// the handlers answer 501 downloads_unavailable. "events" must be registered
-		// before "{id}" or chi captures it as a job id.
+		// Torrent search and downloads. Both are local-storage features: in s3 mode the
+		// handlers answer 501. "events" must precede "{id}" or chi captures it as a job id.
 		api.With(s.rate(s.limiter.TorrentSearch), s.RequireAuth).Get("/torrents/search", s.handleTorrentSearch)
 		api.With(s.rate(s.limiter.DownloadCreate), s.RequireAuth, MaxBody(maxJSONBody)).Post("/downloads", s.handleDownloadCreate)
 		api.With(s.rate(s.limiter.DownloadRead), s.RequireAuth).Get("/downloads", s.handleDownloadList)
@@ -294,16 +286,16 @@ func (s *Server) Router() chi.Router {
 		})
 	})
 
-	// The old website's desktop handoff page is now served here, so a stock Qt player
-	// pointed at this origin can still pair a device without the retired site.
+	// The old website's desktop handoff page is served here, so a stock Qt player
+	// pointed at this origin can still pair a device.
 	r.With(adminSecurityHeaders, s.rate(s.limiter.Login)).Get("/desktop-auth", s.handleDesktopAuthPage)
 	r.With(adminSecurityHeaders, s.rate(s.limiter.Login), MaxBody(maxJSONBody), s.adminCSRF).
 		Post("/desktop-auth/login", s.handleDesktopAuthLogin)
 	r.With(adminSecurityHeaders, s.rate(s.limiter.Login), MaxBody(maxJSONBody), s.adminCSRF).
 		Post("/desktop-auth/confirm", s.handleDesktopAuthConfirm)
 
-	// The website is the admin console. It is server-rendered from embedded templates, so
-	// there is no separate frontend build or static asset deployment.
+	// The website is the admin console, server-rendered from embedded templates, so there is
+	// no separate frontend build or static asset deployment.
 	r.Get("/", func(w http.ResponseWriter, req *http.Request) {
 		http.Redirect(w, req, "/admin", http.StatusSeeOther)
 	})
@@ -314,9 +306,8 @@ func (s *Server) Router() chi.Router {
 		admin.With(s.rate(s.limiter.Login), MaxBody(maxJSONBody), s.adminCSRF).Post("/login", s.handleAdminLoginSubmit)
 
 		admin.Group(func(page chi.Router) {
-			// The limiter runs before authentication so an unauthenticated flood cannot make
-			// every request hit the session store. A 429 is JSON; that is acceptable for an
-			// operator surface.
+			// The limiter runs before authentication so an unauthenticated flood cannot reach
+			// the session store. A 429 is JSON; that is acceptable for an operator surface.
 			page.Use(s.rate(s.limiter.Admin), MaxBody(maxJSONBody), s.requireAdminPage, s.adminCSRF)
 			page.Get("/", s.handleAdminUIDashboard)
 			page.Get("/users", s.handleAdminUIUsers)
@@ -351,8 +342,7 @@ func (s *Server) Router() chi.Router {
 	return r
 }
 
-// ListenAndServe starts the HTTP server. It returns once the listener is closed, so the
-// caller blocks here until Shutdown or a fatal error.
+// ListenAndServe starts the HTTP server and blocks until Shutdown or a fatal error.
 func (s *Server) ListenAndServe() error {
 	s.httpServer = &http.Server{
 		Addr:         s.cfg.Addr(),
@@ -380,7 +370,7 @@ func (s *Server) ListenAndServe() error {
 }
 
 // startMetricsListener opens the scrape port. A failure here is fatal: a server that cannot
-// be observed is a deployment that will be debugged by guessing.
+// be observed will be debugged by guessing.
 func (s *Server) startMetricsListener() error {
 	if s.metrics == nil {
 		return nil
@@ -434,10 +424,8 @@ func (s *Server) requirePrincipal(w http.ResponseWriter, r *http.Request) (*auth
 	return principal, true
 }
 
-// setSessionCookie installs the browser session cookie.
-//
-// HttpOnly keeps the token out of page scripts, so an XSS in a web client cannot read it; callers
-// that use a bearer header get the token in the login response body instead.
+// setSessionCookie installs the browser session cookie. HttpOnly keeps the token out of page
+// scripts, so an XSS in a web client cannot read it; bearer clients get it in the body instead.
 func (s *Server) setSessionCookie(w http.ResponseWriter, token string, expiresAt time.Time, remember bool) {
 	name := SessionCookieName
 	if s.cfg.Auth.SecureCookies {
@@ -469,9 +457,8 @@ func (s *Server) clearSessionCookie(w http.ResponseWriter) {
 
 // serveLocalFile writes a local media file honouring a single HTTP range request.
 //
-// Range support is what makes seeking work in both the browser player and mpv, and the chunk
-// cap keeps one connection from holding a worker for the whole file. A request past the end
-// gets 416 with the total size so the client can restart.
+// Range support makes seeking work in both players, and the chunk cap keeps one connection from
+// holding a worker for the whole file. A request past the end gets 416 with the total size.
 func serveLocalFile(w http.ResponseWriter, r *http.Request, file io.ReadSeeker, size int64, mimeType string, chunkSize int64, cacheable bool) {
 	header := w.Header()
 	header.Set("Content-Type", mimeType)
@@ -521,7 +508,7 @@ func parseRange(header string, size, chunkSize int64) (start, end int64, err err
 	}
 	spec := strings.TrimSpace(strings.TrimPrefix(header, prefix))
 	if strings.Contains(spec, ",") {
-		// Multi-range requests are not needed by either player; answering with the first
+		// Multi-range requests are not needed by either player, and answering with the first
 		// span would be wrong, so they are refused.
 		return 0, 0, errors.New("only a single range is supported")
 	}

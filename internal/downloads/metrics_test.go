@@ -9,10 +9,8 @@ import (
 	"github.com/google/uuid"
 )
 
-// Metric smoke: the manager's three hooks (active gauge, bytes counter, failed
-// counter) fire at the points the spec §7.10 names. The collectors themselves
-// are registered and rendered by the httpx metrics set; what this file owns is
-// that the manager actually calls them — and survives an absent observer.
+// Metric smoke: the manager's three hooks (active gauge, bytes and failed counters) fire where
+// spec §7.10 names; this file owns that they are called, and that an absent observer is safe.
 
 // recordingObserver captures every hook call without a Prometheus registry.
 type recordingObserver struct {
@@ -103,9 +101,8 @@ func TestCreateObservesActiveGauge(t *testing.T) {
 	}
 }
 
-// TestProgressTicksFeedBytesCounter drives one job into downloading and asserts
-// the bytes counter receives positive deltas — and that regressions (an engine
-// reporting fewer completed bytes, e.g. after a restart) never count.
+// TestProgressTicksFeedBytesCounter drives one job into downloading and asserts the bytes
+// counter receives positive deltas, while regressions never count.
 func TestProgressTicksFeedBytesCounter(t *testing.T) {
 	st := newFakeStore()
 	jobID := uuid.NewString()

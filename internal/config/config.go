@@ -1,9 +1,8 @@
 // Package config loads and validates every runtime setting from the environment, so the same
-// binary runs locally, in Docker or on a VPS. Names are inherited from the original Node
-// backend wherever the meaning is identical, which lets an existing deployment keep its .env.
+// binary runs locally, in Docker or on a VPS. Names inherited from the original Node backend
+// keep an existing deployment's .env working.
 //
-// Load fails fast: required keys are checked at startup rather than on first use. Clerk- and
-// Supabase-only variables are gone, replaced by DATABASE_URL and the GOOGLE_/AUTH_ keys.
+// Load fails fast: required keys are checked at startup rather than on first use.
 package config
 
 import (
@@ -34,23 +33,19 @@ type Config struct {
 	Env          string
 	Port         int
 	IsProduction bool
-	// DebugErrors exposes the underlying error text in 500 responses. It is false by
-	// default in every environment: operators who need it opt in explicitly.
+	// DebugErrors exposes underlying error text in 500 responses; false by default everywhere.
 	DebugErrors bool
-	// PublicURL is this API's externally reachable origin, used for token issuance and
-	// OAuth callbacks.
+	// PublicURL is this API's externally reachable origin, used for tokens and OAuth callbacks.
 	PublicURL string
 	// FrontendOrigins are allowed CORS origins for web clients and the desktop app.
 	FrontendOrigins []string
-	// AppLinkOrigins are HTTPS origins the OAuth callback may return to, so a native client can
-	// receive the one-time code through a verified app link. They are merged with FrontendOrigins
-	// only inside sanitizeReturnTarget.
+	// AppLinkOrigins are HTTPS origins the OAuth callback may return to for a native app link.
+	// They are merged with FrontendOrigins only inside sanitizeReturnTarget.
 	AppLinkOrigins []string
 	// WebhookSecret guards POST /api/webhooks/storage.
 	WebhookSecret string
-	// TrustProxy enables X-Forwarded-For based client identity. Turn it on only when a
-	// reverse proxy that overwrites the header sits in front of this process, otherwise a
-	// client could forge it to escape rate limits.
+	// TrustProxy enables X-Forwarded-For client identity. Turn it on only behind a reverse
+	// proxy that overwrites the header, or a client could forge it to escape rate limits.
 	TrustProxy bool
 
 	DB         DatabaseConfig
@@ -80,10 +75,8 @@ type DatabaseConfig struct {
 	AutoMigrate bool
 }
 
-// AuthConfig controls the built-in authentication system: no hosted identity provider is
-// involved. Passwords use argon2id, web sessions are opaque bearer tokens stored hashed, and
-// desktop access tokens are HMAC-signed and self-contained but also pinned in the database,
-// so they can be revoked instantly.
+// AuthConfig controls the built-in authentication system: argon2id passwords, opaque hashed
+// web sessions, and HMAC-signed desktop tokens pinned in the database for instant revocation.
 type AuthConfig struct {
 	// TokenSigningKey signs desktop access tokens. Required, high entropy.
 	TokenSigningKey string
@@ -99,8 +92,8 @@ type AuthConfig struct {
 	Argon2Time    uint32
 	Argon2Memory  uint32
 	Argon2Threads uint8
-	// MaxFailedLogins throttles repeated password failures from one source for
-	// FailedLoginLockout. It is deliberately not an account-wide lockout.
+	// MaxFailedLogins throttles repeated password failures per source for FailedLoginLockout;
+	// deliberately not an account-wide lockout.
 	MaxFailedLogins    int
 	FailedLoginLockout time.Duration
 	// GoogleClientID/Secret enable "continue with Google" on the website and desktop.
@@ -125,13 +118,13 @@ type CacheConfig struct {
 	URL string
 	// Namespace prefixes every key so one Redis can hold several stacks.
 	Namespace string
-	// SessionTTL caps how long a resolved credential is served from cache. It is deliberately
-	// short: it bounds how long a revocation that no code path announces could survive.
+	// SessionTTL caps how long a resolved credential is served from cache, bounding how long
+	// an unannounced revocation could survive.
 	SessionTTL time.Duration
 	// MetadataTTL is how long a proxied AniList document or a resolved title is reused.
 	MetadataTTL time.Duration
-	// DialTimeout bounds connection setup; CommandTimeout bounds every read, write and
-	// eviction. Both are short because authentication reads through this layer.
+	// DialTimeout bounds connection setup, CommandTimeout every read and write; both are short
+	// because authentication reads through this layer.
 	DialTimeout    time.Duration
 	CommandTimeout time.Duration
 	// MaxConnections caps the pool so a slow Redis cannot consume the process.
@@ -141,8 +134,8 @@ type CacheConfig struct {
 // MetricsConfig controls the Prometheus listener.
 type MetricsConfig struct {
 	Enabled bool
-	// Addr is a separate listener so metrics never travel through the public route table.
-	// Bind it to localhost or an internal network; it is unauthenticated by design.
+	// Addr is a separate, unauthenticated listener by design; bind it to localhost or an
+	// internal network so metrics never travel through the public route table.
 	Addr string
 	Path string
 }
@@ -171,8 +164,8 @@ type S3Config struct {
 	Endpoint  string
 	AccessKey string
 	SecretKey string
-	// ForcePathStyle is reserved: nothing reads it and no variable sets it. Path-style
-	// addressing is decided in storage.New, which turns it on whenever Endpoint is set.
+	// ForcePathStyle is reserved: nothing reads it and no variable sets it. Path-style addressing
+	// is decided in storage.New, which enables it whenever Endpoint is set.
 	ForcePathStyle bool
 }
 
@@ -223,8 +216,8 @@ type DownloadsConfig struct {
 	UTP         bool
 	// MaxFiles caps entries extracted from a single torrent.
 	MaxFiles int
-	// ListenAddr is the torrent client's UDP listen address; ":0" picks an
-	// ephemeral port, which Windows may have placed inside an excluded range.
+	// ListenAddr is the torrent client's UDP listen address; ":0" picks an ephemeral port,
+	// which Windows may have placed inside an excluded range.
 	ListenAddr string
 	// Enabled mirrors Storage.Mode == local.
 	Enabled bool
@@ -355,9 +348,8 @@ func Load() (*Config, error) {
 	env := strings.ToLower(strings.TrimSpace(envRaw))
 	publicURL := strings.TrimSuffix(getString("PUBLIC_URL", ""), "/")
 	if !envSet || env == "" {
-		// Fail closed when the deployment looks public: an omitted ENV used to silently
-		// disable Secure cookies, verbose errors and origin checks. A loopback deployment
-		// may still default to development for local tooling.
+		// Fail closed when the deployment looks public: an omitted ENV used to silently disable
+		// Secure cookies, verbose errors and origin checks. Loopback may still default to development.
 		if publicURL != "" && !isLoopbackURL(publicURL) {
 			return nil, errors.New("config: ENV must be set (production or development) when PUBLIC_URL is not a loopback address")
 		}
@@ -433,9 +425,9 @@ func (cfg *Config) validateProductionSecurity() error {
 	return nil
 }
 
-// placeholderSecret rejects values copied from the example environment or a tutorial.
-// The check is intentionally textual: a real 48-byte random key will not contain these
-// markers, while every shipped example does.
+// placeholderSecret rejects values copied from the example environment or a tutorial. The
+// check is textual: a real 48-byte random key will not contain these markers, while every
+// shipped example does.
 func placeholderSecret(value string) bool {
 	lowered := strings.ToLower(strings.TrimSpace(value))
 	for _, marker := range []string{
@@ -540,8 +532,7 @@ func (c *Config) loadCache() {
 func (c *Config) loadMetrics() {
 	c.Metrics = MetricsConfig{
 		Enabled: getBool("METRICS_ENABLED", true),
-		// Localhost by default: an unauthenticated endpoint should not open a public port
-		// just because the binary was upgraded.
+		// Localhost by default: an unauthenticated endpoint should not open a public port.
 		Addr: getString("METRICS_ADDR", "127.0.0.1:3002"),
 		Path: getString("METRICS_PATH", "/metrics"),
 	}
@@ -623,9 +614,8 @@ func (c *Config) loadDownloads() error {
 	if maxJob < 1<<30 {
 		maxJob = 1 << 30
 	}
-	// Negative values floor at zero: a negative headroom would void the disk
-	// check (free >= negative is always true), and negative seed knobs are
-	// meaningless while seeding beyond completion stays reserved.
+	// Negative values floor at zero: a negative headroom would void the disk check (free >=
+	// negative is always true), and negative seed knobs are meaningless.
 	minFreeGB := maxInt(getInt("DOWNLOADS_MIN_FREE_GB", 20), 0)
 	seedRatio := getFloat("DOWNLOADS_SEED_RATIO", 0)
 	if seedRatio < 0 {
@@ -775,9 +765,8 @@ func (c *Config) loadSyncPlay() {
 // Addr returns the listen address for the HTTP server.
 func (c *Config) Addr() string { return fmt.Sprintf(":%d", c.Port) }
 
-// PublicIssuer returns the externally visible origin of this API, used as the `iss`
-// claim on tokens the desktop player can inspect. It prefers PUBLIC_URL and falls back
-// to the first configured site origin.
+// PublicIssuer returns the externally visible origin of this API, used as the `iss` claim on
+// desktop tokens. It prefers PUBLIC_URL and falls back to the first configured site origin.
 func (c *Config) PublicIssuer() string {
 	if c.PublicURL != "" {
 		return strings.TrimSuffix(c.PublicURL, "/")
@@ -806,9 +795,8 @@ func (c *Config) OriginAllowed(origin string) bool {
 	return false
 }
 
-// WildcardOrigin reports whether the deployment opted into any-origin CORS. Callers must
-// not combine that with credentials: a reflected origin plus Allow-Credentials is the
-// classic credentialed-CORS primitive.
+// WildcardOrigin reports whether the deployment opted into any-origin CORS. Callers must not
+// combine that with credentials: reflected origin plus Allow-Credentials is the classic primitive.
 func (c *Config) WildcardOrigin() bool {
 	for _, allowed := range c.FrontendOrigins {
 		if allowed == "*" {
@@ -868,9 +856,8 @@ func getFloat(key string, fallback float64) float64 {
 	return f
 }
 
-// getBool treats only an explicit "true" (case-insensitive) as true when the
-// variable is set, matching the original backend's `!== 'false'` semantics for
-// defaults while rejecting typos like "ture".
+// getBool accepts only documented true/false spellings; an unrecognised value falls back to the
+// default, because a typo must not flip a security-relevant switch.
 func getBool(key string, fallback bool) bool {
 	raw, ok := os.LookupEnv(key)
 	if !ok || strings.TrimSpace(raw) == "" {
@@ -897,9 +884,8 @@ func splitList(raw string) []string {
 	return out
 }
 
-// parseAppLinkOrigins keeps only absolute HTTPS origins with no path, query, fragment, userinfo or
-// wildcard. Unlike FRONTEND_URL it never accepts http, because an app link is always https, and it
-// stores the bare origin so a return target can only ever differ by path.
+// parseAppLinkOrigins keeps only absolute HTTPS origins with no path, query, fragment, userinfo
+// or wildcard, storing the bare origin so a return target can only differ by path.
 func parseAppLinkOrigins(raw string) []string {
 	var out []string
 	for _, part := range splitList(raw) {

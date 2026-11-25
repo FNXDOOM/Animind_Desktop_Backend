@@ -7,8 +7,7 @@ import (
 	"testing"
 )
 
-// Download job rows reference animind_users and shows, so the cascade truncate in
-// newTestStore clears them between tests; each test seeds its own accounts.
+// Download job rows reference users and shows, so newTestStore's cascade truncate clears them.
 
 func TestDownloadJobsCRUDAndTransitions(t *testing.T) {
 	store := newTestStore(t)
@@ -37,8 +36,7 @@ func TestDownloadJobsCRUDAndTransitions(t *testing.T) {
 		t.Errorf("expected a unique violation, got %v", err)
 	}
 
-	// The index is scoped to (user_id, info_hash): another account downloading the
-	// same torrent gets its own row.
+	// The index is scoped to (user_id, info_hash), so another account's same torrent gets its own row.
 	other := mustUser(t, store, "downloads2@example.com")
 	otherJob, err := store.CreateDownloadJob(ctx, DownloadJob{
 		UserID: other.ID, ResultTitle: "same torrent, other account", InfoHash: hash,
@@ -101,8 +99,7 @@ func TestDownloadJobsCRUDAndTransitions(t *testing.T) {
 		t.Fatalf("global count: %v", err)
 	}
 
-	// The importer records where files landed and which show they resolved to,
-	// plus the completion stamp.
+	// The importer records where files landed, the resolved show, and the completion stamp.
 	show, err := store.CreateShow(ctx, Show{Title: "Frieren", Genres: []string{}})
 	if err != nil {
 		t.Fatal(err)

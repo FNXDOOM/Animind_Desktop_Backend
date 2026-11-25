@@ -18,9 +18,7 @@ import (
 )
 
 // testServer builds a server with no database or media services. Route registration and the
-// middleware chain do not need them, so this exercises the HTTP surface: status codes,
-// headers, error shape, and the fact that protected routes refuse unauthenticated callers
-// before touching any dependency.
+// middleware chain need neither, so this exercises status codes, headers and error shape.
 func testServer(t *testing.T) *Server {
 	t.Helper()
 	cfg := testConfig(t)
@@ -31,8 +29,7 @@ func testServer(t *testing.T) *Server {
 	return server
 }
 
-// testConfig loads the smallest configuration every HTTP test needs. Callers that want a service
-// (auth, storage) still construct only what their routes touch.
+// testConfig loads the smallest configuration every HTTP test needs.
 func testConfig(t *testing.T) *config.Config {
 	t.Helper()
 	t.Setenv("DATABASE_URL", "postgres://user:pass@localhost:5432/db")
@@ -62,11 +59,8 @@ func do(server *Server, method, path string, headers map[string]string) *httptes
 }
 
 // TestRoutesAreRegistered checks the full inventory both clients depend on, so a typo in a
-// path is a test failure rather than a broken player.
-//
-// Each route is probed with an empty request. A registered path answers 401, 400 or 500
-// (this build has no database, so handlers that reach it fail); an unregistered path answers
-// 404. Only the 404 is evidence of a missing route.
+// path is a test failure rather than a broken player. Each route is probed with an empty
+// request, and only a 404 is evidence of a missing route.
 func TestRoutesAreRegistered(t *testing.T) {
 	server := testServer(t)
 	router := server.Router()
@@ -172,8 +166,7 @@ func TestProtectedRoutesRejectAnonymous(t *testing.T) {
 	}
 }
 
-// requestJSON sends a body with an explicit method, so a protected PUT is not mistaken for a
-// 405 on the way to being tested.
+// requestJSON sends a body with an explicit method, so a protected PUT is not tested as a 405.
 func requestJSON(t *testing.T, server *Server, method, path string, body any) *httptest.ResponseRecorder {
 	t.Helper()
 	encoded, err := json.Marshal(body)
@@ -267,8 +260,7 @@ func TestSecurityHeadersAreSet(t *testing.T) {
 func TestRateLimitReturns429WithRetryAfter(t *testing.T) {
 	server := testServer(t)
 	// The webhook limiter allows thirty requests a minute; the thirty-first must be refused
-	// before the handler runs. Anonymous requests still consume budget, which is the point:
-	// the limiter runs ahead of the handler, so a credential-stuffing loop cannot flood it.
+	// before the handler runs. Anonymous requests still consume budget, which is the point.
 	for attempt := 1; attempt <= 30; attempt++ {
 		recorder := do(server, http.MethodPost, "/api/webhooks/storage", nil)
 		if recorder.Code != http.StatusUnauthorized {
@@ -460,14 +452,10 @@ func assertErrorShape(t *testing.T, body []byte) {
 
 // ── Download/torrent handler seams ───────────────────────────────────────────
 //
-// The download handlers run against fakes over the narrow interfaces they
-// consume (torrentServiceAPI, downloadsManagerAPI, downloadsJobStore,
-// downloadEntitlement), so their behaviour is tested without a database. The
-// real wiring is exercised by the route inventory and anonymous-rejection
-// tests above, which run through the full router.
+// The download handlers run against fakes over their narrow interfaces, so no database is
+// needed; the real wiring is covered by the route inventory tests above.
 
-// testServerWith builds a server from a mutated dependency set, so a test can
-// install fakes exactly where production wiring would place the real services.
+// testServerWith builds a server from a mutated dependency set, so a test can install fakes.
 func testServerWith(t *testing.T, mutate func(*Deps)) *Server {
 	t.Helper()
 	deps := Deps{Config: testConfig(t), Logger: slog.New(slog.NewTextHandler(io.Discard, nil))}
@@ -479,9 +467,8 @@ func testServerWith(t *testing.T, mutate func(*Deps)) *Server {
 	return server
 }
 
-// sessionUser is the caller a handler test authenticates as. Handlers read the
-// principal from the request context, so tests mint one directly instead of
-// storing a session row; canDownload feeds the fake entitlement store.
+// sessionUser is the caller a handler test authenticates as: a principal on the context, with
+// canDownload feeding the fake entitlement store.
 type sessionUser struct {
 	id          string
 	admin       bool
@@ -503,9 +490,8 @@ func (u sessionUser) principal() *auth.Principal {
 	}
 }
 
-// callAs invokes one handler with the pieces RequireAuth and chi routing would
-// have produced: a principal on the context and route params from the path.
-// Per-route limits and anonymous rejection are covered through the full router.
+// callAs invokes one handler with the principal and route params RequireAuth and chi would
+// have produced; limits and anonymous rejection are covered through the full router.
 func callAs(t *testing.T, u sessionUser, handler http.HandlerFunc, method, target string, params map[string]string, body any) *httptest.ResponseRecorder {
 	t.Helper()
 	var reader io.Reader

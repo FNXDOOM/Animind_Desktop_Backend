@@ -12,9 +12,8 @@ import (
 	"animind-backend-go/internal/config"
 )
 
-// redisStore is the cross-process implementation. Every method bounds itself: this sits in
-// front of authentication, so a Redis that stops answering must cost one short timeout and
-// then be ignored, not stall the request.
+// redisStore is the cross-process implementation. It bounds every call: it sits in front of
+// authentication, so a dead Redis costs one short timeout, not a stalled request.
 type redisStore struct {
 	client  *redis.Client
 	ns      string
@@ -22,9 +21,8 @@ type redisStore struct {
 	timeout time.Duration
 	logger  *slog.Logger
 
-	// windowScript atomically counts and sets the reset deadline. Two commands without this
-	// can leave an INCR'ed key with no TTL after a crash between them, which is a counter
-	// that never resets.
+	// windowScript counts and sets the reset deadline atomically; two commands could leave an
+	// INCR'ed key with no TTL after a crash, a counter that never resets.
 	windowScript *redis.Script
 	// groupScript empties an invalidation set in one round trip.
 	groupScript *redis.Script
@@ -56,8 +54,7 @@ func newRedis(ctx context.Context, cfg config.CacheConfig, logger *slog.Logger) 
 		stats:   &Stats{},
 		timeout: cfg.CommandTimeout,
 		logger:  logger,
-		// The script counts and expires in one atomic step; the ceiling is compared here because
-		// a number Redis never needs to see does not have to cross the wire.
+		// The script counts and expires atomically; the ceiling stays here since Redis need not see it.
 		windowScript: redis.NewScript(`
 			local hits = redis.call('INCR', KEYS[1])
 			local window = tonumber(ARGV[1])

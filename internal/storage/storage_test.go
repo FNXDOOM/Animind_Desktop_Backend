@@ -32,9 +32,8 @@ func localService(t *testing.T) (*Service, string) {
 
 func discardLogger() *slog.Logger { return slog.New(slog.NewTextHandler(io.Discard, nil)) }
 
-// TestLocalPathRejectsEscape covers the ways a stored path could try to leave the library
-// root. Every local read funnels through LocalPath, so this is the containment boundary for
-// streaming, subtitles, audio variants and HLS sources.
+// TestLocalPathRejectsEscape covers ways a stored path could leave the library root, the
+// containment boundary for all local reads.
 func TestLocalPathRejectsEscape(t *testing.T) {
 	service, root := localService(t)
 
@@ -58,10 +57,8 @@ func TestLocalPathRejectsEscape(t *testing.T) {
 		}
 	}
 
-	// A leading separator and an interior ".." that stays inside the root are normalized to
-	// paths under the library rather than treated as escapes: "/etc/passwd" resolves to
-	// <root>/etc/passwd, and "Show/.." resolves to the root itself. Both remain inside the
-	// boundary, which is the property the callers depend on.
+	// A leading separator and an interior ".." that stays inside are normalized under the
+	// library rather than treated as escapes; callers depend on staying inside the boundary.
 	for _, inRoot := range []string{"/etc/passwd", "Show/..", "./Show/ep01.mkv"} {
 		resolved, err := service.LocalPath(inRoot)
 		if err != nil {
@@ -74,13 +71,11 @@ func TestLocalPathRejectsEscape(t *testing.T) {
 	}
 }
 
-// TestLocalPathFollowsLinksOnlyInsideRoot is the case lexical cleaning cannot catch: a
-// symbolic link placed inside the library resolves somewhere else. Creating one needs
-// privileges on Windows, so that platform is skipped rather than reported as a pass.
+// TestLocalPathFollowsLinksOnlyInsideRoot covers what lexical cleaning cannot: a symlink
+// inside the library resolves elsewhere. Windows may lack privileges, so it is skipped.
 func TestLocalPathFollowsLinksOnlyInsideRoot(t *testing.T) {
 	if runtime.GOOS == "windows" && os.Getenv("NUMBER_OF_PROCESSORS") != "" {
-		// Symlinks on Windows require developer mode or elevation; the check is attempted
-		// and skipped if the link could not be made.
+		// Symlinks on Windows need developer mode or elevation; skip if the link cannot be made.
 		t.Log("attempting symlink creation on Windows; may be refused without developer mode")
 	}
 	service, root := localService(t)
@@ -156,7 +151,7 @@ func TestHiddenDirsAreSkippedByDiscovery(t *testing.T) {
 		t.Fatal(err)
 	}
 	// The download manager stages incomplete torrents in .incoming; indexing them would put
-	// partial files in the library and pruning would then delete their rows as missing.
+	// partial files in the library.
 	if err := os.MkdirAll(filepath.Join(root, "Show", ".incoming"), 0o755); err != nil {
 		t.Fatal(err)
 	}

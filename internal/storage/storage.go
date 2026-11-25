@@ -1,9 +1,6 @@
-// Package storage abstracts where media files live.
-//
-// Two modes exist because deployments do: an S3-compatible bucket (R2, Spaces, MinIO,
-// AWS), where playback is a redirect to a presigned URL, and a host directory, where it is
-// a byte-range passthrough served by this process. Both share these helpers; callers
-// branch on IsLocal only where a feature exists in one mode.
+// Package storage abstracts where media files live: an S3-compatible bucket, where
+// playback redirects to a presigned URL, or a host directory served by this process.
+// Callers branch on IsLocal only where a feature exists in one mode.
 package storage
 
 import (
@@ -34,13 +31,11 @@ type Service struct {
 	logger    *slog.Logger
 }
 
-// ErrFileNotFound is returned when a local path does not exist, which the scanner treats
-// as "this file was deleted from the library".
+// ErrFileNotFound means a local path is gone; the scanner treats it as a deleted file.
 var ErrFileNotFound = errors.New("storage: file not found")
 
-// New builds the service. In S3 mode credentials are required; in local mode the root
-// directory must exist, which is validated here so a typo fails at startup rather than on
-// the first playback request.
+// New builds the service; credentials are required in S3 mode, and the local root is
+// validated here so a typo fails at startup rather than on first playback.
 func New(ctx context.Context, cfg *config.Config, logger *slog.Logger) (*Service, error) {
 	s := &Service{cfg: cfg, logger: logger}
 	if cfg.Storage.Mode != config.StorageS3 {
@@ -64,8 +59,8 @@ func New(ctx context.Context, cfg *config.Config, logger *slog.Logger) (*Service
 	}
 	client := s3.NewFromConfig(awsCfg, func(o *s3.Options) {
 		if cfg.Storage.S3.Endpoint != "" {
-			// A custom endpoint implies a third-party service that expects path-style
-			// addressing; virtual-host style would resolve to a nonexistent DNS name.
+			// A custom endpoint implies a third-party service expecting path-style addressing;
+			// virtual-host style would resolve to a nonexistent DNS name.
 			o.BaseEndpoint = aws.String(cfg.Storage.S3.Endpoint)
 			o.UsePathStyle = true
 		}
@@ -81,8 +76,7 @@ func (s *Service) Mode() config.StorageMode { return s.cfg.Storage.Mode }
 // IsLocal reports whether media is read from the host filesystem.
 func (s *Service) IsLocal() bool { return s.cfg.Storage.Mode == config.StorageLocal }
 
-// Bucket returns the configured bucket name, or the "local" marker the library rows used
-// before this rewrite.
+// Bucket returns the configured bucket name, or the "local" marker used in local mode.
 func (s *Service) Bucket() string {
 	if s.IsLocal() {
 		return "local"
@@ -90,9 +84,8 @@ func (s *Service) Bucket() string {
 	return s.cfg.Storage.S3.Bucket
 }
 
-// Presign produces a time-limited download URL for an object. The URL carries the
-// signature, so the object store authorizes playback without this process staying in the
-// data path.
+// Presign produces a time-limited download URL, so the object store authorizes playback
+// without this process staying in the data path.
 func (s *Service) Presign(ctx context.Context, key, bucket string) (string, time.Time, error) {
 	if s.presigner == nil {
 		return "", time.Time{}, errors.New("storage: presigning is unavailable in local mode")
@@ -107,25 +100,20 @@ func (s *Service) Presign(ctx context.Context, key, bucket string) (string, time
 	if err != nil {
 		return "", time.Time{}, fmt.Errorf("storage: presign %q: %w", key, err)
 	}
-	// The expiry is reported from the requested TTL rather than the SDK result: the
-	// presigner's output carries the URL only, and clients need a matching timestamp.
+	// Expiry comes from the requested TTL: the SDK result carries the URL only.
 	return out.URL, time.Now().Add(s.cfg.Storage.PresignTTL), nil
 }
 
 // LocalPath resolves a library-relative path inside the root and refuses anything that
-// escapes it; every local-mode read goes through it, so a path stored in the database can
-// never reach /etc or a sibling mount. The order is load-bearing: the lexical join and
-// check first, then symlink resolution on the result, because cleaning and
-// prefix-comparing alone lets a link placed inside the library point the kernel somewhere
-// else after the check passes.
+// escapes it, so a stored path can never reach /etc or a sibling mount. Lexical check
+// first, then symlink resolution: cleaning alone lets a link point elsewhere after the check.
 func (s *Service) LocalPath(relative string) (string, error) {
 	root, err := filepath.Abs(s.cfg.Storage.LocalPath)
 	if err != nil {
 		return "", err
 	}
 	cleaned := filepath.Clean(strings.ReplaceAll(relative, "\\", "/"))
-	// Strip any leading separator so an absolute-looking key cannot escape by joining
-	// onto the root as an absolute path.
+	// Trim the leading separator so an absolute-looking key cannot escape by joining onto root.
 	cleaned = strings.TrimPrefix(cleaned, string(filepath.Separator))
 	candidate := filepath.Join(root, filepath.FromSlash(cleaned))
 
@@ -133,9 +121,8 @@ func (s *Service) LocalPath(relative string) (string, error) {
 		return "", fmt.Errorf("storage: path %q escapes library root", relative)
 	}
 
-	// When the target exists, resolve every link on the way to it and re-check. A missing
-	// file is left alone: the caller's open will report it, and writes must still be able to
-	// create into a fresh subdirectory.
+	// Resolve links and re-check when the target exists; a missing file is left alone so
+	// writes can still create a fresh subdirectory.
 	resolved, err := filepath.EvalSymlinks(candidate)
 	if err == nil {
 		rootReal := root
@@ -210,12 +197,9 @@ func (s *Service) IsVideoFile(path string) bool {
 	return false
 }
 
-// ListVideoFiles returns every video path in the library, relative to the root in local
-// mode and as an object key in S3 mode.
-//
-// Local mode skips the audio variant cache and the .incoming staging directories:
-// indexing derived or incomplete files creates a feedback loop where each scan indexes
-// the previous scan's transcodes, or a torrent that is still downloading.
+// ListVideoFiles returns every video path in the library, relative to the root in local mode
+// and as an object key in S3 mode. Local mode skips the audio cache and .incoming staging so
+// scans never index derived or incomplete files.
 func (s *Service) ListVideoFiles(ctx context.Context) ([]string, error) {
 	if s.IsLocal() {
 		return s.listLocalVideoFiles(ctx, s.cfg.Storage.LocalPath, s.cfg.Storage.LocalPath)
@@ -295,15 +279,13 @@ func (s *Service) listS3VideoFiles(ctx context.Context) ([]string, error) {
 // AudioCacheDirName is the hidden directory holding derived audio variants.
 const AudioCacheDirName = ".animind-audio-cache"
 
-// DownloadsDirName is the hidden directory where the download manager stages torrents while
-// they are incomplete; the scanner must never index it.
+// DownloadsDirName is where the download manager stages incomplete torrents; never indexed.
 const DownloadsDirName = ".incoming"
 
 // SubtitleDirName is the canonical folder name for extracted subtitles.
 const SubtitleDirName = "Subtitles"
 
-// ListKeysUnder returns object keys beneath a prefix in S3 mode, used to find subtitle
-// sidecars that sit next to a video file.
+// ListKeysUnder returns object keys beneath a prefix, used to find subtitle sidecars.
 func (s *Service) ListKeysUnder(ctx context.Context, prefix string) ([]string, error) {
 	if s.IsLocal() {
 		dir, err := s.LocalPath(prefix)
@@ -362,8 +344,8 @@ func (s *Service) GetObject(ctx context.Context, key, bucket string) ([]byte, er
 		return nil, fmt.Errorf("storage: get %q: %w", key, err)
 	}
 	defer out.Body.Close()
-	// 8 MiB is far above any subtitle file and far below a video, so a mis-keyed request
-	// cannot turn this into a memory-exhaustion vector.
+	// 8 MiB is far above any subtitle and far below a video, so a mis-keyed request cannot
+	// exhaust memory.
 	data, err := io.ReadAll(io.LimitReader(out.Body, 8<<20))
 	if err != nil {
 		return nil, fmt.Errorf("storage: read %q: %w", key, err)
@@ -371,12 +353,10 @@ func (s *Service) GetObject(ctx context.Context, key, bucket string) ([]byte, er
 	return data, nil
 }
 
-// EnsureParentDir creates the directory for a target path, used before writing extracted
-// subtitles or cached audio.
+// EnsureParentDir creates the directory for a target path before writing a derived file.
 func EnsureParentDir(path string) error { return os.MkdirAll(filepath.Dir(path), 0o755) }
 
-// WriteFileAtomic writes bytes through a temporary file and renames it into place, so a
-// reader never observes a half-written subtitle or cached variant.
+// WriteFileAtomic writes through a temp file and renames it, so readers never see a partial file.
 func WriteFileAtomic(path string, data []byte) error {
 	if err := EnsureParentDir(path); err != nil {
 		return err

@@ -8,9 +8,8 @@ import (
 	"time"
 )
 
-// The cache module is tested against its in-process store, which implements the same
-// interface as Redis. Redis-specific behaviour — the Lua window, group sets — is covered in
-// redis_test.go against a real server.
+// The cache module is tested against its in-process store. Redis-specific behaviour — the Lua
+// window, group sets — is covered in redis_test.go against a real server.
 
 // clock is a hand the tests can turn: cache correctness is about what has expired, and
 // waiting for real seconds would make the suite slow and flaky.

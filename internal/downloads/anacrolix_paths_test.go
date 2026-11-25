@@ -6,13 +6,8 @@ import (
 	"testing"
 )
 
-// syntheticFile stands in for upstream *torrent.File across the
-// engineFileElement seam. Upstream gives File only unexported fields and no
-// constructor, and its BytesCompleted requires a live client, so the
-// path-derivation and ordering contract is pinned here against synthetic files
-// instead of real ones. The shape of `path` matches what upstream's
-// Torrent.initFiles stores: for single-file torrents just info.BestName(), for
-// directory torrents "Name/rel/path" joined by '/'.
+// syntheticFile stands in for upstream *torrent.File, whose fields are unexported and whose
+// BytesCompleted needs a live client; path shapes match upstream's initFiles.
 type syntheticFile struct {
 	path      string
 	length    int64
@@ -23,9 +18,8 @@ func (f syntheticFile) Path() string          { return f.path }
 func (f syntheticFile) Length() int64         { return f.length }
 func (f syntheticFile) BytesCompleted() int64 { return f.completed }
 
-// TestEngineFilesMapping runs every case through the handle's flow: the
-// upstream file list is sorted by path at metadata time, then mapped to
-// EngineFiles with Index assigned over the sorted order.
+// TestEngineFilesMapping runs every case through the handle's flow: files are sorted by path
+// at metadata time, then mapped to EngineFiles with Index over the sorted order.
 func TestEngineFilesMapping(t *testing.T) {
 	t.Parallel()
 	tests := []struct {
@@ -57,9 +51,8 @@ func TestEngineFilesMapping(t *testing.T) {
 		},
 		{
 			name: "paths are cleaned: redundant separators never leak",
-			// Upstream joins with single '/' but a malformed metainfo can
-			// carry empty path elements; Clean is lexical defence and also
-			// normalizes separators per platform.
+			// Upstream joins with single '/', but a malformed metainfo can carry empty
+			// elements; Clean is lexical defence and normalizes separators per platform.
 			in: []syntheticFile{
 				{path: "Release//Show - 01.mkv", length: 1},
 				{path: "Release//show.nfo", length: 2},
@@ -83,11 +76,8 @@ func TestEngineFilesMapping(t *testing.T) {
 	}
 }
 
-// TestEngineFileOrderIsSortedByPathAndStable pins the handle's index contract:
-// files are ordered by path, duplicate paths (malformed metainfo) keep upstream
-// order instead of reshuffling, and EngineFile.Index follows the sorted list.
-// The sort key is upstream's raw Path() — cleaning happens later, during
-// engineFiles — so these paths use single separators to keep one clear order.
+// TestEngineFileOrderIsSortedByPathAndStable pins the index contract: files are ordered by
+// path, duplicate paths keep upstream order, and Index follows the sorted list.
 func TestEngineFileOrderIsSortedByPathAndStable(t *testing.T) {
 	t.Parallel()
 	in := []syntheticFile{

@@ -11,14 +11,12 @@ import (
 	"time"
 )
 
-// Minimal HS256 JWT support. The shipped desktop player decodes the bridge credential
-// itself, reading sub, sid and exp, so anything it cannot parse as three dot-separated
-// base64url segments breaks sign-in for installed clients — the format stays even though
-// the issuer is now this backend.
+// Minimal HS256 JWT support. The shipped desktop player decodes the bridge credential itself,
+// reading sub, sid and exp, so the format stays even though the issuer is this backend.
 //
-// Deliberately not a general JWT library: one algorithm, no "none", and a required
-// audience (plus an issuer where the caller supplies one) so a token minted for one
-// purpose cannot be replayed against another.
+// Deliberately not a general JWT library: one algorithm, no "none", and a required audience
+// (plus an issuer where the caller supplies one) so a token minted for one purpose cannot be
+// replayed against another.
 
 // BridgeAudience is the aud claim identifying a desktop handoff token.
 const BridgeAudience = "animind-desktop-bridge"
@@ -32,8 +30,8 @@ type BridgeClaims struct {
 	Issuer    string `json:"iss"`
 	Subject   string `json:"sub"`
 	SessionID string `json:"sid"`
-	// WebSessionRowID pins the browser session that minted a handoff. The exchange
-	// re-checks this row so a token minted before logout cannot be redeemed after it.
+	// WebSessionRowID pins the browser session that minted a handoff, so a token minted
+	// before logout cannot be redeemed after it.
 	WebSessionRowID string `json:"wsid,omitempty"`
 	Nonce           string `json:"nonce,omitempty"`
 	Email           string `json:"email,omitempty"`
@@ -42,8 +40,7 @@ type BridgeClaims struct {
 	ExpiresAt       int64  `json:"exp"`
 }
 
-// JWT errors. Each maps to 401 at the edge; none expose the verification detail to the
-// client, since a caller learning "signature bad" versus "expired" gains nothing.
+// JWT errors. Each maps to 401 at the edge; the verification detail never reaches the client.
 var (
 	ErrJWTFormat    = errors.New("auth: malformed token")
 	ErrJWTSignature = errors.New("auth: invalid token signature")
@@ -64,16 +61,15 @@ func (s *Signer) SignBridgeToken(claims BridgeClaims) (string, error) {
 	return signingInput + "." + base64URLEncode(hmacSHA256([]byte(signingInput), s.key)), nil
 }
 
-// VerifyBridgeToken validates a desktop handoff token and returns its claims. The header
-// must say HS256 — an attacker-supplied alg of "none" would otherwise pass — and the
-// signature is checked before the payload is decoded.
+// VerifyBridgeToken validates a desktop handoff token. The header must say HS256 — an
+// attacker-supplied alg of "none" would otherwise pass — and the signature is checked before
+// the payload is decoded.
 func (s *Signer) VerifyBridgeToken(token string) (*BridgeClaims, error) {
 	return s.verifyBridgeToken(token, BridgeAudience, "")
 }
 
-// VerifyBridgeTokenForIssuer validates a desktop handoff and its issuer. The
-// issuer is deliberately supplied by the caller because Signer is also used by
-// deployments with different public origins.
+// VerifyBridgeTokenForIssuer validates a desktop handoff and its issuer. The issuer is
+// supplied by the caller because deployments have different public origins.
 func (s *Signer) VerifyBridgeTokenForIssuer(token, issuer string) (*BridgeClaims, error) {
 	return s.verifyBridgeToken(token, BridgeAudience, issuer)
 }
@@ -142,9 +138,8 @@ func base64URLDecode(data string) ([]byte, error) {
 	return base64.RawURLEncoding.DecodeString(data)
 }
 
-// mustBase64URLDecode tolerates undecodable signature input by returning a zero byte,
-// which can never match a real HMAC. The signature path has no useful error to report:
-// an invalid encoding is simply an invalid token.
+// mustBase64URLDecode tolerates undecodable signature input by returning a zero byte, which
+// can never match a real HMAC; an invalid encoding is simply an invalid token.
 func mustBase64URLDecode(data string) []byte {
 	raw, err := base64URLDecode(data)
 	if err != nil {

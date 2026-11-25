@@ -21,7 +21,8 @@ import (
 	"animind-backend-go/internal/repository"
 )
 
-// Hub owns every live peer and room. Each room serializes its own changes, so a handler never has to reason about interleaving from another goroutine.
+// Hub owns every live peer and room; each room serializes its own changes, so a handler never
+// reasons about interleaving from another goroutine.
 // Authenticator resolves a socket's auth payload to an account. auth.Service satisfies it.
 
 type Authenticator interface {
@@ -63,7 +64,8 @@ const (
 	joinFailureWindow = time.Minute
 )
 
-// NewHub builds the hub. CORS is enforced at the HTTP layer, so the socket handler only needs to refuse an upgrade from a disallowed origin.
+// NewHub builds the hub. CORS is enforced at the HTTP layer, so the socket handler only needs
+// to refuse an upgrade from a disallowed origin.
 
 func NewHub(cfg *config.Config, logger *slog.Logger, repo *repository.Store, authenticator Authenticator) *Hub {
 	return &Hub{
@@ -164,8 +166,8 @@ func (h *Hub) forgetPeer(p *peer) {
 	h.mu.Unlock()
 }
 
-// joinAllowed reports whether an account may attempt another room join. It is a simple
-// fixed window; callers record only failures, so a successful join resets the budget.
+// joinAllowed reports whether an account may attempt another room join. It is a simple fixed
+// window; callers record only failures, so a successful join resets the budget.
 func (h *Hub) joinAllowed(userID string) bool {
 	if userID == "" {
 		return true
@@ -338,7 +340,7 @@ func (h *Hub) PeerCount() int {
 }
 
 // RoomSnapshot describes a room for the HTTP lookup endpoint, which lets a client validate
-// a code before it asks the user to open the matching episode.
+// a code before asking the user to open the matching episode.
 type RoomSnapshot struct {
 	Code string `json:"code"`
 	// ShowID is the parent of EpisodeID. A joiner usually has never opened that show, so the
@@ -371,8 +373,7 @@ func (h *Hub) PersistedRoom(code string) (*repository.PartyRow, error) {
 	return h.repo.PartyByCode(context.Background(), strings.ToUpper(strings.TrimSpace(code)))
 }
 
-// CloseAll ends every room, used on shutdown so participants are told before the process
-// exits.
+// CloseAll ends every room on shutdown, so participants are told before the process exits.
 func (h *Hub) CloseAll() {
 	h.mu.RLock()
 	rooms := make([]*Room, 0, len(h.rooms))

@@ -1,8 +1,7 @@
 // Package scheduler runs the recurring maintenance jobs.
 
-// Each job is independently enabled and guarded, and safe to run at any time: they are TTL
-// sweeps and idempotent scans. One that overruns its interval is skipped rather than stacked,
-// which keeps a slow scan from forking a second run every six hours.
+// Each job is independently enabled and guarded: one that overruns its interval is skipped
+// rather than stacked, so a slow scan cannot fork a second run every six hours.
 package scheduler
 
 import (
@@ -87,8 +86,8 @@ func (j *Jobs) Start() {
 
 	j.cron.Start()
 
-	// Boot passes run immediately so a restarted server does not wait for a schedule to
-	// reclaim dead sessions, stale rooms or expired transcodes.
+	// Boot passes run immediately so a restart does not wait for a schedule to reclaim dead
+	// sessions, stale rooms or expired transcodes.
 	go j.run("syncplay_startup", j.syncPlayCleanupJob)
 	go j.run("audio_cache_startup", j.audioCleanupJob)
 	go j.run("auth_startup", j.authCleanupJob)
@@ -169,8 +168,8 @@ func (j *Jobs) audioCleanupJob() {
 	}
 }
 
-// authCleanupJob prunes dead credentials. Expired web sessions and revoked or long-expired
-// desktop sessions all accumulate rows that can never be used again.
+// authCleanupJob prunes dead credentials: expired web sessions and revoked or long-expired
+// desktop sessions can never be used again.
 func (j *Jobs) authCleanupJob() {
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Minute)
 	defer cancel()

@@ -21,9 +21,8 @@ import (
 )
 
 // The admin console is server-rendered and embedded in the binary, so the deployment stays a
-// single process with no Node build step. It is an operator surface only: every page requires
-// an administrator session, every mutating form carries a double-submit CSRF token, and the
-// content-security policy allows only the embedded stylesheet.
+// single process with no Node build step. Every page requires an administrator session, every
+// mutating form a double-submit CSRF token, and the CSP allows only the embedded stylesheet.
 //
 //go:embed adminui/templates/*.html adminui/static/*.css
 var adminAssets embed.FS
@@ -95,9 +94,8 @@ func adminTemplateFuncs() template.FuncMap {
 	}
 }
 
-// adminClientLabel turns a stored user agent into a short, honest platform label. A session
-// created before client metadata was recorded has no user agent and stays "Unknown" rather
-// than being guessed.
+// adminClientLabel turns a stored user agent into a short platform label. A session created
+// before client metadata was recorded has no user agent and stays "Unknown", never guessed.
 func adminClientLabel(userAgent string) string {
 	lowered := strings.ToLower(userAgent)
 	switch {
@@ -212,9 +210,8 @@ type adminLoginPage struct {
 // ── Routes and middleware ────────────────────────────────────────────────────
 
 // adminSecurityHeaders apply to the console and the desktop pairing page, including the
-// stylesheet. The CSP has no script source and no inline style source: those pages ship no
-// JavaScript, and a compromised page should not be able to exfiltrate a session through an
-// injected script.
+// stylesheet. The CSP has no script and no inline style source, so a compromised page cannot
+// exfiltrate a session through an injected script.
 func adminSecurityHeaders(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		h := w.Header()
@@ -235,8 +232,7 @@ func (s *Server) redirectAdminLogin(w http.ResponseWriter, r *http.Request) {
 
 func (s *Server) redirectAdmin(w http.ResponseWriter, r *http.Request, path string) {
 	// Keep the helper same-origin even if a future caller passes a tainted value: only
-	// /admin and /desktop-auth paths are accepted, and path-normalisation tricks that
-	// could turn into //host are refused.
+	// /admin and /desktop-auth paths are accepted, and //host tricks are refused.
 	parsed, err := url.Parse(path)
 	if err != nil || parsed.IsAbs() || parsed.Scheme != "" || parsed.Host != "" ||
 		(!strings.HasPrefix(parsed.Path, "/admin") && !strings.HasPrefix(parsed.Path, "/desktop-auth")) ||
@@ -280,9 +276,8 @@ func (s *Server) requireAdminPage(next http.Handler) http.Handler {
 	})
 }
 
-// adminCSRF implements double-submit CSRF protection. The token is rendered into the form and
-// also stored in an HttpOnly cookie; an attacker who cannot read the page cannot guess it, and
-// the Secure deployment uses the __Host- prefix so a sibling subdomain cannot set it.
+// adminCSRF implements double-submit CSRF protection: the token is rendered into the form and
+// stored in an HttpOnly cookie, and a Secure deployment uses the __Host- prefix.
 func (s *Server) adminCSRF(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.Method == http.MethodPost {
@@ -435,8 +430,8 @@ func adminPagination(page, perPage int, total int64) (pages, prev, next int, has
 	return pages, prev, next, page > 1, page < pages
 }
 
-// adminUserParam validates the account id before it reaches a query or a redirect. A
-// malformed id is an ordinary 303 back to the list, not a database error or a raw Location.
+// adminUserParam validates the account id before it reaches a query or a redirect. A malformed
+// id is an ordinary 303 back to the list, not a database error or a raw Location.
 func (s *Server) adminUserParam(w http.ResponseWriter, r *http.Request) (string, bool) {
 	id := Param(r, "id")
 	if !repository.IsUUID(id) {
@@ -490,8 +485,8 @@ func (s *Server) handleAdminLoginSubmit(w http.ResponseWriter, r *http.Request) 
 	}
 
 	if !result.User.IsAdmin {
-		// The password was correct but this account is not an operator. Revoke the session
-		// just minted rather than leaving a live credential the browser will discard.
+		// The password was correct but this is not an operator: revoke the newly minted
+		// session rather than leave a live credential.
 		if principal, authErr := s.auth.Authenticate(loginCtx, result.SessionToken); authErr == nil {
 			_ = s.auth.Logout(r.Context(), principal)
 		}
@@ -889,8 +884,7 @@ func (s *Server) handleAdminUIScan(w http.ResponseWriter, r *http.Request) {
 	if principal := PrincipalFromContext(r.Context()); principal != nil {
 		s.logger.Info("admin started library scan", slog.String("admin_id", principal.UserID))
 	}
-	// The scan must outlive the request; cancelling it when the response is written would
-	// abort it immediately. The timeout bounds the detached work.
+	// The scan must outlive the request; the timeout bounds the detached work.
 	// #nosec G118 -- background work deliberately uses a detached context.
 	go func() {
 		ctx, cancel := context.WithTimeout(context.Background(), time.Duration(adminScanTimeoutMinutes)*time.Minute)

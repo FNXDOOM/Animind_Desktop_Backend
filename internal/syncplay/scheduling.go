@@ -36,9 +36,8 @@ func clampPing(reportMS, maxMS int64) int64 {
 	return reportMS
 }
 
-// leadMillis is the delay before a group start: twice the slowest round trip (Jellyfin's rule),
-// floored because a local room's near-zero ping would otherwise schedule nothing and fall back to
-// acting on receipt.
+// leadMillis is the delay before a group start: twice the slowest round trip (Jellyfin's
+// rule), floored so a local room's near-zero ping still schedules a future instant.
 func leadMillis(highestPingMS, floorMS, ceilingMS int64) int64 {
 	lead := highestPingMS * 2
 	if lead < floorMS {
@@ -53,9 +52,8 @@ func leadMillis(highestPingMS, floorMS, ceilingMS int64) int64 {
 // minGoalSeconds is the floor for a shrunken goal: a member still needs media to survive a seek.
 const minGoalSeconds = 10.0
 
-// scaledGoalSeconds is the buffer a member must hold to clear the gate. The configured goal is a
-// cap, not a target: 120 s is the entire remaining file near the end, which would turn every
-// final scene into a permanent gate.
+// scaledGoalSeconds is the buffer a member must hold to clear the gate. The configured goal
+// is a cap, not a target: near the end it would turn every final scene into a permanent gate.
 func scaledGoalSeconds(cfg *config.Config, remainingSeconds float64) float64 {
 	goal := cfg.SyncPlay.BufferGoal.Seconds()
 	if remainingSeconds <= 0 {

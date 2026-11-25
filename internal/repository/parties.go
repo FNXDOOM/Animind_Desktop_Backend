@@ -5,10 +5,8 @@ import (
 	"time"
 )
 
-// Watch party persistence. The socket layer holds the authoritative live state; these rows
-// exist so a room can be looked up by code over HTTP, so a restart does not leave rooms
-// active forever, and so the cleanup job has something to delete. Write failures here are
-// logged as warnings by the syncplay handlers and never fail the operation.
+// Watch party persistence. The socket layer holds the authoritative live state; these
+// rows support HTTP lookup and restart cleanup. Write failures are logged, never fatal.
 
 const partyColumns = `
 	id, host_user_id::text, host_name, episode_id::text, status, created_at, updated_at, ended_at`
@@ -25,9 +23,8 @@ func scanParty(row scanner) (*PartyRow, error) {
 	return &p, nil
 }
 
-// CreateParty registers a room. Re-using a code that is still active is rejected by the
-// primary key, which is the desired behaviour: codes are minted in memory and a collision
-// must surface rather than silently merge two rooms.
+// CreateParty registers a room. Reusing a live code fails on the primary key, which is
+// desired: a collision must surface rather than merge two rooms.
 func (s *Store) CreateParty(ctx context.Context, code, hostUserID, hostName string, episodeID *string) error {
 	_, err := s.pool.Exec(ctx, `
 		insert into watch_parties (id, host_user_id, host_name, episode_id, status)
@@ -55,8 +52,7 @@ func (s *Store) RecordPartyParticipant(ctx context.Context, partyID, userID stri
 	return err
 }
 
-// EndParty marks a room ended. An empty code means the room never persisted, so the
-// call is a no-op rather than an error.
+// EndParty marks a room ended; an empty code means it never persisted, so this is a no-op.
 func (s *Store) EndParty(ctx context.Context, code string) error {
 	if code == "" {
 		return nil
@@ -67,8 +63,8 @@ func (s *Store) EndParty(ctx context.Context, code string) error {
 	return err
 }
 
-// EndAllActiveParties closes rooms left active by a previous process. Live socket state
-// does not survive a restart, so any row still marked active at boot is a stale record.
+// EndAllActiveParties closes rooms left active by a previous process; live socket state
+// does not survive a restart, so any active row at boot is stale.
 func (s *Store) EndAllActiveParties(ctx context.Context) (int64, error) {
 	tag, err := s.pool.Exec(ctx, `
 		update watch_parties set status = 'ended', ended_at = now(), updated_at = now()
@@ -79,8 +75,8 @@ func (s *Store) EndAllActiveParties(ctx context.Context) (int64, error) {
 	return tag.RowsAffected(), nil
 }
 
-// DeleteEndedParties removes rooms that ended before the cutoff along with their
-// participant rows, in one transaction so participants never outlive their room.
+// DeleteEndedParties removes rooms ended before the cutoff with their participants, in one
+// transaction so participants never outlive their room.
 func (s *Store) DeleteEndedParties(ctx context.Context, olderThan time.Time) (rooms, participants int64, err error) {
 	tx, err := s.pool.Begin(ctx)
 	if err != nil {

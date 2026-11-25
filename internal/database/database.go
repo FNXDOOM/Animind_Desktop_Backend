@@ -1,6 +1,6 @@
 // Package database owns the Postgres connection pool and schema migrations. All data access
-// goes through this pool: authorization is enforced in the query layer by scoping every
-// user-owned read and write to the authenticated user id, so nothing bypasses it.
+// goes through this pool, and every user-owned read and write is scoped to the authenticated
+// user id in the query layer.
 package database
 
 import (
@@ -65,8 +65,8 @@ func Open(ctx context.Context, cfg *config.Config, logger *slog.Logger) (*DB, er
 func (db *DB) Close() { db.Pool.Close() }
 
 // Migrate applies embedded SQL files that have not run yet, in filename order. Each file runs
-// inside its own transaction next to its schema_migrations row, so a partially applied file
-// rolls back and is retried on the next boot instead of leaving the schema unknown.
+// in its own transaction with its schema_migrations row, so a partial apply rolls back and is
+// retried on the next boot instead of leaving the schema unknown.
 func (db *DB) Migrate(ctx context.Context) error {
 	entries, err := migrations.FS.ReadDir(".")
 	if err != nil {

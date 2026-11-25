@@ -13,9 +13,8 @@ import (
 	"animind-backend-go/internal/config"
 )
 
-// Construction test: the engine builds against the real library with all
-// peer-discovery knobs off, and a malformed magnet fails synchronously before
-// anything is dialled. Behavioural coverage arrives with Task 11's local seeder.
+// Construction test: the engine builds with all peer-discovery knobs off, and a malformed
+// magnet fails synchronously before anything is dialled.
 func TestAnacrolixEngineConfiguration(t *testing.T) {
 	if testing.Short() {
 		t.Skip("needs the real library")
@@ -36,11 +35,8 @@ func TestAnacrolixEngineConfiguration(t *testing.T) {
 	}
 }
 
-// TestClientConfigDisablesPortForwarding pins the no-port-mapping constraint
-// on the client config itself: upstream's torrent.NewClient launches its
-// UPnP/NAT-PMP forwardPort goroutine whenever NoDefaultPortForwarding is false
-// (the default), so the adapter must always set it. Asserted via the pure
-// config builder so the test never binds a port.
+// TestClientConfigDisablesPortForwarding pins the no-port-mapping constraint: upstream
+// launches its UPnP/NAT-PMP goroutine unless NoDefaultPortForwarding is set.
 func TestClientConfigDisablesPortForwarding(t *testing.T) {
 	cc := newClientConfig(config.DownloadsConfig{
 		Dir: t.TempDir(), MaxFiles: 500, MaxBytesPerJob: 25 << 30,
@@ -52,9 +48,8 @@ func TestClientConfigDisablesPortForwarding(t *testing.T) {
 	}
 }
 
-// TestAddParseFailureLeavesNoJobDir pins the symmetric-cleanup contract of Add:
-// a magnet that passes the engine's pattern gate but fails upstream parsing
-// must not leave an empty placeholder job dir behind.
+// TestAddParseFailureLeavesNoJobDir pins Add's cleanup contract: a magnet that fails
+// upstream parsing must not leave an empty placeholder job dir behind.
 func TestAddParseFailureLeavesNoJobDir(t *testing.T) {
 	if testing.Short() {
 		t.Skip("needs the real library")

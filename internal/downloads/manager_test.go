@@ -19,9 +19,8 @@ import (
 
 // ── fake store ───────────────────────────────────────────────────────────────
 
-// fakeStore mirrors internal/repository/downloads.go semantics in memory: the
-// CAS transition, the active-set counting (ready and paused count), and the
-// state-blind progress/error writes.
+// fakeStore mirrors repository/downloads.go semantics in memory: CAS transitions, active-set
+// counting (ready and paused count), and state-blind progress/error writes.
 type fakeStore struct {
 	mu   sync.Mutex
 	jobs map[string]repository.DownloadJob
@@ -728,9 +727,8 @@ func TestCreateSingleEpisodeAutoSelects(t *testing.T) {
 	waitFor(t, "ready", func() bool { return st.get(id.String()).State == StateReady })
 }
 
-// TestSelectFilesValidatesIndexes pins the selection validation the HTTP layer
-// renders as 400 invalid_file_selection: only a selection the torrent cannot
-// honour is ErrInvalidSelection, so a server fault can never wear that code.
+// TestSelectFilesValidatesIndexes pins the selection validation the HTTP layer renders as 400
+// invalid_file_selection: a server fault can never wear that code.
 func TestSelectFilesValidatesIndexes(t *testing.T) {
 	user := uuid.New()
 	ctx := context.Background()
@@ -1041,10 +1039,8 @@ func TestStartupResume(t *testing.T) {
 }
 
 func TestResumeIsSelectionAware(t *testing.T) {
-	// Finding 1: a pack paused while awaiting_selection has no stored selection
-	// to replay, so resuming it into downloading strands the row there forever
-	// (Done() never fires for unselected bytes). Both resume paths must be
-	// target-aware: no selection -> awaiting_selection, selection -> downloading.
+	// A pack paused while awaiting_selection has no selection to replay, so resuming it into
+	// downloading strands it forever; both resume paths must be target-aware.
 	user := uuid.New()
 	ctx := context.Background()
 
@@ -1191,11 +1187,8 @@ func TestMetadataTimeoutFailsTheJob(t *testing.T) {
 }
 
 func TestTerminalRowsStopTheTorrent(t *testing.T) {
-	// A terminal row must leave the torrent moving no data: the client is built
-	// with Seed=true and a default UpKbps, so a ready torrent would otherwise
-	// upload until the process restarts, and a failed one would keep pulling
-	// its selected pieces. Rows without a handle (metadata timeout, or anything
-	// resumed after a restart) hold no live torrent and need no action.
+	// A terminal row must leave the torrent moving no data: Seed=true and a default UpKbps would
+	// otherwise upload until restart, and a failed row would keep pulling its pieces.
 	user := uuid.New()
 	ctx := context.Background()
 
@@ -1225,9 +1218,8 @@ func TestTerminalRowsStopTheTorrent(t *testing.T) {
 	})
 
 	t.Run("failure after metadata stops the torrent", func(t *testing.T) {
-		// The engine holds metadata but reports no files: the drive loop walks
-		// a live handle straight into the no_files failure, and the handle must
-		// be stopped with it.
+		// The engine holds metadata but reports no files: the drive loop walks a live handle
+		// straight into the no_files failure, and the handle must be stopped with it.
 		id := uuid.New()
 		f := newFakeEngine(map[string][]EngineFile{id.String(): {}})
 		st := newFakeStore()

@@ -9,8 +9,8 @@ import (
 // ptr builds an expected pointer field for the release tables.
 func ptr[T any](v T) *T { return &v }
 
-// TestParseFolderPath pins the parser against the release layouts that motivated each rule.
-// A regression here silently renames shows or mis-numbers episodes across the whole library.
+// TestParseFolderPath pins the parser against the release layouts that motivated each rule;
+// a regression silently renames shows or mis-numbers episodes.
 func TestParseFolderPath(t *testing.T) {
 	cases := []struct {
 		path      string
@@ -80,8 +80,7 @@ func TestParseAnimeFilename_GroupsAndNoise(t *testing.T) {
 }
 
 func TestParseAnimeFilename_NoEpisodeIsRejected(t *testing.T) {
-	// A plain title has no number to key on; inventing one would place a phantom episode in
-	// the library.
+	// A plain title has no number to key on; inventing one would add a phantom episode.
 	if parsed := ParseAnimeFilename("Frieren the Slayer.mkv"); parsed != nil {
 		t.Errorf("expected nil for a filename without an episode number, got %+v", parsed)
 	}
@@ -135,9 +134,8 @@ func TestSeasonForContentType(t *testing.T) {
 	}
 }
 
-// TestParseRelease pins ParseRelease against real release-name shapes. Every expectation is
-// readable from the name's own tags: an absent or ambiguous tag stays nil/empty and nothing
-// is inferred (e.g. "Hi10P" alone names a bit depth, never a video codec).
+// TestParseRelease pins ParseRelease against real release names. Expectations are readable
+// from the tags: an absent or ambiguous tag stays nil, and "Hi10P" alone names a bit depth.
 func TestParseRelease(t *testing.T) {
 	// rows=48
 	cases := []struct {
@@ -198,8 +196,8 @@ func TestParseRelease(t *testing.T) {
 		{"Show S01 WEB-DL AAC No Subs-Grp", ReleaseSpec{
 			Source: ptr("WEB-DL"), AudioCodecs: []string{"AAC"}, Subs: ptr("none"),
 			ReleaseGroup: ptr("Grp")}},
-		// Audio tags say nothing about subtitles: DualAudio is set, Subs stays nil unless a
-		// Multi-/Soft/Hard/No-Subs tag is present too.
+		// Audio tags say nothing about subtitles: DualAudio is set, Subs stays nil without a
+		// Multi-/Soft/Hard/No-Subs tag.
 		{"Show [1080p][Multi-Audio][AAC 2.0][FLAC 5.1]", ReleaseSpec{
 			Resolution: ptr(1080), AudioCodecs: []string{"AAC", "FLAC"}, DualAudio: true}},
 		{"Show - 01 (BD 1080p) [Dual Audio][AAC 2.0]", ReleaseSpec{
@@ -284,8 +282,7 @@ func TestParseRelease(t *testing.T) {
 	}
 }
 
-// TestParseReleaseHostileNames walks destructive or reserved names through the parser: it
-// must never panic and never invent tags the name does not carry.
+// TestParseReleaseHostileNames checks destructive or reserved names never panic or invent tags.
 func TestParseReleaseHostileNames(t *testing.T) {
 	for _, name := range []string{
 		`..\..\evil.mkv`, `CON.mkv`, `COM1[Group].mkv`,
@@ -311,11 +308,8 @@ func TestParseTorrentTitleBatches(t *testing.T) {
 	}
 }
 
-// TestParseTorrentTitle pins how show, season and episode flow out of a torrent name.
-// ParseAnimeFilename stays the only source of content fields — a batch range's delegated
-// tail ("Show - 01", "Show - 01 ~", "Show - 01 to") is trimmed to the bare show for every
-// separator shape — and rows also document where it currently yields nothing (v2-suffixed
-// episodes).
+// TestParseTorrentTitle pins how show, season and episode flow out of a torrent name; a
+// batch range's delegated tail is trimmed to the bare show for every separator shape.
 func TestParseTorrentTitle(t *testing.T) {
 	cases := []struct {
 		name        string
@@ -335,9 +329,8 @@ func TestParseTorrentTitle(t *testing.T) {
 		// The en-dash range delegates "Show - 01" from ParseAnimeFilename; the tail is trimmed.
 		{"Show - 01 – 12 [1080p][BluRay]", "Show", nil, ptr(1), ptr(12), true,
 			ReleaseSpec{Resolution: ptr(1080), Source: ptr("BluRay"), IsBatch: true}},
-		// Tilde and worded ranges delegate "Show - 01 ~" / "Show - 01 to" instead (the range
-		// end is read as the episode, the start and separator stay behind); every separator
-		// shape must trim to the bare show.
+		// Tilde and worded ranges delegate "Show - 01 ~" / "Show - 01 to"; every shape trims
+		// to the bare show.
 		{"[SubsPlease] Show - 01 ~ 12 (1080p)", "Show", nil, ptr(1), ptr(12), true,
 			ReleaseSpec{Resolution: ptr(1080), ReleaseGroup: ptr("SubsPlease"), IsBatch: true}},
 		{"Show 01 ~ 12 [1080p]", "Show", nil, ptr(1), ptr(12), true,

@@ -14,9 +14,8 @@ import (
 	"animind-backend-go/internal/scanner"
 )
 
-// Imported reports where a job's files landed and which show they resolved to.
-// ShowID is a string because download_jobs.show_id is carried as text through
-// the repository seam.
+// Imported reports where a job's files landed and which show they resolved to; ShowID is a
+// string because download_jobs.show_id is carried as text through the repository seam.
 type Imported struct {
 	ShowTitle   string
 	Destination string
@@ -36,17 +35,15 @@ var (
 	errNoLibraryRoot = errors.New("downloads: library root not configured")
 )
 
-// showResolver answers the two lookups behind show_id resolution, in order:
-// an episode that already indexes an imported path wins, then a
-// case-insensitive title match.
+// showResolver answers the two lookups behind show_id resolution: an episode that already
+// indexes an imported path wins, then a case-insensitive title match.
 type showResolver interface {
 	ShowByEpisodePath(ctx context.Context, path string) (string, bool, error)
 	ShowByTitle(ctx context.Context, title string) (*repository.Show, error)
 }
 
-// ShowByEpisodePath has no store query yet — Task 10 adds the episode-by-path
-// lookup, and until then the seam reports unresolved rather than inventing SQL
-// outside the repository package.
+// ShowByEpisodePath has no store query yet: Task 10 adds the episode-by-path lookup, and
+// until then the seam reports unresolved rather than inventing SQL in this package.
 func (dbStore) ShowByEpisodePath(context.Context, string) (string, bool, error) {
 	return "", false, nil
 }
@@ -65,9 +62,8 @@ func seasonDir(season *int) string {
 	return fmt.Sprintf("Season %02d", n)
 }
 
-// sanitizeTitle makes a show title safe as a library folder name: the
-// characters Windows reserves in names, control runes and the edges are
-// stripped (trailing dots included — "Show." is an invalid Windows name).
+// sanitizeTitle makes a show title safe as a library folder name: Windows-reserved
+// characters, control runes and edge dots are stripped.
 func sanitizeTitle(title string) string {
 	cleaned := strings.Map(func(r rune) rune {
 		switch r {
@@ -86,9 +82,8 @@ func sanitizeTitle(title string) string {
 // retry; cron and webhook scans are exactly the ErrAlreadyRunning case.
 const defaultScanSettle = 30 * time.Second
 
-// runScan triggers one library scan: when a scan is already running, wait one
-// settle window and retry exactly once, a second refusal failing the import.
-// The scanner exposes no completion signal, so the settle window is the wait.
+// runScan triggers one library scan: when a scan is already running, wait one settle window
+// and retry once. The scanner exposes no completion signal, so the window is the wait.
 func (m *Manager) runScan(ctx context.Context) error {
 	_, err := m.scanner.Run(ctx)
 	if !errors.Is(err, scanner.ErrAlreadyRunning) {
@@ -107,9 +102,8 @@ func (m *Manager) runScan(ctx context.Context) error {
 	return err
 }
 
-// importJob moves the selected files into <library>/<Show>/Season NN, rescans
-// and records the result. The library root comes from the constructor, never
-// guessed from DOWNLOADS_DIR — Task 1 only guarantees it lies under the root.
+// importJob moves the selected files into <library>/<Show>/Season NN, rescans and records the
+// result. The library root comes from the constructor, never guessed from DOWNLOADS_DIR.
 func (m *Manager) importJob(ctx context.Context, job repository.DownloadJob, files []EngineFile, selected []int) (Imported, error) {
 	if m.libraryRoot == "" {
 		return Imported{}, errNoLibraryRoot
@@ -138,9 +132,8 @@ func (m *Manager) importJob(ctx context.Context, job repository.DownloadJob, fil
 		}
 	}
 
-	// Fail-closed symlink defense, run before anything moves and before any
-	// destination directory is created: every selected source must resolve
-	// inside the job directory, and one escape fails the whole import.
+	// Fail-closed symlink defense, before anything moves or a destination is created: every
+	// selected source must resolve inside the job dir, and one escape fails the import.
 	jobDir := filepath.Join(m.cfg.Dir, job.ID)
 	for _, f := range moving {
 		if err := ensureSourceInsideJobDir(jobDir, filepath.Join(jobDir, f.Path)); err != nil {
@@ -187,8 +180,7 @@ func (m *Manager) importJob(ctx context.Context, job repository.DownloadJob, fil
 }
 
 // resolveShow prefers the show that already indexes an imported path, then a
-// case-insensitive title match on the parsed show; nil leaves the column null
-// for the next scan to fill.
+// case-insensitive title match; nil leaves the column null for the next scan to fill.
 func (m *Manager) resolveShow(ctx context.Context, paths []string, show string) *string {
 	if m.shows == nil {
 		return nil
@@ -209,9 +201,8 @@ func (m *Manager) resolveShow(ctx context.Context, paths []string, show string) 
 	return &id
 }
 
-// ensureSourceInsideJobDir is the import-time symlink defense: every src
-// component resolves, via EvalSymlinks, inside the resolved job dir — else a
-// link would move, or have its target copied, into the library.
+// ensureSourceInsideJobDir is the import-time symlink defense: every src resolves, via
+// EvalSymlinks, inside the resolved job dir.
 func ensureSourceInsideJobDir(jobDir, src string) error {
 	resJobDir, err := filepath.EvalSymlinks(jobDir)
 	if err != nil {
@@ -233,10 +224,8 @@ func ensureSourceInsideJobDir(jobDir, src string) error {
 	return nil
 }
 
-// moveInto lands one file without ever overwriting. A present dst with src
-// still on disk is import_conflict; dst alone is the shape a crash between the
-// last move and SetDownloadJobImportResult leaves, so it reads as
-// already-imported. Rename first — the roots share a volume by config.
+// moveInto lands one file without overwriting. A present dst with src still on disk is
+// import_conflict; dst alone is a crash between the last move and the store write.
 func moveInto(dstDir, src string) (string, error) {
 	dst := filepath.Join(dstDir, filepath.Base(src))
 	if _, err := os.Lstat(dst); err == nil {
@@ -289,9 +278,8 @@ func copyFileContents(dst *os.File, srcPath string) error {
 	return nil
 }
 
-// removeImported deletes exactly the files a job imported — every path must
-// still resolve inside the library root the constructor was given — and
-// rescans once so the pruned episodes leave the catalog (spec §7.5).
+// removeImported deletes exactly the files a job imported, each still resolving inside the
+// library root, and rescans once so the pruned episodes leave the catalog.
 func (m *Manager) removeImported(ctx context.Context, paths []string) error {
 	if len(paths) == 0 {
 		return nil
@@ -318,9 +306,8 @@ func (m *Manager) removeImported(ctx context.Context, paths []string) error {
 	return m.runScan(ctx)
 }
 
-// containedInLibrary reports whether path sits under root and still resolves
-// there after symlinks are followed; a link out is rejected, not followed. A
-// missing path counts as contained — removing it is a no-op, not an escape.
+// containedInLibrary reports whether path sits under root after symlinks are followed; a
+// link out is rejected. A missing path counts as contained — removing it is a no-op.
 func containedInLibrary(root, path string) (bool, error) {
 	absRoot, err := filepath.Abs(root)
 	if err != nil {

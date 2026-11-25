@@ -30,14 +30,13 @@ type Service struct {
 	stateCache cache.Store
 	stateMu    sync.Mutex
 	localState map[string]time.Time
-	// loginLimiter scopes failed-password lockouts to the initiating source and
-	// never mutates the account row. That prevents one unauthenticated client from
-	// locking every client out of an account.
+	// loginLimiter scopes failed-password lockouts to the initiating source and never mutates
+	// the account row, so one client cannot lock every client out of an account.
 	loginLimiter cache.Limiter
 }
 
-// NewService wires the service to its dependencies. stateCache may be nil, in which case
-// every credential resolution goes to the database as it did before.
+// NewService wires the service to its dependencies; a nil stateCache sends every credential
+// resolution to the database.
 func NewService(store *repository.Store, signer *Signer, cfg *config.Config, google *Google, stateCache cache.Store, logger *slog.Logger) *Service {
 	return &Service{
 		store: store, signer: signer, cfg: cfg, google: google, logger: logger,
@@ -48,9 +47,8 @@ func NewService(store *repository.Store, signer *Signer, cfg *config.Config, goo
 
 type loginSourceContextKey struct{}
 
-// WithLoginSource attaches the server-observed client identity to a login
-// attempt. HTTP callers use the peer address; direct service callers retain the
-// existing Login API and simply do not receive source-scoped throttling.
+// WithLoginSource attaches the server-observed client identity to a login attempt. Direct
+// service callers keep the existing Login API and get no source-scoped throttling.
 func WithLoginSource(ctx context.Context, source string) context.Context {
 	return context.WithValue(ctx, loginSourceContextKey{}, strings.TrimSpace(source))
 }
@@ -76,9 +74,8 @@ func (s *Service) rememberCredential(ctx context.Context, key string, p *Princip
 	s.credentials.remember(ctx, key, p, expiresAt)
 }
 
-// InvalidateUser drops cached identity for one account. Callers that write user rows without
-// going through this service — the admin flag being the one — must call it, or the change
-// stays invisible until the entry expires.
+// InvalidateUser drops cached identity for one account. Callers that write user rows directly
+// (the admin flag) must call it, or the change stays invisible until the entry expires.
 func (s *Service) InvalidateUser(ctx context.Context, userID string) {
 	if s.credentials == nil {
 		return
@@ -131,26 +128,22 @@ var (
 	ErrPasswordIncorrect  = errors.New("current password is incorrect")
 	ErrPasswordNotSet     = errors.New("this account signs in with Google")
 	ErrTokenInvalid       = errors.New("token is not valid")
-	// ErrInvalidAvatarURL is returned when a profile update carries a URL that could execute
-	// in a browser, such as a javascript: link.
+	// ErrInvalidAvatarURL is returned when a profile update carries a URL that could execute in
+	// a browser, such as a javascript: link.
 	ErrInvalidAvatarURL = errors.New("avatar_url must be an http or https URL")
-	// ErrAccountLinkRequired is returned when a provider sign-in matches an existing
-	// password account. Linking on email alone would let whoever registered the address
-	// first attach their account to a verified provider identity; the owner must prove
-	// the password first.
+	// ErrAccountLinkRequired is returned when a provider sign-in matches an existing password
+	// account; linking on email alone would attach a verified identity to the wrong owner.
 	ErrAccountLinkRequired = errors.New("this address already has a password account; sign in with that password")
 )
 
-// touchInterval throttles session last-used writes. A browser hits the API many times
-// per second; rewriting the session row each time would make authentication the most
-// expensive part of every request.
+// touchInterval throttles session last-used writes: a browser hits the API many times per
+// second, so rewriting the row every time would dominate request cost.
 const touchInterval = time.Minute
 
 // ── Password accounts ────────────────────────────────────────────────────────
 
-// SignUp creates a password account and signs it in. Uniqueness is on the normalized
-// email, and the hash is derived before the insert so a rejected row cannot leave a
-// plaintext credential behind.
+// SignUp creates a password account and signs it in. Uniqueness is on the normalized email,
+// and the hash is derived before the insert so a rejected row leaves no plaintext behind.
 func (s *Service) SignUp(ctx context.Context, rawEmail, password, rawUsername string) (*LoginResult, error) {
 	if !s.cfg.Auth.AllowSignup {
 		return nil, ErrSignupDisabled
@@ -187,9 +180,8 @@ func (s *Service) SignUp(ctx context.Context, rawEmail, password, rawUsername st
 	return s.SignInUser(ctx, user.ID, "web", false)
 }
 
-// Login verifies a password and starts a web session. An unknown email still pays for
-// an argon2id run (burnTime), so response time does not disclose whether the account
-// is registered.
+// Login verifies a password and starts a web session. An unknown email still pays for an
+// argon2id run (burnTime), so response time does not disclose whether the account exists.
 func (s *Service) Login(ctx context.Context, rawEmail, password string) (*LoginResult, error) {
 	email := NormalizeEmail(rawEmail)
 	if err := ValidateEmail(email); err != nil || password == "" {
@@ -212,9 +204,8 @@ func (s *Service) Login(ctx context.Context, rawEmail, password string) (*LoginR
 	}
 
 	if user.PasswordHash == nil || *user.PasswordHash == "" {
-		// Identity-only account: it must sign in through its provider. Count it into the
-		// same source-scoped window so its response is indistinguishable from a bad
-		// password on a password account.
+		// Identity-only account: it must sign in through its provider. Count it into the same
+		// source-scoped window so its response matches a bad password on a password account.
 		if s.recordLoginFailure(ctx, email) {
 			return nil, ErrAccountLocked
 		}
@@ -251,9 +242,8 @@ func (s *Service) Login(ctx context.Context, rawEmail, password string) (*LoginR
 	return s.SignInUser(ctx, user.ID, "web", false)
 }
 
-// loginFailureKey scopes lockouts to the normalized account plus the server-observed
-// source instead of an account-wide row, so a failed login slows one attacker without
-// locking every other browser out of that account.
+// loginFailureKey scopes lockouts to the normalized account plus the server-observed source,
+// so a failed login slows one attacker without locking other browsers out of the account.
 func (s *Service) loginFailureKey(ctx context.Context, email string) string {
 	source := loginSource(ctx)
 	if source == "" || s.loginLimiter == nil {
@@ -407,9 +397,8 @@ func (s *Service) authenticateWeb(ctx context.Context, token string) (*Principal
 	return principal, nil
 }
 
-// Logout revokes the calling web session; desktop callers use the revoke endpoint.
-// Eviction is account-wide because the revoke is keyed by row id, which says nothing
-// about the token hash the cache entry is named for — extra reads, never stale access.
+// Logout revokes the calling web session; desktop callers use the revoke endpoint. Eviction is
+// account-wide because a revoke keyed by row id says nothing about the token hash cache keys use.
 func (s *Service) Logout(ctx context.Context, p *Principal) error {
 	if !p.IsWeb() || p.WebSessionRowID == "" {
 		return nil
@@ -519,9 +508,8 @@ func (s *Service) DesktopRefresh(ctx context.Context, refreshToken string) (*Des
 	session, err := s.store.DesktopSessionByRefreshHash(ctx, HashToken(refreshToken))
 	if err != nil {
 		if errors.Is(err, repository.ErrNotFound) {
-			// A token that matches a rotated-out hash is a replay of a credential the
-			// legitimate client already exchanged. Revoke the whole family: the server
-			// cannot tell which holder is the thief.
+			// A token matching a rotated-out hash is a replay of a credential the legitimate
+			// client already exchanged. Revoke the whole family: the thief cannot be told apart.
 			if revoked, revokeErr := s.store.RevokeDesktopFamilyByReusedHash(ctx, HashToken(refreshToken)); revokeErr == nil && revoked > 0 {
 				s.logger.Warn("desktop refresh token reuse detected; family revoked",
 					slog.Int64("sessions", revoked))
@@ -559,9 +547,9 @@ func (s *Service) DesktopRefresh(ctx context.Context, refreshToken string) (*Des
 	}, nil
 }
 
-// DesktopRevoke signs a device out from either half of its credential pair, reporting
-// whether a row matched so the handler can answer 404. Each branch learns the owner
-// first: without the user id the cached resolution stays usable until its TTL expires.
+// DesktopRevoke signs a device out from either half of its credential pair, reporting whether
+// a row matched so the handler can answer 404. Each branch learns the owner first, otherwise
+// the cached resolution stays usable until its TTL expires.
 func (s *Service) DesktopRevoke(ctx context.Context, refreshToken, accessToken string) (bool, error) {
 	revoked := false
 	if refreshToken = strings.TrimSpace(refreshToken); refreshToken != "" {
@@ -657,9 +645,8 @@ func IsSafeImageURL(raw string) bool {
 	return parsed.Scheme == "http" || parsed.Scheme == "https"
 }
 
-// ChangeEmail moves an account to a new address after re-checking the password, and
-// revokes every other web session because the address of record is the first step of a
-// takeover. keepSessionID is the caller's own row; no verification mail is sent.
+// ChangeEmail moves an account to a new address after re-checking the password, and revokes
+// every other web session because the address of record is the first step of a takeover.
 func (s *Service) ChangeEmail(ctx context.Context, userID, keepSessionID, newEmail, currentPassword string) (*repository.PublicUser, error) {
 	user, err := s.store.UserByID(ctx, userID)
 	if err != nil {
@@ -674,8 +661,7 @@ func (s *Service) ChangeEmail(ctx context.Context, userID, keepSessionID, newEma
 		}
 		return nil, err
 	}
-	// Signup stores the normalized address in both columns, so the display value and the lookup
-	// key stay identical here too.
+	// Signup stores the normalized address in both columns, so display value and lookup key match.
 	normalized := NormalizeEmail(newEmail)
 	if err := ValidateEmail(normalized); err != nil {
 		return nil, err
@@ -732,8 +718,8 @@ func (s *Service) ChangePassword(ctx context.Context, userID, currentPassword, n
 	if err := s.store.RevokeAllWebSessions(ctx, userID, ""); err != nil {
 		return err
 	}
-	// A password change is a credential reset for every session family, not just the
-	// browser: desktop refresh tokens otherwise survive the change for up to 30 days.
+	// A password change resets credentials for every session family: desktop refresh tokens
+	// otherwise survive the change for up to 30 days.
 	if err := s.store.RevokeAllDesktopSessions(ctx, userID); err != nil {
 		return err
 	}
@@ -741,9 +727,8 @@ func (s *Service) ChangePassword(ctx context.Context, userID, currentPassword, n
 	return nil
 }
 
-// RequestPasswordReset pins a single-use token for an existing account. found is for
-// logs only; the HTTP layer must answer identically either way so a request cannot
-// confirm that an address is registered.
+// RequestPasswordReset pins a single-use token for an existing account. found is for logs
+// only; the HTTP layer must answer identically either way so it cannot confirm registration.
 func (s *Service) RequestPasswordReset(ctx context.Context, rawEmail string) (token string, found bool, err error) {
 	email := NormalizeEmail(rawEmail)
 	user, lookupErr := s.store.UserByEmailNormalized(ctx, email)
@@ -815,16 +800,14 @@ func (s *Service) GoogleExchange(ctx context.Context, code string) (*GoogleProfi
 	return s.google.Exchange(ctx, code)
 }
 
-// GoogleRedirectState is the compatibility helper for callers that do not have an HTTP
-// browser cookie. The HTTP flow uses GoogleRedirectStateForBrowser so its callback is bound
-// to the initiating browser as well as being single-use.
+// GoogleRedirectState is the compatibility helper for callers without an HTTP browser cookie.
+// The HTTP flow uses GoogleRedirectStateForBrowser, whose callback is also browser-bound.
 func (s *Service) GoogleRedirectState(redirectAfter string) (string, error) {
 	return s.GoogleRedirectStateForBrowser(redirectAfter, "")
 }
 
-// GoogleRedirectStateForBrowser creates a short-lived state tied to the
-// browser nonce set by the HTTP start endpoint. The signed token is also
-// registered in shared state so the callback can consume it only once.
+// GoogleRedirectStateForBrowser creates a short-lived state tied to the browser nonce set by
+// the HTTP start endpoint. The token is registered in shared state so it is consumed only once.
 func (s *Service) GoogleRedirectStateForBrowser(redirectAfter, browserNonce string) (string, error) {
 	redirectAfter = TruncateLabel(redirectAfter, 512)
 	browserNonce = strings.TrimSpace(browserNonce)
@@ -930,9 +913,8 @@ func (s *Service) SignInWithGoogle(ctx context.Context, profile *GoogleProfile) 
 	if errors.Is(err, repository.ErrNotFound) {
 		email := NormalizeEmail(profile.Email)
 		if existing, lookupErr := s.store.UserByEmailNormalized(ctx, email); lookupErr == nil {
-			// Password account first, Google later: the address alone is not proof of
-			// ownership. Refuse the silent link and require the password path; a stolen
-			// signup could otherwise inherit the victim's verified Google identity.
+			// Password account first, Google later: the address alone is not proof of ownership.
+			// Refuse the silent link; a stolen signup must not inherit the Google identity.
 			if existing.PasswordHash != nil {
 				return nil, ErrAccountLinkRequired
 			}
@@ -1014,8 +996,7 @@ func (s *Service) argon2Params() Argon2Params {
 	return params
 }
 
-// burnTime performs a throw-away hash so a missing account costs the same as a wrong
-// password.
+// burnTime performs a throw-away hash so a missing account costs the same as a wrong password.
 func (s *Service) burnTime(ctx context.Context) {
 	placeholder := "$argon2id$v=19$m=65536,t=3,p=4$c29tZXNhbHRzb21lc2FsdA$AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA"
 	_, _ = VerifyPasswordAgainstCurrent("not-a-real-password", placeholder, s.argon2Params())

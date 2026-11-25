@@ -7,12 +7,10 @@ import (
 	"github.com/jackc/pgx/v5"
 )
 
-// pgxErrNoRows is aliased so domain files can translate a missing row without
-// importing the driver.
+// pgxErrNoRows lets domain files translate a missing row without importing the driver.
 var pgxErrNoRows = pgx.ErrNoRows
 
-// scanner is the minimal interface satisfied by pgx.Row and by a row fetched from a
-// transaction, letting one scan helper serve both.
+// scanner is the minimal interface shared by pgx.Row and transaction rows.
 type scanner interface {
 	Scan(dest ...any) error
 }
@@ -20,9 +18,7 @@ type scanner interface {
 // uuidPattern matches the canonical 8-4-4-4-12 hex form.
 var uuidPattern = regexp.MustCompile(`^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$`)
 
-// isUUID guards queries that cast a path parameter with ::uuid. Postgres raises a
-// syntax error for a malformed literal, which would surface as a 500 for what is
-// really a bad identifier; checking first lets the caller answer 404.
+// isUUID guards ::uuid casts: a malformed identifier must answer 404, not raise a 500.
 func isUUID(value string) bool { return uuidPattern.MatchString(value) }
 
 // IsUUID reports whether a client-supplied identifier can be used as a primary key.
@@ -36,8 +32,7 @@ func notFound(err error) error {
 	return err
 }
 
-// uniqueViolation detects a Postgres unique constraint failure (SQLSTATE 23505). The
-// scanner treats it as "another writer won the race" and re-reads the existing row.
+// uniqueViolation detects SQLSTATE 23505, which the scanner treats as a lost insert race.
 func uniqueViolation(err error) bool {
 	var e interface{ SQLState() string }
 	if !errors.As(err, &e) {

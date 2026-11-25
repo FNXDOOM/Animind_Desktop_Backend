@@ -14,10 +14,8 @@ const (
 	StateCancelled         = "cancelled"
 )
 
-// transitions is spec §7.5's state machine plus one controller-ruled addition:
-// paused -> awaiting_selection, so a pack paused before selecting resumes into
-// the selection wait instead of a downloading row whose Done() never fires.
-// The store's CAS is state-blind, so this table alone guards illegal hops.
+// transitions is the spec §7.5 state machine plus paused -> awaiting_selection, so a paused
+// pack resumes into the wait, not a stranded row. The store's CAS is state-blind.
 var transitions = map[string][]string{
 	StateQueued:            {StateFetchingMetadata, StateFailed, StateCancelled, StatePaused},
 	StateFetchingMetadata:  {StateAwaitingSelection, StateFailed, StateCancelled, StatePaused},
@@ -48,9 +46,8 @@ func isTerminal(state string) bool {
 	return false
 }
 
-// isActive is the partial unique index uq_download_jobs_active_hash's set from
-// migration 0003: every non-terminal state plus ready and paused. Ready rows
-// still hold their torrent slot, which is why the quota counts include them.
+// isActive is the set of uq_download_jobs_active_hash: every non-terminal state plus ready
+// and paused. Ready rows still hold their torrent slot, so quotas count them.
 func isActive(state string) bool {
 	switch state {
 	case StateQueued, StateFetchingMetadata, StateAwaitingSelection, StateDownloading,

@@ -11,9 +11,8 @@ import (
 // Pure scoring and filtering for the search pipeline: no I/O, no locks, so the tests cover
 // them without an indexer or HTTP.
 
-// tokenOverlap is the Jaccard overlap of the lower-cased tokens in q and title. Title
-// tokens lose the parsed release-group tag, or every SubsPlease release would outscore a
-// bare-title hit purely on its own group name.
+// tokenOverlap is the Jaccard overlap of lower-cased tokens in q and title; title tokens lose
+// the release-group tag, or every SubsPlease release would outscore a bare-title hit.
 func tokenOverlap(q, title, group string) float64 {
 	qTokens := tokenize(q)
 	titleTokens := tokenize(title)
@@ -101,9 +100,8 @@ func parsedRichness(t scanner.TorrentTitle) int {
 	return n
 }
 
-// rankRows orders a copy of rows by the requested sort; anything unknown, including the
-// empty string, means relevance. The copy is never nil, so a zero-row search page still
-// marshals its data as [] rather than null.
+// rankRows orders a copy of rows by the requested sort; anything unknown means relevance.
+// The copy is never nil, so a zero-row page marshals data as [] rather than null.
 func rankRows(rows []Result, q, sortBy string) []Result {
 	out := make([]Result, len(rows))
 	copy(out, rows)
@@ -131,9 +129,8 @@ func rankRows(rows []Result, q, sortBy string) []Result {
 	return out
 }
 
-// filterRows applies the client-side filters in request order: seeders floor (zero-seeder
-// rows stay hidden unless minSeeders is explicitly 0), batch, resolution and codec. A row
-// whose parse does not state a resolution or codec cannot contradict the request and stays.
+// filterRows applies the seeders floor (1 unless minSeeders is set), batch, resolution and
+// codec filters; a row whose parse does not state a field cannot contradict the request.
 func filterRows(rows []Result, q Query) []Result {
 	floor := 1
 	if q.MinSeeders != nil {

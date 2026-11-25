@@ -58,9 +58,8 @@ func seedSource(t *testing.T, dir, jobID, rel, content string) {
 	}
 }
 
-// newImportManager builds a manager for importer tests with a short scan
-// settle window so the retry rule is observable without sleeping. libRoot is
-// the real library root, threaded exactly as production wiring must.
+// newImportManager builds a manager with a short scan settle window so the retry rule is
+// observable without sleeping; libRoot is the real library root, as production wiring passes.
 func newImportManager(t *testing.T, st store, cfg config.DownloadsConfig, libRoot string, scan scanRunner) *Manager {
 	t.Helper()
 	m := newManager(st, NewNoopEngine(), cfg, libRoot, scan, nil, diskOK)
@@ -311,10 +310,8 @@ func TestRemoveImportedIsContained(t *testing.T) {
 }
 
 func TestImportRefusesSymlinkedSource(t *testing.T) {
-	// The import-time symlink defense: a manifest entry whose on-disk source
-	// resolves outside the job directory would move the link or copy its
-	// target's content into the library, so the import fails closed — before
-	// anything moves and before any destination folder exists.
+	// The import-time symlink defense: an entry resolving outside the job directory fails the
+	// import closed, before anything moves and before any destination folder exists.
 	t.Run("symlinked file entry", func(t *testing.T) {
 		lib := t.TempDir()
 		cfg := testConfig(filepath.Join(lib, ".incoming"))
@@ -387,10 +384,8 @@ func TestImportRefusesSymlinkedSource(t *testing.T) {
 }
 
 func TestImportResumesIdempotentlyAfterCrash(t *testing.T) {
-	// A crash between the final move and SetDownloadJobImportResult leaves the
-	// file in the library, the source gone, and the row still importing. The
-	// re-driven import must treat that shape as already-imported and reach
-	// ready — not mis-fail with import_conflict and block retry forever.
+	// A crash between the final move and SetDownloadJobImportResult leaves the file in the
+	// library, the source gone and the row importing; the retry must treat that as already-imported.
 	lib := t.TempDir()
 	dir := filepath.Join(lib, ".incoming")
 	user := uuid.New()

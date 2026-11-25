@@ -6,9 +6,8 @@ import (
 	"time"
 )
 
-// WindowLimiter is the in-process fixed window: one counter per key that resets a window
-// after the first hit. It is both the no-Redis store and the fallback a shared store degrades
-// to when Redis stops answering, so both paths enforce the same rule; the window is per call.
+// WindowLimiter is the in-process fixed window: one counter per key, resetting a window after
+// the first hit. It is both the no-Redis store and the fallback a shared store degrades to.
 type WindowLimiter struct {
 	mu      sync.Mutex
 	windows map[string]*window
@@ -33,9 +32,8 @@ func NewWindowLimiter(now func() time.Time) *WindowLimiter {
 	return &WindowLimiter{windows: make(map[string]*window), now: now, pruneAfter: 5 * time.Minute}
 }
 
-// Allow records one hit and reports whether the request fits inside the window. The
-// over-limit request is counted too, as before: a hammering client keeps its window pinned at
-// the ceiling instead of getting a fresh budget on each try.
+// Allow records one hit and reports whether it fits the window. Over-limit requests are
+// counted too, so a hammering client keeps its window pinned at the ceiling.
 func (l *WindowLimiter) Allow(_ context.Context, key string, limit int, duration time.Duration) (Decision, error) {
 	l.mu.Lock()
 	defer l.mu.Unlock()

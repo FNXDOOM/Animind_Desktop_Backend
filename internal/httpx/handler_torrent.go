@@ -14,12 +14,10 @@ import (
 	"animind-backend-go/internal/torrent"
 )
 
-// Torrent search surface: /api/torrents/search and /api/search/trending, both session
-// routes. Search also refuses where no Torznab endpoint is configured or in s3 mode, where
-// nothing torrent-related operates.
+// Torrent search surface: /api/torrents/search and /api/search/trending. Search refuses
+// without a Torznab endpoint and in s3 mode, where nothing torrent-related operates.
 
-// torrentServiceAPI is the narrow seam the HTTP layer needs from the torrent
-// search service; *torrent.Service satisfies it as-is.
+// torrentServiceAPI is the narrow seam the HTTP layer needs from the torrent search service.
 type torrentServiceAPI interface {
 	Search(ctx context.Context, q torrent.Query) (torrent.SearchResponse, error)
 	Result(id string) (torrent.Result, bool)
@@ -27,8 +25,8 @@ type torrentServiceAPI interface {
 
 var _ torrentServiceAPI = (*torrent.Service)(nil)
 
-// Search parameter bounds, matching the service's own validation so a bad
-// request is refused here before it spends an indexer call.
+// Search parameter bounds, matching the service's own validation so a bad request is refused
+// before it spends an indexer call.
 const (
 	minQueryRunes = 2
 	maxQueryRunes = 120
@@ -45,18 +43,16 @@ func errBadFilter(key string) error {
 	return fmt.Errorf("%s must be an integer.", key)
 }
 
-// handleTorrentSearch runs one user query through the search pipeline. The
-// response is the service's own wire shape: Result's marshal strips magnets,
-// so none of the rows can carry one.
+// handleTorrentSearch runs one user query through the search pipeline; the service's wire
+// shape strips magnets, so no row can carry one.
 func (s *Server) handleTorrentSearch(w http.ResponseWriter, r *http.Request) {
 	if !s.cfg.Downloads.Enabled {
 		WriteErrorCode(w, http.StatusNotImplemented, "downloads_unavailable",
 			"Torrent search is only available in local storage mode.")
 		return
 	}
-	// The torrent service is constructed only when TORZNAB_URL is set, so a nil
-	// seam is the deployment's "not configured" state; the service's own
-	// ErrNotConfigured covers anything else.
+	// The torrent service exists only when TORZNAB_URL is set, so a nil seam is the
+	// deployment's "not configured" state; ErrNotConfigured covers anything else.
 	if s.torrent == nil {
 		WriteErrorCode(w, http.StatusNotImplemented, "indexer_not_configured",
 			"No Torznab indexer is configured on this server.")
@@ -68,9 +64,8 @@ func (s *Server) handleTorrentSearch(w http.ResponseWriter, r *http.Request) {
 		WriteError(w, http.StatusBadRequest, err.Error())
 		return
 	}
-	// The observation wraps the whole call — fan-out, merge and ranking — because
-	// that is the latency a client experiences. Errors are observed too: a slow
-	// failing indexer is exactly what the dashboard needs to see.
+	// The observation wraps the whole call — fan-out, merge and ranking — because that is the
+	// latency a client experiences; errors are observed too.
 	start := time.Now()
 	resp, err := s.torrent.Search(r.Context(), query)
 	if s.metrics != nil {
@@ -88,9 +83,8 @@ func (s *Server) handleTorrentSearch(w http.ResponseWriter, r *http.Request) {
 	WriteJSON(w, http.StatusOK, resp)
 }
 
-// parseTorrentQuery lifts the query string into the service's Query. Optional
-// filters that are present but malformed are client errors rather than
-// silently dropped values.
+// parseTorrentQuery lifts the query string into the service's Query; a present but malformed
+// filter is a client error rather than a silently dropped value.
 func parseTorrentQuery(r *http.Request) (torrent.Query, error) {
 	params := r.URL.Query()
 	q := strings.Join(strings.Fields(params.Get("q")), " ")
@@ -144,8 +138,7 @@ func optionalIntParam(params url.Values, key string) (*int, error) {
 // ── Trending ─────────────────────────────────────────────────────────────────
 
 // handleSearchTrending returns the most-recorded normalized queries of the last seven days.
-// The counter holds query text only, with no user identity anywhere in the search pipeline
-// (spec §7.3), so there is nothing per-user to filter here.
+// The counter holds query text only, never a user identity (spec §7.3).
 func (s *Server) handleSearchTrending(w http.ResponseWriter, r *http.Request) {
 	top := []string{}
 	if s.trending != nil {

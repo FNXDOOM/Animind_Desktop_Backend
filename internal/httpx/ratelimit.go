@@ -10,14 +10,10 @@ import (
 	"animind-backend-go/internal/cache"
 )
 
-// Fixed-window rate limiting for the public API. The auth limiters run ahead of the handlers,
-// so a credential-stuffing loop is bounded by this cheap window rather than by argon2id cost.
-//
-// Limits mirror the original backend's per-route counters (3 rescans, 20 logins, 1200 HLS
-// segments per minute), and buckets are per route, so exhausting the login budget cannot block
-// playback. Counting lives behind cache.Limiter: with Redis the window is shared, which is the
-// only version that stays true once several processes answer traffic, because a per-process map
-// multiplies the budget by the replica count and nginx hides which instance was reached.
+// Fixed-window rate limiting for the public API, per route, so exhausting the login budget
+// cannot block playback. Counting lives behind cache.Limiter: with Redis the window is shared
+// across processes, which is the only version that stays true once several replicas answer
+// traffic; a per-process map would multiply the budget by the replica count.
 
 // RateLimiter enforces one fixed window per key inside one named bucket.
 type RateLimiter struct {
@@ -32,11 +28,9 @@ func NewRateLimiter(name string, limit int, interval time.Duration, window cache
 	return &RateLimiter{name: name, limit: limit, interval: interval, window: window}
 }
 
-// Allow records a hit for key and reports whether the request may proceed. When denied it
-// returns the seconds until the window resets.
-//
-// A limiter that cannot count lets the request through: failing it closed would turn a cache
-// outage into an outage of the API.
+// Allow records a hit for key and reports whether the request may proceed, with the retry
+// delay when denied. A limiter that cannot count lets the request through: failing closed
+// would turn a cache outage into an API outage.
 func (l *RateLimiter) Allow(ctx context.Context, key string) (ok bool, retryAfter time.Duration) {
 	decision, err := l.window.Allow(ctx, cache.RateKey(l.name, key), l.limit, l.interval)
 	if err != nil {
@@ -107,13 +101,11 @@ type RateLimitPresets struct {
 	DownloadEvents  *RateLimiter
 	Trending        *RateLimiter
 
-	// fallback reports local-window verdicts across every bucket, for the metrics endpoint.
+	// fallback reports local-window verdicts to the metrics endpoint.
 	fallback cache.FallbackCounter
 }
 
-// NewRateLimitPresets builds every limiter on one shared counting window.
-//
-// The store decides whether counting crosses processes. When it does, a Redis that stops
+// NewRateLimitPresets builds every limiter on one shared counting window. A Redis that stops
 // answering degrades to a local window: a temporarily per-process budget beats stalling or
 // admitting everyone.
 func NewRateLimitPresets(store cache.Store, logger *slog.Logger) *RateLimitPresets {
@@ -122,8 +114,7 @@ func NewRateLimitPresets(store cache.Store, logger *slog.Logger) *RateLimitPrese
 		window = cache.NewResilientLimiter(store, cache.NewWindowLimiter(nil))
 	}
 	if window == nil {
-		// Tests and embedders that pass no store still need counting, and the in-process
-		// window is what the single-instance deployment used before Redis existed.
+		// Tests and embedders that pass no store still get the in-process window.
 		window = cache.NewWindowLimiter(nil)
 		logger.Debug("rate limiting counts inside this process")
 	}
@@ -149,9 +140,8 @@ func NewRateLimitPresets(store cache.Store, logger *slog.Logger) *RateLimitPrese
 		DownloadRead:    newOne("download-read", 120, time.Minute),
 		DownloadWrite:   newOne("download-write", 60, time.Minute),
 		DownloadEvents:  newOne("download-events", 10, time.Minute),
-		// Trending is a cheap in-memory read but gets its own 60/min bucket
-		// rather than UserData's shared 240/min, so a poller cannot spend the
-		// profile-write budget.
+		// Trending is a cheap in-memory read with its own bucket, so a poller cannot spend
+		// UserData's shared budget.
 		Trending: newOne("trending", 60, time.Minute),
 	}
 	if resilient, ok := window.(*cache.ResilientLimiter); ok {
@@ -160,9 +150,8 @@ func NewRateLimitPresets(store cache.Store, logger *slog.Logger) *RateLimitPrese
 	return presets
 }
 
-// MiddlewareByIP wraps a limiter with per-client keying. trustProxy is passed in rather than
-// read from the environment here so the wiring stays explicit in one place, and it decides
-// whether the forwarded header forms the key.
+// MiddlewareByIP wraps a limiter with per-client keying; trustProxy decides whether the
+// forwarded header forms the key.
 func (l *RateLimiter) MiddlewareByIP(trustProxy bool) func(http.Handler) http.Handler {
 	return l.Middleware(func(r *http.Request) string { return ClientIP(r, trustProxy) })
 }

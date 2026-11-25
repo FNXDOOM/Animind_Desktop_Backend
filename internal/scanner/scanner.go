@@ -18,9 +18,8 @@ import (
 	"animind-backend-go/internal/storage"
 )
 
-// Service indexes the library. A scan must be safe to trigger at any time — cron, the admin
-// button, a storage webhook, and on startup in some deployments — since every write is an
-// upsert and the prune step derives from the current listing; Run still allows only one.
+// Service indexes the library. A scan must be safe at any time — cron, admin button,
+// webhook or startup — since every write is an upsert; Run still allows only one.
 type Service struct {
 	cfg     *config.Config
 	repo    *repository.Store
@@ -37,8 +36,7 @@ type Service struct {
 	processed []media.PrewarmTarget
 
 	// lastStartedAt, lastFinishedAt, lastResult and lastError back the admin console. They
-	// are written under mu and describe the most recent Run in this process; a restart
-	// clears them, so the panel always says "no scan yet" rather than showing stale state.
+	// are written under mu; a restart clears them, so the panel never shows stale state.
 	lastStartedAt  time.Time
 	lastFinishedAt time.Time
 	lastResult     *Result
@@ -68,12 +66,11 @@ type Result struct {
 	SubtitleFiles  int `json:"subtitleFiles"`
 }
 
-// ErrAlreadyRunning reports a scan attempted while another is in progress. Callers answer
-// 409: two concurrent scans would double the metadata traffic for no benefit.
+// ErrAlreadyRunning reports a concurrent scan; callers answer 409, since a second scan
+// would only double the metadata traffic.
 var ErrAlreadyRunning = errors.New("scanner: a library scan is already running")
 
-// Status is the admin console's view of the scanner. LastResult is nil until a scan has
-// completed in this process.
+// Status is the admin console's view; LastResult is nil until a scan completes in this process.
 type Status struct {
 	Running    bool
 	StartedAt  time.Time
@@ -134,9 +131,8 @@ func (s *Service) Run(ctx context.Context) (result *Result, err error) {
 		found[path] = true
 	}
 
-	// Normalize the title spelling once per key so files whose names differ only in
-	// punctuation are indexed under the same title. The show row itself is resolved per
-	// file; the metadata service caches upstream lookups.
+	// Normalize the title spelling once per key so names differing only in punctuation
+	// share a title. The show row is resolved per file; metadata lookups are cached.
 	byTitle := map[string]string{}
 	for _, path := range files {
 		parsed, err := s.parseFile(ctx, path, files)
@@ -185,8 +181,8 @@ func (s *Service) Run(ctx context.Context) (result *Result, err error) {
 	return result, nil
 }
 
-// parseFile turns a library path into a show and episode, using the LLM fallback only when
-// the deterministic parser produced nothing and the operator enabled it.
+// parseFile parses a path, using the LLM fallback only when the parser found nothing and
+// the operator enabled it.
 func (s *Service) parseFile(ctx context.Context, path string, allPaths []string) (*Parsed, error) {
 	if parsed := ParseFolderPath(path); parsed != nil && parsed.Title != "" {
 		return parsed, nil
@@ -253,8 +249,8 @@ func (s *Service) indexFile(ctx context.Context, title, path string, parsed *Par
 	}
 	s.ProcessedTarget(created.ID, path)
 
-	// Subtitle extraction runs inline and sequentially: it is CPU-bound, and a parallel
-	// burst of ffmpeg processes would make playback stutter for whoever is watching.
+	// Subtitle extraction runs inline and sequentially: a parallel ffmpeg burst would
+	// make playback stutter for whoever is watching.
 	if s.storage.IsLocal() {
 		if err := s.ffmpeg.ExtractEmbeddedSubtitles(ctx, s.storage, path, parsed.Episode, season); err != nil {
 			s.logger.Debug("subtitle extraction skipped",
@@ -280,9 +276,8 @@ func (s *Service) PrewarmTargets() []media.PrewarmTarget {
 	return targets
 }
 
-// resolveShow finds the catalog row for a title or creates it, enriched with metadata.
-// Matching order: exact title, external id, provider canonical title, then — only when no
-// provider answered — a scored fuzzy match, which keeps "Re:Zero" and "Re Zero" on one show.
+// resolveShow finds or creates the catalog row for a title. Matching order: exact title,
+// external id, canonical title, then a scored fuzzy match when no provider answered.
 func (s *Service) resolveShow(ctx context.Context, title string) (string, error) {
 	trimmed := strings.TrimSpace(title)
 
@@ -316,8 +311,7 @@ func (s *Service) resolveShow(ctx context.Context, title string) (string, error)
 			}
 		}
 	} else {
-		// With no provider data, the only way to avoid a duplicate is to score what the
-		// library already holds.
+		// With no provider data, scoring existing rows is the only way to avoid a duplicate.
 		candidates, err := s.repo.ShowCandidates(ctx, trimmed, 8)
 		if err != nil {
 			return "", err
@@ -354,8 +348,7 @@ func (s *Service) resolveShow(ctx context.Context, title string) (string, error)
 	return created.ID, nil
 }
 
-// showFromMetadata builds the row to insert, falling back to the folder title when no
-// provider answered.
+// showFromMetadata builds the row to insert, falling back to the folder title.
 func showFromMetadata(meta *metadata.Metadata, fallback string) repository.Show {
 	title := fallback
 	if meta != nil && meta.Title != "" {
@@ -479,8 +472,8 @@ func (s *Service) prune(ctx context.Context, found map[string]bool) (episodes, s
 	return episodes, shows, nil
 }
 
-// siblingFileNames lists the base names sharing a file's directory, which gives a parser
-// the episode range of a season.
+// siblingFileNames lists the base names sharing a file's directory, giving the parser a
+// season's episode range.
 func siblingFileNames(path string, all []string) []string {
 	dir := filepath.Dir(filepath.ToSlash(path))
 	out := make([]string, 0, 16)
@@ -493,8 +486,7 @@ func siblingFileNames(path string, all []string) []string {
 	return out
 }
 
-// warnOnceLog records a message the first time it occurs so a systemic problem is visible
-// without repeating per file.
+// warnOnceLog records a message once, so a systemic problem is visible without per-file repeats.
 func (s *Service) warnOnceLog(key, message string) {
 	s.mu.Lock()
 	defer s.mu.Unlock()

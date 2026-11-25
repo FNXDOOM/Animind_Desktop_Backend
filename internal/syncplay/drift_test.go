@@ -5,9 +5,8 @@ import (
 	"testing"
 )
 
-// decideDrift is the whole correction policy: silence, a quiet seek, a rate nudge, or a full
-// re-gate. It is pure so each tier and each boundary can be asserted without a room, a socket,
-// or a clock to wait on.
+// decideDrift is the whole correction policy: silence, a quiet seek, a rate nudge or a full
+// re-gate. It is pure, so each tier and boundary needs no room, socket or clock.
 
 func TestDecideDriftLadder(t *testing.T) {
 	const (
@@ -97,9 +96,8 @@ func TestDecideDriftHonoursConfiguredThresholds(t *testing.T) {
 }
 
 func TestDecideDriftDurationNeverExceedsCap(t *testing.T) {
-	// 0.6s is the first drift that reaches the speed-seek band; below it a soft correction
-	// carries no duration at all. The upper bound stays under the cap (duration is twice the
-	// drift, so 4s is where the 8s ceiling starts biting).
+	// 0.6s is the first drift in the speed-seek band; below it a soft correction carries no
+	// duration. The cap bites at 4s, since duration is twice the drift.
 	for seconds := 0.6; seconds <= 3.9; seconds += 0.1 {
 		action, _, duration := decideDrift(100-seconds, 100, 200, 10000, 0.8, 1.5)
 		if action != driftSpeedSeek {

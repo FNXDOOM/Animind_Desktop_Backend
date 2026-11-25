@@ -2,9 +2,8 @@ package auth
 
 import "context"
 
-// Client metadata travels through the authentication service in the context rather than
-// as a parameter on every method, because session rows record the user agent and address
-// that created them and those values belong to the request, not the credential.
+// Client metadata travels through the context rather than as a parameter on every method,
+// because session rows record the user agent and address that created them.
 
 // Client describes the device presenting a credential.
 type Client struct {

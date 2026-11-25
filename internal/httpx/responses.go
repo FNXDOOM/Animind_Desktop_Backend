@@ -1,8 +1,5 @@
-// Package httpx is the HTTP edge: routing, middleware, and handlers.
-//
-// It owns every status code and JSON shape the native clients and the admin console parse.
-// Error bodies always use {"error": "..."}, plus "code" when clients branch on the failure and
-// "details" when a reason is safe to expose.
+// Package httpx is the HTTP edge: routing, middleware, and handlers. It owns every status
+// code and JSON shape the native clients and the admin console parse.
 package httpx
 
 import (
@@ -23,7 +20,7 @@ type ErrorPayload struct {
 	Error string `json:"error"`
 	// Details carries a developer-facing reason when one is safe to expose.
 	Details string `json:"details,omitempty"`
-	// Code is a stable machine-readable identifier for clients that branch on failures.
+	// Code is a stable identifier for clients that branch on failures.
 	Code string `json:"code,omitempty"`
 }
 
@@ -56,12 +53,11 @@ func writeJSON(w http.ResponseWriter, status int, v any) {
 	}
 }
 
-// maxRequestBytes bounds every JSON body. Library payloads are small; the media itself
-// never travels through this endpoint.
+// maxRequestBytes bounds every JSON body; media never travels through this endpoint.
 const maxRequestBytes = 1 << 20
 
-// DecodeJSON reads a request body with a hard size cap. Unknown fields are rejected so a
-// client typo such as "refesh_token" fails loudly instead of being silently ignored.
+// DecodeJSON reads a request body with a hard size cap and rejects unknown fields, so a
+// client typo such as "refesh_token" fails loudly.
 func DecodeJSON(r *http.Request, dst any) error {
 	defer func() {
 		// Drain a small remainder so keep-alive connections stay reusable.
@@ -100,8 +96,8 @@ func QueryInt(r *http.Request, key string, fallback, min, max int) int {
 // Param returns a path segment, or "" when absent.
 func Param(r *http.Request, key string) string { return chi.URLParam(r, key) }
 
-// BearerToken extracts the credential from an Authorization header, accepting no other scheme
-// because both clients send exactly "Authorization: Bearer <token>".
+// BearerToken extracts the credential from an Authorization header, accepting only the Bearer
+// scheme both clients send.
 func BearerToken(r *http.Request) string {
 	header := r.Header.Get("Authorization")
 	if header == "" {
@@ -114,11 +110,8 @@ func BearerToken(r *http.Request) string {
 	return strings.TrimSpace(value)
 }
 
-// ClientHint reports whether the caller is the native desktop player.
-//
-// The clientType query parameter wins because the player's media and mpv requests carry
-// different user agents than its API calls, and "desktop" and "native" are the two spellings
-// its clients send today. The header sniff covers the historical values.
+// ClientHint reports whether the caller is the native desktop player. The clientType query
+// parameter wins because the player's media calls carry other user agents than its API calls.
 func ClientHint(r *http.Request) string {
 	switch value := strings.ToLower(r.URL.Query().Get("clientType")); value {
 	case "native", "desktop":
@@ -143,8 +136,7 @@ func ClientHint(r *http.Request) string {
 func IsNativeClient(r *http.Request) bool { return ClientHint(r) == "native" }
 
 // ClientIP resolves the requesting address for rate limiting. X-Forwarded-For is trusted only
-// when the deployment declares a proxy (TRUST_PROXY_HEADERS=true); otherwise a client could
-// forge the header and buy itself an unlimited bucket.
+// when the deployment declares a proxy, or a client could forge it and buy an unlimited bucket.
 func ClientIP(r *http.Request, trustProxy bool) string {
 	if trustProxy {
 		if xf := r.Header.Get("X-Forwarded-For"); xf != "" {
@@ -164,8 +156,7 @@ func ClientIP(r *http.Request, trustProxy bool) string {
 	return host
 }
 
-// SecureHeaders sets the response headers a JSON API should always send. Media responses
-// override some of these in the streaming handler.
+// SecureHeaders sets the headers a JSON API should always send; media responses override some.
 func SecureHeaders(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		h := w.Header()

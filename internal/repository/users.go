@@ -1,9 +1,5 @@
-// Package repository contains every SQL statement the backend runs. Scoping a method by the
-// authenticated user id is the authorization mechanism: there is no client-side key and no
-// row-level-security policy to rely on.
-//
-// IDs are read with an explicit ::text cast and written with ::uuid, keeping Go strings on
-// both ends and avoiding the driver's UUID codec.
+// Package repository contains every SQL statement the backend runs. Scoping a query by the
+// authenticated user id is the authorization mechanism; ids are cast ::text/::uuid.
 package repository
 
 import (
@@ -32,8 +28,7 @@ func (s *Store) Ping(ctx context.Context) error {
 	return s.pool.QueryRow(ctx, "select 1").Scan(&one)
 }
 
-// PoolStats is a snapshot of the connection pool. The metrics endpoint exports it because a
-// saturated pool looks identical to a slow query from the outside.
+// PoolStats is a connection-pool snapshot; a saturated pool looks like a slow query.
 type PoolStats struct {
 	Total  int32
 	Active int32
@@ -41,8 +36,7 @@ type PoolStats struct {
 	Max    int32
 }
 
-// PoolStats snapshots the connection pool for the metrics collector. It returns zeroes
-// when the pool has not been created yet rather than failing the scrape.
+// PoolStats snapshots the pool for metrics, returning zeroes before the pool exists.
 func (s *Store) PoolStats() PoolStats {
 	stat := s.pool.Stat()
 	if stat == nil {
@@ -75,8 +69,7 @@ func scanUser(row pgx.Row) (*User, error) {
 
 // ── Users ────────────────────────────────────────────────────────────────────
 
-// CreateUser inserts an account. avatarURL may be nil; plaintextPassword must already
-// be hashed by the caller.
+// CreateUser inserts an account; passwordHash must already be hashed by the caller.
 func (s *Store) CreateUser(ctx context.Context, email, emailNormalized, username string, avatarURL, passwordHash *string) (*User, error) {
 	return scanUser(s.pool.QueryRow(ctx, `
 		insert into animind_users (email, email_normalized, username, avatar_url, password_hash)
@@ -98,8 +91,7 @@ func (s *Store) UserByID(ctx context.Context, id string) (*User, error) {
 	return scanUser(s.pool.QueryRow(ctx, `select `+userColumns+` from animind_users where id = $1::uuid`, id))
 }
 
-// EmailTakenExcept ignores the caller's own row, so re-submitting the same address is not a
-// conflict for an account changing its email.
+// EmailTakenExcept ignores the caller's own row, so resubmitting the same address is no conflict.
 func (s *Store) EmailTakenExcept(ctx context.Context, emailNormalized, exceptUserID string) (bool, error) {
 	var exists bool
 	err := s.pool.QueryRow(ctx, `
@@ -133,8 +125,7 @@ func (s *Store) UpdatePassword(ctx context.Context, userID string, passwordHash 
 	return nil
 }
 
-// UpdateProfile changes the display name and avatar. Both are optional: a nil field
-// keeps its current value.
+// UpdateProfile changes username and avatar; a nil field keeps its current value.
 func (s *Store) UpdateProfile(ctx context.Context, userID string, username, avatarURL *string) (*User, error) {
 	return scanUser(s.pool.QueryRow(ctx, `
 		update animind_users
@@ -159,8 +150,8 @@ func (s *Store) SetAdmin(ctx context.Context, userID string, isAdmin bool) error
 	return nil
 }
 
-// SetUserAccess writes both account flags in one statement, so a permission change cannot
-// land half-applied when the second update would fail.
+// SetUserAccess writes both flags in one statement, so a permission change cannot land
+// half-applied.
 func (s *Store) SetUserAccess(ctx context.Context, userID string, isAdmin, canDownload bool) error {
 	tag, err := s.pool.Exec(ctx, `
 		update animind_users
@@ -188,9 +179,8 @@ func (s *Store) SetCanDownload(ctx context.Context, userID string, allowed bool)
 	return nil
 }
 
-// RegisterFailedLogin increments the failure counter and returns whether the account
-// is now locked, so the caller can distinguish "wrong password" from "try later"
-// without a second query.
+// RegisterFailedLogin increments the failure counter and reports whether the account is
+// now locked, so the caller can distinguish wrong password from try later.
 func (s *Store) RegisterFailedLogin(ctx context.Context, userID string, maxFailures int, lockout time.Duration) (locked bool, err error) {
 	var count int
 	err = s.pool.QueryRow(ctx, `
@@ -215,8 +205,7 @@ func (s *Store) ClearFailedLogins(ctx context.Context, userID string) error {
 	return err
 }
 
-// DeleteUser removes the account. Watchlist, progress, history, sessions and party
-// rows all cascade.
+// DeleteUser removes the account; watchlist, progress, history, sessions and parties cascade.
 func (s *Store) DeleteUser(ctx context.Context, userID string) error {
 	tag, err := s.pool.Exec(ctx, `delete from animind_users where id = $1::uuid`, userID)
 	if err != nil {
@@ -251,9 +240,8 @@ func (s *Store) ListUsers(ctx context.Context, limit, offset int) ([]PublicUser,
 	return out, rows.Err()
 }
 
-// CanDownload answers whether one account holds the torrent-download entitlement.
-// It is a single-row read: the HTTP layer calls it on every non-admin create/delete,
-// and paging the whole user table there was an unnecessary amplifier.
+// CanDownload answers whether one account holds the download entitlement. It is a
+// single-row read because paging the whole user table on every create/delete was an amplifier.
 func (s *Store) CanDownload(ctx context.Context, userID string) (bool, error) {
 	var allowed bool
 	err := s.pool.QueryRow(ctx, `
@@ -317,8 +305,8 @@ func (s *Store) CreateAuthToken(ctx context.Context, userID, kind, tokenHash str
 	return err
 }
 
-// ConsumeAuthToken validates and invalidates a single-use token atomically.
-// It returns the owning user id, or ErrNotFound for unknown, used or expired tokens.
+// ConsumeAuthToken validates and invalidates a single-use token atomically, returning its
+// owner, or ErrNotFound for unknown, used or expired tokens.
 func (s *Store) ConsumeAuthToken(ctx context.Context, kind, tokenHash string) (string, error) {
 	var userID string
 	err := s.pool.QueryRow(ctx, `
@@ -362,16 +350,16 @@ func (s *Store) CreateWebSession(ctx context.Context, userID, tokenHash, deviceN
 		userID, tokenHash, deviceName, userAgent, ip, rememberMe, expiresAt))
 }
 
-// ActiveWebSession loads a live session by token hash. The WHERE clause is the whole
-// authorization decision for a session token: revoked or expired rows are not found.
+// ActiveWebSession loads a live session by token hash; the WHERE clause is the whole
+// authorization decision: revoked or expired rows are not found.
 func (s *Store) ActiveWebSession(ctx context.Context, tokenHash string) (*WebSession, error) {
 	return scanWebSession(s.pool.QueryRow(ctx, `
 		select `+webSessionColumns+` from animind_web_sessions
 		where session_hash = $1 and revoked_at is null and expires_at > now()`, tokenHash))
 }
 
-// ActiveWebSessionByID loads a live session by primary key for the authenticated user. It
-// is used to re-validate a desktop handoff after the browser session may have ended.
+// ActiveWebSessionByID loads a live session by primary key for the authenticated user,
+// re-validating a desktop handoff after the browser session may have ended.
 func (s *Store) ActiveWebSessionByID(ctx context.Context, userID, id string) (*WebSession, error) {
 	if !isUUID(id) {
 		return nil, ErrNotFound
@@ -388,8 +376,8 @@ func (s *Store) TouchWebSession(ctx context.Context, id string, expiresAt time.T
 	return err
 }
 
-// RevokeWebSession signs one session out. The user id is part of the predicate: without it,
-// presenting another account's session id would be enough to revoke it.
+// RevokeWebSession signs one session out; the user id in the predicate prevents another
+// account from revoking it by id alone.
 func (s *Store) RevokeWebSession(ctx context.Context, userID, id string) error {
 	if !isUUID(id) {
 		return ErrNotFound

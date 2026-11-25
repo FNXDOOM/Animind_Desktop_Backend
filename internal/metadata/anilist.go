@@ -17,8 +17,8 @@ import (
 	"animind-backend-go/internal/config"
 )
 
-// AniList is the primary metadata source. The scanner asks it for every new title so a
-// folder name like "Frieren - 01" becomes a card with artwork, synopsis and studio.
+// AniList is the primary metadata source, turning a folder name into a card with artwork,
+// synopsis and studio.
 
 // mediaQuery requests one anime matched by search, preferring the closest match.
 const mediaQuery = `query($search: String!) {
@@ -95,12 +95,10 @@ func NewAniList(cfg *config.Config, logger *slog.Logger) *AniListClient {
 	}
 }
 
-// ErrUpstreamRejected reports a non-2xx answer from AniList. Callers log it and fall back
-// to another source; the library scan must not fail because a metadata site is unhappy.
+// ErrUpstreamRejected reports a non-2xx answer; callers log it and fall back to another source.
 var ErrUpstreamRejected = errors.New("metadata: upstream rejected the request")
 
-// FetchMeta looks up one title. A nil result means "no metadata available", which is a
-// normal outcome rather than an error.
+// FetchMeta looks up one title; nil means no metadata available, a normal outcome.
 func (c *AniListClient) FetchMeta(ctx context.Context, title string) (*Media, error) {
 	if !c.enabled {
 		return nil, nil
@@ -186,8 +184,7 @@ func (c *AniListClient) once(ctx context.Context, body []byte) (*Media, error) {
 	return envelope.Data.Media, nil
 }
 
-// noteRateLimited records how long AniList asked us to wait. A missing or unparsable
-// Retry-After falls back to a minute.
+// noteRateLimited records how long AniList asked us to wait, defaulting to a minute.
 func (c *AniListClient) noteRateLimited(retryAfter string) {
 	seconds := 60
 	if parsed, err := strconv.Atoi(strings.TrimSpace(retryAfter)); err == nil && parsed > 0 {
@@ -208,8 +205,7 @@ func (c *AniListClient) cooldownUntil() time.Time {
 	return c.rateLimitedUntil
 }
 
-// isTransient identifies the failures worth retrying: throttling, upstream faults and
-// transport errors. A 4xx other than 429 is a permanent answer for this title.
+// isTransient identifies failures worth retrying: throttling, upstream faults and timeouts.
 func isTransient(err error) bool {
 	if err == nil {
 		return false

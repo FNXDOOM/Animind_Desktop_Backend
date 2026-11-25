@@ -3,9 +3,8 @@ package downloads
 import "sync"
 import "time"
 
-// JobEvent is one SSE payload about a download job (spec §7.7). The struct is
-// the event surface's entirety: it never carries magnets or filesystem paths.
-// The manager publishes it at every state change and progress tick.
+// JobEvent is one SSE payload about a download job. It never carries magnets or filesystem
+// paths; the manager publishes it at every state change and progress tick.
 type JobEvent struct {
 	ID        string  `json:"id"`
 	State     string  `json:"state"`
@@ -33,9 +32,8 @@ const (
 	coalesceWindow = time.Second
 )
 
-// Hub fans events out to a user's SSE streams: buffered per-stream channels, a
-// reconnect snapshot, and per-job coalescing so a chatty manager cannot flood
-// a browser. All methods are safe for concurrent use.
+// Hub fans events out to a user's SSE streams: buffered per-stream channels, a reconnect
+// snapshot, and per-job coalescing so a chatty manager cannot flood a browser.
 type Hub struct {
 	mu    sync.Mutex
 	subs  map[string]map[*subscriber]struct{}
@@ -162,9 +160,8 @@ func (h *Hub) deliver(userID string, ev JobEvent, now time.Time) {
 	}
 }
 
-// Subscribe registers a stream for the user: ch carries live events, snapshot
-// holds the last known event per job, cancel removes the stream. ok is false
-// at shutdown or once maxPerUser/maxTotal is already reached.
+// Subscribe registers a stream for the user: ch carries live events, snapshot holds the last
+// event per job, cancel removes it. ok is false at shutdown or past the caps.
 func (h *Hub) Subscribe(userID string) (ch <-chan JobEvent, snapshot []JobEvent, cancel func(), ok bool) {
 	h.mu.Lock()
 	defer h.mu.Unlock()
@@ -202,10 +199,8 @@ func (h *Hub) Subscribe(userID string) (ch <-chan JobEvent, snapshot []JobEvent,
 	return s.ch, snapshot, cancel, true
 }
 
-// Close ends every subscriber stream so each SSE handler's receive loop
-// returns; without it server.Shutdown waits on live streams for its whole
-// timeout window. It is idempotent: Publish no-ops, Subscribe refuses, and
-// pre-existing cancel funcs stay no-ops, so no channel closes twice.
+// Close ends every subscriber stream so shutdown does not wait on live SSE handlers. It is
+// idempotent: Publish no-ops, Subscribe refuses, and stale cancel funcs stay no-ops.
 func (h *Hub) Close() {
 	h.mu.Lock()
 	defer h.mu.Unlock()

@@ -11,10 +11,8 @@ import (
 	"animind-backend-go/internal/torrent"
 )
 
-// Handler tests for /api/torrents/search and /api/search/trending. The torrent
-// service sits behind torrentServiceAPI, so every case runs on a fake and
-// needs no database; the real service's own behaviour is covered by the
-// torrent package's tests.
+// Handler tests for /api/torrents/search and /api/search/trending; the torrent service sits
+// behind torrentServiceAPI, so every case runs on a fake without a database.
 
 func searchFixture() torrent.SearchResponse {
 	title := "[SubsPlease] Sousou no Frieren - 01 (1080p) [10bit].mkv"
@@ -144,8 +142,7 @@ func TestTorrentSearchRejectsBadQueries(t *testing.T) {
 }
 
 func TestSearchTrendingHandler(t *testing.T) {
-	// The endpoint reads the shared counter and records nothing itself; only the
-	// normalized query text is ever counted (spec §7.3, no user identity).
+	// The endpoint reads the shared counter; only normalized query text is counted (spec §7.3).
 	srv := testServerWith(t, func(d *Deps) { d.Trending = torrent.NewTrending(time.Now) })
 	rec := callAs(t, user("user-1"), srv.handleSearchTrending,
 		http.MethodGet, "/api/search/trending", nil, nil)
@@ -186,8 +183,8 @@ func TestSearchTrendingHandler(t *testing.T) {
 }
 
 func TestDownloadRouteLimitsThroughRouter(t *testing.T) {
-	// Limits attach ahead of authentication, so anonymous probes prove the
-	// presets are on the routes: TorrentSearch 30/min, DownloadEvents 10/min.
+	// Limits attach ahead of authentication, so anonymous probes prove the presets are on the
+	// routes: TorrentSearch 30/min, DownloadEvents 10/min.
 	srv := testServerWith(t, nil)
 
 	for attempt := 1; attempt <= 30; attempt++ {

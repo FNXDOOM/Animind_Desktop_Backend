@@ -1,9 +1,7 @@
 package torrent
 
-// Test doubles for the search pipeline. The cache fake is a mutex-guarded map with no
-// expiry, on purpose: the search tests assert hit/miss and re-registration behaviour
-// directly, and TTL arithmetic belongs to the real stores in internal/cache. The indexer
-// and metadata fakes are the only seams Search consumes.
+// Test doubles for the search pipeline. The cache fake is a mutex-guarded map with no expiry
+// on purpose: hit/miss and re-registration are asserted here; TTLs belong to internal/cache.
 
 import (
 	"context"
@@ -176,10 +174,8 @@ func TestSearchMergesByInfoHashAndRanks(t *testing.T) {
 	if resp.Data[0].Health != "excellent" || resp.Data[1].Health != "poor" {
 		t.Fatalf("health: %q %q", resp.Data[0].Health, resp.Data[1].Health)
 	}
-	// The run is exactly the two deduped variants: the raw "frieren" never runs beside its
-	// provider-cased variant, and both variant queries actually hit the indexer. The q
-	// stand-in leads the run so the three-query cap can never drop it, so only the set is
-	// pinned, not the order (the sub-queries run concurrently anyway).
+	// The run is exactly the two deduped variants; the q stand-in leads so the three-query cap
+	// cannot drop it, but only the set is pinned since sub-queries run concurrently.
 	if len(resp.QueryUsed) != 2 ||
 		!slices.Contains(resp.QueryUsed, "Sousou no Frieren") ||
 		!slices.Contains(resp.QueryUsed, "Frieren") {
@@ -386,9 +382,8 @@ func TestSearchPropagatesIndexerError(t *testing.T) {
 	}
 }
 
-// The three-query cap must never truncate away the variant that stands in for q: with four
-// distinct metadata titles and the q-matching one last, the executed run still carries it —
-// otherwise the search would execute neither q nor any case-variant of it.
+// The three-query cap must never truncate away the variant that stands in for q, or the
+// search would execute neither q nor any case-variant of it.
 func TestSearchTruncationKeepsQueryStandIn(t *testing.T) {
 	idx := &fakeIndexer{results: map[string][]Result{
 		"Frieren": {{InfoHash: "aa", Title: "Frieren 01", Seeders: 5, SizeBytes: 100}},

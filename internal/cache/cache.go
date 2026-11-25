@@ -1,9 +1,5 @@
-// Package cache is the shared state layer: resolved credentials, rate-limit counters and
-// upstream metadata that outlives one process. Callers get a KV, a fixed-window counter and a
-// key-naming scheme; namespaces, group indexes and the atomic Lua stay inside this package.
-//
-// The Redis client and an in-process store both satisfy Store, so nothing is rewritten to run
-// without Redis.
+// Package cache is the shared state layer: credentials, rate-limit counters and upstream
+// metadata that outlives one process. Redis and the in-process store both satisfy Store.
 package cache
 
 import (
@@ -23,13 +19,12 @@ import (
 	"animind-backend-go/internal/config"
 )
 
-// ErrUnavailable marks a store that cannot be reached right now. Callers are expected to
-// fall back to their authoritative path rather than fail the request: a cache outage costs
-// latency, never data.
+// ErrUnavailable marks a store that cannot be reached right now. Callers fall back to their
+// authoritative path rather than fail the request: a cache outage costs latency, never data.
 var ErrUnavailable = errors.New("cache: unavailable")
 
 // KV is the entry half of the store; keys are namespaced by the implementation. A missing
-// entry is found=false with a nil error — a non-nil error means the store could not be asked.
+// entry is found=false with a nil error; any other error means the store could not be asked.
 type KV interface {
 	Get(ctx context.Context, key string) ([]byte, bool, error)
 	// Set stores value for ttl. Groups name sets the entry belongs to, so a delete by group
@@ -39,9 +34,8 @@ type KV interface {
 	DeleteGroup(ctx context.Context, groups ...string) error
 }
 
-// OneTimeStore atomically reads and removes an entry. It is used for credentials
-// that must not be replayed, such as OAuth state. The built-in stores implement
-// this with a lock or a Redis script; callers must not emulate it with Get+Delete.
+// OneTimeStore atomically reads and removes an entry, for credentials that must not be
+// replayed such as OAuth state. Callers must not emulate it with Get+Delete.
 type OneTimeStore interface {
 	Take(ctx context.Context, key string) ([]byte, bool, error)
 }
@@ -73,8 +67,7 @@ type Store interface {
 	KV
 	Limiter
 
-	// Shared reports whether state crosses processes. Rate limiting is a correctness
-	// question only when it does.
+	// Shared reports whether state crosses processes; rate limiting is only correct when it does.
 	Shared() bool
 	// Backend is the configured store name, for logs and metrics.
 	Backend() string
@@ -89,9 +82,8 @@ type Snapshot struct {
 	Allowed, Denied, Fallbacks              uint64
 }
 
-// Stats counts what callers cannot see from a single response: whether a hit came from the
-// store at all, and how often the store was unreachable. Tests assert on these rather than
-// on timing, and the metrics endpoint exports them.
+// Stats counts what one response cannot show: whether a hit came from the store and how
+// often it was unreachable. Tests assert on these; the metrics endpoint exports them.
 type Stats struct {
 	hits, misses, writes, evictions, errors atomic.Uint64
 	allowed, denied, fallbacks              atomic.Uint64
@@ -129,8 +121,8 @@ func (s *Stats) snapshot() Snapshot {
 
 // ── Key naming ───────────────────────────────────────────────────────────────
 
-// Key scopes. One namespace serves several kinds of entry; the scope is what keeps a
-// credential lookup from colliding with a metadata lookup.
+// Key scopes keep entries of different kinds apart in one namespace, so a credential
+// lookup cannot collide with a metadata lookup.
 const (
 	scopeCredential = "credential"
 	scopeRate       = "rl"
@@ -139,8 +131,7 @@ const (
 	scopeGroup      = "group"
 )
 
-// CredentialKey is the cache entry for one resolved token. The hash is the SHA-256 the
-// database already stores, so no secret travels into a key.
+// CredentialKey is the cache entry for one resolved token; the hash never carries a secret.
 func CredentialKey(kind, tokenHash string) string {
 	return scopeCredential + ":" + kind + ":" + tokenHash
 }
@@ -151,8 +142,8 @@ func RateKey(bucket, client string) string {
 	return scopeRate + ":" + bucket + ":" + client
 }
 
-// AniListKey hashes the request document: a GraphQL query is a cache identity only up to
-// whitespace and key order, and a hash keeps keys a fixed size whatever the client sent.
+// AniListKey hashes a request document: whitespace and key order must not split a cache
+// entry, and a hash keeps keys a fixed size whatever the client sent.
 func AniListKey(document string) string {
 	sum := sha256.Sum256([]byte(normalizeJSON(document)))
 	return scopeAniList + ":" + hex.EncodeToString(sum[:])
@@ -166,9 +157,8 @@ func MetadataKey(titleKey string) string {
 // UserGroup is the invalidation set for everything derived from one account.
 func UserGroup(userID string) string { return "user:" + userID }
 
-// groupTTL bounds how long an invalidation set outlives its entries. Every entry written
-// into a group has a TTL far below this, so a set can only expire once its contents are
-// already gone — losing the set costs stale-key hygiene, never a missed eviction.
+// groupTTL outlives every entry written into a group, so losing a set costs only stale-key
+// hygiene, never a missed eviction.
 const groupTTL = 24 * time.Hour
 
 // normalizeJSON makes an equivalent payload produce one key.
@@ -222,10 +212,8 @@ func SetJSON(ctx context.Context, kv KV, key string, value any, ttl time.Duratio
 
 // ── Construction ─────────────────────────────────────────────────────────────
 
-// Open connects to the configured store. Without REDIS_URL the in-process store is returned:
-// the same code paths run, they just stop crossing processes. A URL that does not answer fails
-// startup — a half-wired cache is the misconfiguration this backend refuses to boot on — while
-// a Redis that dies later degrades to the fallback instead of taking the API with it.
+// Open connects to the configured store. Without REDIS_URL the in-process store is returned, so
+// the same paths run locally. A URL that does not answer fails startup; a dead Redis degrades.
 func Open(ctx context.Context, cfg config.CacheConfig, logger *slog.Logger) (Store, error) {
 	if strings.TrimSpace(cfg.URL) == "" {
 		logger.Info("cache: no REDIS_URL, keeping shared state in this process")

@@ -14,9 +14,8 @@ import (
 	"time"
 )
 
-// Token prefixes are part of the public wire format: the desktop player distinguishes
-// its credentials and Kind() routes verification by the same prefix, so these values
-// cannot change without breaking installed clients.
+// Token prefixes are public wire format: the player distinguishes its credentials and Kind()
+// routes verification by them, so they cannot change without breaking installed clients.
 const (
 	// DesktopAccessPrefix marks a desktop access token (HMAC-signed, self-contained).
 	DesktopAccessPrefix = "adk_"
@@ -70,9 +69,9 @@ func IsDesktopAccessToken(token string) bool {
 	return strings.HasPrefix(token, DesktopAccessPrefix)
 }
 
-// Signer issues and validates the backend's own tokens — desktop access tokens and
-// playback tickets — with the single DESKTOP_TOKEN_SIGNING_KEY secret. Payloads are
-// tamper-evident, not encrypted.
+// Signer issues and validates the backend's own tokens — desktop access tokens and playback
+// tickets — with the single DESKTOP_TOKEN_SIGNING_KEY secret. Payloads are tamper-evident, not
+// encrypted.
 type Signer struct {
 	key []byte
 }
@@ -92,14 +91,14 @@ type DesktopClaims struct {
 	ExpiresAt int64 // unix seconds
 }
 
-// IssueDesktopAccessToken signs a self-contained desktop access token. Layout, byte for
-// byte — installed clients parse it, so it cannot change:
+// IssueDesktopAccessToken signs a self-contained desktop access token. Installed clients parse
+// the exact layout, so it cannot change:
 //
 //	payload = "v1." + userID + "." + sessionID + "." + expUnixSeconds
 //	token   = "adk_" + base64url(payload) + "." + base64url(HMAC-SHA256(key, payload))
 //
-// Carrying the expiry in the payload authorizes a request without a database read; the
-// pinned session row is still consulted when revocation must be immediate.
+// The expiry authorizes a request without a database read; the pinned session row still allows
+// immediate revocation.
 func (s *Signer) IssueDesktopAccessToken(userID, sessionID string, expiresAt time.Time) string {
 	payload := strings.Join([]string{
 		accessTokenVersion,
@@ -119,9 +118,8 @@ func (s *Signer) VerifyDesktopAccessToken(token string) (*DesktopClaims, error) 
 		return nil, ErrTokenMalformed
 	}
 	body := strings.TrimPrefix(token, DesktopAccessPrefix)
-	// Split at the LAST dot: base64url never emits one, so the final dot is the signature
-	// separator even for a token carrying a dotted prefix. A missing dot means the token is
-	// malformed, not a position to index into the string.
+	// Split at the LAST dot: base64url never emits one, so it is the signature separator even for
+	// a token carrying a dotted prefix.
 	lastDot := strings.LastIndex(body, ".")
 	if lastDot <= 0 || lastDot == len(body)-1 {
 		return nil, ErrTokenMalformed
@@ -150,8 +148,8 @@ func (s *Signer) VerifyDesktopAccessToken(token string) (*DesktopClaims, error) 
 	return &DesktopClaims{UserID: parts[1], SessionID: parts[2], ExpiresAt: exp}, nil
 }
 
-// HashToken returns the lowercase hex SHA-256 of a token. Tokens are stored and
-// compared only as this hash, so a database leak yields no usable credential.
+// HashToken returns the lowercase hex SHA-256 of a token. Tokens are stored only as this hash,
+// so a database leak yields no usable credential.
 func HashToken(token string) string {
 	sum := sha256.Sum256([]byte(token))
 	return hex.EncodeToString(sum[:])
@@ -176,7 +174,6 @@ func NewWebSessionToken() (string, error) {
 }
 
 // NewOpaqueToken returns a base64url token of n random bytes, without a prefix.
-// Used for desktop session ids, password reset tokens and one-time auth codes.
 func NewOpaqueToken(n int) (string, error) {
 	buf := make([]byte, n)
 	if _, err := rand.Read(buf); err != nil {
@@ -186,7 +183,7 @@ func NewOpaqueToken(n int) (string, error) {
 }
 
 // StreamTicketPayload is the signed body of a playback ticket. The JSON key names are
-// load-bearing: the already-shipped desktop parser decodes exactly these after base64url.
+// load-bearing: the shipped desktop parser decodes exactly these after base64url.
 type StreamTicketPayload struct {
 	EpisodeID string `json:"episodeId"`
 	// At is the requested audio track index, omitted when none was requested.
@@ -203,9 +200,8 @@ const (
 	ClientBrowser = "b"
 )
 
-// IssueStreamTicket creates a ticket granting stream access to one episode for a
-// bounded time. Desktop and site clients exchange a short-lived ticket for a stream
-// URL so the long-lived access token never lands in a media player's request log.
+// IssueStreamTicket creates a ticket granting stream access to one episode for a bounded time,
+// so the long-lived access token never lands in a media player's request log.
 func (s *Signer) IssueStreamTicket(episodeID string, audioTrackIndex *int, clientMode string, expiresAt time.Time) (string, error) {
 	payload := StreamTicketPayload{
 		EpisodeID: episodeID,

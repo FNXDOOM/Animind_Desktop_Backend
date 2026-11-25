@@ -13,9 +13,8 @@ type FallbackCounter interface {
 	Fallbacks() uint64
 }
 
-// ResilientLimiter keeps rate limiting alive when the shared store cannot be reached. The
-// trade is deliberate: a Redis outage degrades to per-process counting, which over-admits
-// rather than locking every client out of an API that is otherwise healthy.
+// ResilientLimiter keeps rate limiting alive when the shared store is unreachable: a Redis
+// outage degrades to per-process counting, over-admitting rather than locking clients out.
 type ResilientLimiter struct {
 	shared   Limiter
 	local    Limiter
@@ -36,8 +35,8 @@ func (r *ResilientLimiter) Allow(ctx context.Context, key string, limit int, dur
 	if err == nil {
 		return decision, nil
 	}
-	// Only an unreachable store justifies local counting; a cancelled request is the
-	// caller's own outcome and must not be answered with a verdict from a stale window.
+	// Only an unreachable store justifies local counting; a cancelled request must not be
+	// answered with a verdict from a stale window.
 	if !errors.Is(err, ErrUnavailable) {
 		return Decision{}, err
 	}

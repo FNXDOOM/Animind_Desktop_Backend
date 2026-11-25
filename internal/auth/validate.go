@@ -8,8 +8,7 @@ import (
 	"strings"
 )
 
-// Validation errors surfaced to clients. They are written for a person reading a form
-// message, not for a log line.
+// Validation errors surfaced to clients; they are written for a form message, not a log line.
 var (
 	ErrInvalidEmail    = errors.New("email address is not valid")
 	ErrInvalidUsername = errors.New("username must be 2-32 characters using letters, numbers, dot, dash or underscore")
@@ -23,16 +22,14 @@ const (
 
 var usernamePattern = regexp.MustCompile(`^[a-zA-Z0-9._-]+$`)
 
-// NormalizeEmail lowercases and trims an address. It is the value stored in
-// email_normalized and the key every login lookup uses, so account "A@X.com" and
-// "a@x.com" cannot coexist.
+// NormalizeEmail lowercases and trims an address. It is stored in email_normalized and is the
+// key every login lookup uses, so "A@X.com" and "a@x.com" cannot coexist.
 func NormalizeEmail(raw string) string {
 	return strings.ToLower(strings.TrimSpace(raw))
 }
 
-// ValidateEmail accepts an address with a parseable single @, a domain containing a dot,
-// and no surrounding whitespace. It intentionally does not attempt RFC 5322 completeness:
-// deliverability is proven by sending mail, not by a regex.
+// ValidateEmail accepts a parseable single @ with a dotted domain and no whitespace. It is not
+// RFC 5322-complete: deliverability is proven by sending mail, not by a regex.
 func ValidateEmail(raw string) error {
 	normalized := NormalizeEmail(raw)
 	if normalized == "" {
@@ -71,8 +68,7 @@ func ValidateUsername(raw string) error {
 	return nil
 }
 
-// UsernameFromEmail derives a display name from the local part when a signup request
-// omits one, stripping dots and anything after a plus tag.
+// UsernameFromEmail derives a display name from the local part when a signup omits one.
 func UsernameFromEmail(email string) string {
 	at := strings.Index(email, "@")
 	if at <= 0 {
@@ -102,8 +98,7 @@ func DefaultAvatar(name string) string {
 	return fmt.Sprintf("https://ui-avatars.com/api/?name=%s&background=8b5cf6&color=fff&bold=true", encoded)
 }
 
-// TruncateLabel clamps a device label coming from a client to the column width,
-// matching the 128-character limit the desktop flow has always applied.
+// TruncateLabel clamps a client-supplied device label to the column width of 128 characters.
 func TruncateLabel(s string, max int) string {
 	s = strings.TrimSpace(s)
 	if len(s) <= max {

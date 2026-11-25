@@ -11,14 +11,13 @@ import (
 	"animind-backend-go/internal/auth"
 )
 
-// desktopAuthLoopbackPort is the fixed port the Qt player listens on for the browser
-// handoff (kBridgePort in its auth_manager.cpp). The page never accepts a caller-supplied
-// host or port, so the token can only travel to the local player.
+// desktopAuthLoopbackPort is the fixed port the Qt player listens on (kBridgePort in
+// auth_manager.cpp). The page never accepts a caller-supplied host or port, so the token can
+// only travel to the local player.
 const desktopAuthLoopbackPort = 27182
 
-// desktopAuthPage is the browser-side pairing form. It is deliberately not admin-only: any
-// signed-in account may pair a desktop player, and the old website's /desktop-auth page was
-// the only place that performed this handoff.
+// desktopAuthPage is the browser-side pairing form. Any signed-in account may pair a desktop
+// player; this page replaces the old website's handoff.
 type desktopAuthPage struct {
 	CSRF           string
 	Error          string
@@ -29,8 +28,7 @@ type desktopAuthPage struct {
 }
 
 // googleStartURL builds the browser Google entry point for a return path on this API, or ""
-// when Google is not configured or the issuer is not an http(s) origin. Keeping this in one
-// helper stops the pairing page from rendering a button that cannot complete.
+// when Google is not configured. One helper keeps a dead button off the pairing page.
 func (s *Server) googleStartURL(returnPath string) string {
 	if s.auth == nil || !s.auth.GoogleEnabled() {
 		return ""
@@ -94,9 +92,8 @@ func (s *Server) handleDesktopAuthConfirm(w http.ResponseWriter, r *http.Request
 	http.Redirect(w, r, target, http.StatusSeeOther)
 }
 
-// handleDesktopAuthLogin signs a browser in for the handoff. It intentionally accepts any
-// account, unlike the admin login, and then sends the browser back to /desktop-auth where the
-// confirmation step mints the bridge token.
+// handleDesktopAuthLogin signs a browser in for the handoff. It accepts any account, unlike
+// the admin login, and sends the browser back to /desktop-auth for confirmation.
 func (s *Server) handleDesktopAuthLogin(w http.ResponseWriter, r *http.Request) {
 	if s.auth == nil {
 		s.renderAdminMessage(w, http.StatusServiceUnavailable, "Authentication unavailable",

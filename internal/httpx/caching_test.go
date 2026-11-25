@@ -15,8 +15,7 @@ import (
 	"animind-backend-go/internal/config"
 )
 
-// Shared-state behaviour: what one store does for more than one server, what it exposes, and
-// what the AniList relay stops doing once it has answered a document.
+// Shared-state behaviour: what one store does for more than one server, and the AniList cache.
 
 func loadTestConfig(t *testing.T) *config.Config {
 	t.Helper()
@@ -44,9 +43,8 @@ func newStore(t *testing.T, cfg *config.Config) cache.Store {
 	return store
 }
 
-// TestRateLimitBudgetIsSharedAcrossServers is the reason counting moved out of the server:
-// two instances behind one proxy each enforcing their own window would serve twice the limit,
-// and the client has no way to tell which instance it reached.
+// TestRateLimitBudgetIsSharedAcrossServers is why counting moved out of the server: two
+// instances behind one proxy would each enforce their own window, serving twice the limit.
 func TestRateLimitBudgetIsSharedAcrossServers(t *testing.T) {
 	cfg := loadTestConfig(t)
 	store := newStore(t, cfg)
@@ -55,9 +53,8 @@ func TestRateLimitBudgetIsSharedAcrossServers(t *testing.T) {
 	first := New(Deps{Config: cfg, Cache: store, Logger: logger})
 	second := New(Deps{Config: cfg, Cache: store, Logger: logger})
 
-	// The webhook budget is thirty a minute. A wrong secret answers 401, which is
-	// irrelevant: the limiter runs first, so a 401 is a counted hit and a 429 is the budget
-	// closing.
+	// The webhook budget is thirty a minute. A wrong secret answers 401, which is irrelevant:
+	// the limiter runs first, so a 401 is a counted hit and a 429 is the budget closing.
 	servers := []*Server{first, second}
 	for attempt := 0; attempt < 30; attempt++ {
 		recorder := do(servers[attempt%2], http.MethodPost, "/api/webhooks/storage", nil)
@@ -77,7 +74,7 @@ func TestRateLimitBudgetIsSharedAcrossServers(t *testing.T) {
 }
 
 // TestMetricsEndpointExportsRequestsAndCacheOutcomes proves the scrape target Grafana reads
-// has content: an empty registry is a dashboard of "no data".
+// has content.
 func TestMetricsEndpointExportsRequestsAndCacheOutcomes(t *testing.T) {
 	cfg := loadTestConfig(t)
 	store := newStore(t, cfg)
@@ -87,8 +84,8 @@ func TestMetricsEndpointExportsRequestsAndCacheOutcomes(t *testing.T) {
 	for attempt := 0; attempt < 31; attempt++ {
 		do(server, http.MethodPost, "/api/webhooks/storage", nil)
 	}
-	// A parameterised path: the label must be the route pattern, not whatever the client
-	// asked for, or a path scan would mint unbounded series.
+	// A parameterised path: the label must be the route pattern, not the client's path, or a
+	// path scan would mint unbounded series.
 	do(server, http.MethodGet, "/api/hls/00000000000000000000000000000000/seg00000.ts", nil)
 
 	recorder := httptest.NewRecorder()
@@ -190,11 +187,8 @@ func TestAniListProxyServesADocumentOnce(t *testing.T) {
 	}
 }
 
-// TestAniListProxyDoesNotCacheABadResponse keeps a provider hiccup from becoming a half-day
-// of empty results. AniList answers some rejections with 200 and an errors array, and a
-// truncated body is not a document at all.
-// TestAniListProxyDoesNotCacheOversizeDocuments keeps one response from becoming an
-// unbounded memory entry. The cache also enforces a byte budget; this is the first gate.
+// TestAniListProxyDoesNotCacheOversizeDocuments keeps one response from becoming an unbounded
+// memory entry; the cache's byte budget is the later gate.
 func TestAniListProxyDoesNotCacheOversizeDocuments(t *testing.T) {
 	big := `{"data":{"Media":{"description":"` + strings.Repeat("x", 300<<10) + `"}}}`
 	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
@@ -219,6 +213,8 @@ func TestAniListProxyDoesNotCacheOversizeDocuments(t *testing.T) {
 	}
 }
 
+// TestAniListProxyDoesNotCacheABadResponse keeps a provider hiccup from becoming a half-day
+// of empty results: AniList answers some rejections with 200 and an errors array.
 func TestAniListProxyDoesNotCacheABadResponse(t *testing.T) {
 	var upstream atomic.Int64
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {

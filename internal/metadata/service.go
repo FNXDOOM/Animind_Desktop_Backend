@@ -1,6 +1,5 @@
-// Package metadata resolves a release title into catalog information. AniList is first, for
-// its artwork, trailer and dedupe id, with MyAnimeList covering a miss or throttle. Lookups
-// are cached per title and shared across concurrent ones, so a scan asks providers once.
+// Package metadata resolves a release title into catalog information: AniList first, with
+// MyAnimeList covering a miss or throttle. Lookups are cached per title and shared.
 package metadata
 
 import (
@@ -40,9 +39,8 @@ type Metadata struct {
 	Year          *string  `json:"year"`
 	AnilistID     *int     `json:"anilist_id"`
 	Trailer       *Trailer `json:"trailer"`
-	// AlternateTitles carries every other name a provider knows the show by: synonyms plus
-	// the romaji and native titles. The download pipeline matches torrent names against
-	// them, and the scanner's fuzzy title match reads them too.
+	// AlternateTitles carries every other known name (synonyms, romaji, native) that torrent
+	// matching and the scanner's fuzzy title match read.
 	AlternateTitles []string `json:"alternate_titles,omitempty"`
 }
 
@@ -51,8 +49,7 @@ type Service struct {
 	anilist *AniListClient
 	mal     *MALClient
 	ttl     time.Duration
-	// shared is the cross-process half of the cache: nil keeps lookups inside this process,
-	// which is what a single-node scan has always done.
+	// shared is the cross-process half of the cache; nil keeps lookups inside this process.
 	shared cache.Store
 	logger *slog.Logger
 
@@ -93,9 +90,8 @@ func New(cfg *config.Config, stateCache cache.Store, logger *slog.Logger) *Servi
 	}
 }
 
-// Fetch resolves a title; a nil result is not an error, it means no provider matched, and
-// the scanner then keeps the folder name as the title. The local map makes one scan cheap,
-// the shared store the next one, so a restart keeps its answers and its throttle budget.
+// Fetch resolves a title; nil means no provider matched and the scanner keeps the folder
+// name. The local map makes one scan cheap, the shared store survives a restart.
 func (s *Service) Fetch(ctx context.Context, title string) (*Metadata, error) {
 	key := NormalizeTitleKey(title)
 	if key == "" {
@@ -121,8 +117,8 @@ func (s *Service) Fetch(ctx context.Context, title string) (*Metadata, error) {
 	s.inFlight[key] = request
 	s.mu.Unlock()
 
-	// Only the leader consults the shared store: readers waiting on the channel receive the
-	// same answer, so one title costs one lookup per process whatever the concurrency.
+	// Only the leader consults the shared store; waiters receive the same answer, so one
+	// title costs one lookup per process.
 	meta, err := s.fetchThroughShared(ctx, key, title)
 	request.finish(meta, err)
 
@@ -135,8 +131,7 @@ func (s *Service) Fetch(ctx context.Context, title string) (*Metadata, error) {
 	return meta, err
 }
 
-// fetchThroughShared answers from the cross-process cache when it can, and publishes what the
-// providers returned into it.
+// fetchThroughShared answers from the cross-process cache and publishes provider results.
 func (s *Service) fetchThroughShared(ctx context.Context, key, title string) (*Metadata, error) {
 	if meta, found := s.fetchShared(ctx, key); found {
 		return meta, nil
@@ -149,8 +144,7 @@ func (s *Service) fetchThroughShared(ctx context.Context, key, title string) (*M
 	return meta, err
 }
 
-// fetchShared reads the cross-process cache. An unreachable store is a miss, never a failed
-// lookup: the providers are still there.
+// fetchShared reads the cross-process cache; an unreachable store is a miss, not a failure.
 func (s *Service) fetchShared(ctx context.Context, key string) (*Metadata, bool) {
 	if s.shared == nil {
 		return nil, false
@@ -167,8 +161,7 @@ func (s *Service) storeShared(ctx context.Context, key string, meta *Metadata) {
 	if s.shared == nil {
 		return
 	}
-	// A title nobody matched is not stored: providers can miss for a season and come back,
-	// and a shared "no" would outlast the process that learned it.
+	// A title nobody matched is not stored: a shared "no" would outlast the process that learned it.
 	if err := cache.SetJSON(ctx, s.shared, cache.MetadataKey(key), meta, s.ttl); err != nil {
 		s.logger.Warn("metadata: shared cache write failed", slog.String("error", err.Error()))
 	}
@@ -230,8 +223,7 @@ func fromAniList(m *Media) *Metadata {
 	return meta
 }
 
-// alternateTitlesFromAniList collects the synonyms plus the romaji and native titles; the
-// English title is already the primary Metadata.Title.
+// alternateTitlesFromAniList collects synonyms plus romaji and native titles; English is primary.
 func alternateTitlesFromAniList(m *Media) []string {
 	titles := make([]string, 0, len(m.Synonyms)+2)
 	titles = append(titles, m.Synonyms...)
@@ -274,8 +266,8 @@ func fromMAL(a *MALAnime) *Metadata {
 		year := itoa(*a.StartSeason.Year)
 		meta.Year = &year
 	}
-	// The English alternative title is already the primary Metadata.Title candidate, so the
-	// alternates are the synonyms plus the native (Japanese) title.
+	// The English alternative title is already the primary title, so alternates are synonyms
+	// plus the native title.
 	alternates := make([]string, 0, len(a.AlternativeTitles.Synonyms)+1)
 	alternates = append(alternates, a.AlternativeTitles.Synonyms...)
 	if native := deref(a.AlternativeTitles.Japanese); strings.TrimSpace(native) != "" {
@@ -306,8 +298,7 @@ func dedupeTitles(titles []string) []string {
 // nonWordPattern collapses anything that is not a letter or digit into a single space.
 var nonWordPattern = regexp.MustCompile(`[^a-z0-9]+`)
 
-// NormalizeTitleKey produces the comparison key used for caching and title matching:
-// unicode-normalised, alphanumeric-only, single-spaced, lowercase.
+// NormalizeTitleKey produces the cache/match key: unicode-normalised, alphanumeric, lowercase.
 func NormalizeTitleKey(title string) string {
 	lowered := strings.ToLower(strings.TrimSpace(title))
 	trimmed := norm.NFKD.String(lowered)
@@ -327,9 +318,8 @@ func NormalizeTitleKey(title string) string {
 
 var tagPattern = regexp.MustCompile(`<[^>]*>`)
 
-// StripHTML removes markup from a provider description: AniList sends HTML even with
-// asHtml:false in some fields, and the library stores plain text that both clients render
-// directly, so tags must not survive the import.
+// StripHTML removes markup from provider descriptions, which are stored as plain text and
+// rendered directly by both clients.
 func StripHTML(text string) string {
 	if text == "" {
 		return ""

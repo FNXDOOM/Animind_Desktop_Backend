@@ -8,8 +8,8 @@ import (
 	"time"
 )
 
-// baseEnv sets the required variables so Load can succeed in a test. The default storage
-// mode is s3, which needs a bucket name.
+// baseEnv sets the required variables so Load can succeed; the default storage mode is s3,
+// which needs a bucket name.
 func baseEnv(t *testing.T) {
 	t.Helper()
 	t.Setenv("DATABASE_URL", "postgres://user:pass@localhost:5432/animind")
@@ -359,9 +359,8 @@ func TestTorrentAndDownloadsValidation(t *testing.T) {
 		}
 	})
 	t.Run("downloads negative knobs are floored at zero", func(t *testing.T) {
-		// A negative MIN_FREE_GB would void the disk check (free >= negative is
-		// always true), and negative seed knobs are meaningless while seeding
-		// beyond completion is reserved: all three floor at zero.
+		// A negative MIN_FREE_GB would void the disk check (free >= negative is always true)
+		// and negative seed knobs are meaningless: all three floor at zero.
 		baseEnv(t)
 		t.Setenv("STORAGE_MODE", "local")
 		t.Setenv("LOCAL_STORAGE_PATH", t.TempDir())

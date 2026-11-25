@@ -9,8 +9,7 @@ import (
 )
 
 // localStore keeps shared state in this process when no REDIS_URL is configured, so the
-// caching paths run identically with or without Redis. Everything is bounded: an entry map
-// that grew with the library would cost more than the database it was meant to avoid.
+// caching paths run identically. Every map is bounded: an unbounded cache costs more than DB.
 type localStore struct {
 	mu      sync.Mutex
 	entries map[string]*localEntry
@@ -29,8 +28,8 @@ type localEntry struct {
 	expiresAt time.Time
 }
 
-// maxLocalEntries caps the in-process cache. Overflow drops the entries that expire soonest,
-// which are the ones a fresh lookup would answer anyway.
+// maxLocalEntries caps the in-process cache; overflow drops the entries that expire soonest,
+// which a fresh lookup would answer anyway.
 const maxLocalEntries = 50_000
 
 // maxLocalBytes is the default payload budget for the in-process cache.
@@ -80,9 +79,8 @@ func (l *localStore) Get(_ context.Context, key string) ([]byte, bool, error) {
 		return nil, false, nil
 	}
 	l.stats.record("hit")
-	// Copy on read. Redis hands back a fresh slice per Get, so a caller that mutated what it
-	// got would corrupt the in-process store and nothing else — the two implementations have to
-	// differ in speed, not in who can damage the cache.
+	// Copy on read: Redis returns a fresh slice per Get, so a caller that mutated ours would
+	// corrupt only the in-process store.
 	return bytes.Clone(stored.value), true, nil
 }
 

@@ -36,8 +36,7 @@ const (
 )
 
 // Service runs the search pipeline: variants, concurrent indexer fan-out, merge, filters,
-// ranking, opaque ids and the search cache. The clock the brief allots it lives inside the
-// Trending counter, the only time-dependent part.
+// ranking, opaque ids and the search cache. Only the Trending counter is time-dependent.
 type Service struct {
 	indexer  Indexer
 	metadata MetadataFetcher
@@ -46,9 +45,8 @@ type Service struct {
 	trending *Trending
 }
 
-// NewService wires the pipeline. shared is the same store instance the metadata service
-// uses (a cache.Store satisfies cache.KV); a nil or zero-TTL store simply disables caching.
-// A nil trending counter is replaced by a process-local one, so Record always runs.
+// NewService wires the pipeline. shared is the same store the metadata service uses; a nil
+// or zero-TTL store disables caching, and a nil trending counter is replaced by a local one.
 func NewService(indexer Indexer, meta MetadataFetcher, shared cache.KV, cacheTTL time.Duration, trending *Trending) *Service {
 	if trending == nil {
 		trending = NewTrending(time.Now)
@@ -65,9 +63,8 @@ type SearchResponse struct {
 	QueryUsed []string `json:"queryUsed"`
 }
 
-// Search answers one user query. q is normalized, enriched with up to two title variants
-// from the metadata catalog and fanned out to the indexer concurrently; the merged results
-// are filtered, ranked and cached under the normalized query plus filters.
+// Search answers one user query: q is normalized, enriched with up to two title variants and
+// fanned out concurrently; the merged rows are filtered, ranked and cached.
 func (s *Service) Search(ctx context.Context, q Query) (SearchResponse, error) {
 	norm := normalizeQuery(q.Q)
 	if n := utf8.RuneCountInString(norm); n < minQueryRunes || n > maxQueryRunes {
@@ -130,9 +127,8 @@ func normalizeQuery(q string) string {
 	return strings.Join(strings.Fields(q), " ")
 }
 
-// planQueries builds the run: q plus metadata-catalog variants (primary title, then
-// alternates), deduped case-insensitively. A variant equal to q stands in for it and leads
-// the run, so the three-call cap cannot drop the user's query; a metadata miss never fails.
+// planQueries builds the run: q plus metadata-catalog variants, deduped case-insensitively.
+// A variant equal to q stands in for it and leads the run, so the cap cannot drop the query.
 func (s *Service) planQueries(ctx context.Context, q string) []string {
 	variants := s.titleVariants(ctx, q)
 	seen := make(map[string]bool, len(variants))
@@ -186,9 +182,8 @@ func (s *Service) titleVariants(ctx context.Context, q string) []string {
 	return out
 }
 
-// runQueries fans the query run out concurrently. Every title is (re-)parsed here: variant
-// rows can arrive unparsed, and the parse is deterministic, so overwriting is safe. The
-// first indexer error fails the whole search.
+// runQueries fans the query run out concurrently and re-parses every title, since variant
+// rows can arrive unparsed. The first indexer error fails the whole search.
 func (s *Service) runQueries(ctx context.Context, queries []string, q Query) ([]Result, error) {
 	perQuery := make([][]Result, len(queries))
 	g, gctx := errgroup.WithContext(ctx)
@@ -224,9 +219,8 @@ func (s *Service) runQueries(ctx context.Context, queries []string, q Query) ([]
 	return out, nil
 }
 
-// mergeResults dedupes by info hash, keeping the row with the richer parse and, on a tie,
-// the higher seeder count. Rows without a hash are dropped: dedupe and the download
-// pipeline both key on it.
+// mergeResults dedupes by info hash, keeping the richer parse and, on a tie, the higher
+// seeder count. Rows without a hash are dropped: dedupe and download both key on it.
 func mergeResults(rows []Result) []Result {
 	byHash := make(map[string]*Result, len(rows))
 	order := make([]string, 0, len(rows))
@@ -265,9 +259,8 @@ func assignHealth(rows []Result) {
 
 // ── Cache ────────────────────────────────────────────────────────────────────────
 
-// cachedSearch is the full-fidelity cache form of a search page. Result's marshal is the
-// wire view and strips magnets, so the cache keeps its own encoding; a hit re-registers the
-// ids from rows that still carry theirs.
+// cachedSearch is the full-fidelity cache form of a search page: Result's marshal strips
+// magnets, so the cache keeps its own encoding and re-registers ids on a hit.
 type cachedSearch struct {
 	Rows      []cachedResult `json:"rows"`
 	Total     int            `json:"total"`
@@ -389,9 +382,8 @@ func optString(v *string) string {
 
 // ── Wire shape ───────────────────────────────────────────────────────────────────
 
-// wireResult is the HTTP shape of one search hit, camelCase as the API contract requires.
-// Result's marshal goes through it so a magnet never reaches the wire: the client keeps
-// only the opaque id, and the download flow reads the magnet back from the cache.
+// wireResult is the camelCase HTTP shape of one search hit. Result marshals through it, so a
+// magnet never reaches the wire; the download flow reads it back from the cache.
 type wireResult struct {
 	ID          string     `json:"id"`
 	InfoHash    string     `json:"infoHash"`

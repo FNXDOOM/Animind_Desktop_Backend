@@ -9,12 +9,11 @@ import (
 	"animind-backend-go/internal/config"
 )
 
-// credentialCache resolves a token from shared state instead of the database: every
-// authenticated request used to cost two indexed SELECTs, session row then user row.
+// credentialCache resolves a token from shared state instead of the database, where every
+// authenticated request cost two indexed SELECTs: session row, then user row.
 //
-// Entries are keyed by the SHA-256 hash the database stores, so a key reveals nothing
-// about its token, and sit in the owner's invalidation group so revocation does not
-// need to know the key it is revoking.
+// Entries are keyed by the SHA-256 hash the database stores, so a key reveals nothing about
+// its token, and sit in the owner's invalidation group so revocation need not know the key.
 type credentialCache struct {
 	store  cache.Store
 	ttl    time.Duration
@@ -22,7 +21,7 @@ type credentialCache struct {
 }
 
 // cachedPrincipal is the stored half of Principal. Email and IsAdmin travel with it because
-// authorization decisions read them; anything else would go stale in a way no caller checks.
+// authorization decisions read them.
 type cachedPrincipal struct {
 	UserID           string `json:"userId"`
 	Email            string `json:"email"`
@@ -67,9 +66,8 @@ func (c *credentialCache) lookup(ctx context.Context, key string) (*Principal, b
 	return cached.principal(), true
 }
 
-// remember stores a resolution for at most the shorter of the configured TTL and the time the
-// underlying row itself stops being valid. Caching a credential past its own expiry would be
-// a way to extend a session by not looking at the database.
+// remember stores a resolution for at most the shorter of the cache TTL and the row's own
+// validity; caching past expiry would extend a session by not looking at the database.
 func (c *credentialCache) remember(ctx context.Context, key string, p *Principal, expiresAt time.Time) {
 	ttl := c.ttl
 	if until := time.Until(expiresAt); until < ttl {
@@ -87,13 +85,12 @@ func (c *credentialCache) remember(ctx context.Context, key string, p *Principal
 	}
 }
 
-// invalidateUser drops every credential resolution for one account. Revocations,
-// password changes and privilege writes all go through here because the group is the only
-// handle those paths have: a session revoked by row id says nothing about the token hash
-// its cache entry was keyed by.
+// invalidateUser drops every credential resolution for one account: a session revoked by row
+// id says nothing about the token hash its cache entry was keyed by, so the group is the only
+// handle revocation paths have.
 //
-// It cannot erase an entry written by a resolution already in flight when the revocation
-// landed. That race costs at most the cache TTL, which is why the TTL is short.
+// An entry written by a resolution in flight when the revocation landed survives; that race
+// costs at most the short cache TTL.
 func (c *credentialCache) invalidateUser(ctx context.Context, userID string) {
 	if userID == "" {
 		return

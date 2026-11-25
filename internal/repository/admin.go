@@ -5,18 +5,15 @@ import (
 	"strings"
 )
 
-// AdminUserRow is one account on the admin users page. The session counts are live rows, so
-// the operator can see at a glance which accounts still have a phone, browser or desktop
-// player signed in.
+// AdminUserRow is one admin users-page row with its live session counts.
 type AdminUserRow struct {
 	PublicUser
 	WebSessions    int64 `json:"web_sessions"`
 	DesktopDevices int64 `json:"desktop_devices"`
 }
 
-// ListUsersWithSessions returns accounts for the admin console, newest first, with the number
-// of live sessions of each kind. A search matches email or username. The public API keeps its
-// own ListUsers shape; this projection is only for the server-rendered panel.
+// ListUsersWithSessions lists accounts for the admin console with live session counts;
+// search matches email or username.
 func (s *Store) ListUsersWithSessions(ctx context.Context, search string, limit, offset int) ([]AdminUserRow, int64, error) {
 	search = strings.TrimSpace(search)
 	pattern := "%"
@@ -76,8 +73,7 @@ func (s *Store) UserStats(ctx context.Context) (UserStats, error) {
 	return stats, err
 }
 
-// SessionCounts counts live browser/app sessions and live desktop devices across every
-// account, for the overview cards.
+// SessionCounts counts live browser sessions and desktop devices across all accounts.
 func (s *Store) SessionCounts(ctx context.Context) (web, desktop int64, err error) {
 	err = s.pool.QueryRow(ctx, `
 		select

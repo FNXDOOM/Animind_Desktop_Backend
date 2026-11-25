@@ -25,15 +25,10 @@ import (
 )
 
 // Functional tests for the watch-party protocol: two real Socket.IO clients against a real
-// Hub, asserting the room state machine through the frames the shipped site parses.
-//
-// These need a database, because creating a room validates the episode and records the room.
-// They skip when POSTGRES_TEST_DATABASE_URL is unset; the pure pieces (framing, drift policy,
-// room codes) are covered without one.
+// Hub, asserting the state machine through the frames the shipped site parses. Needs a database.
 
-// roomEventWindow is how long a broadcast that waits on a database round trip is allowed to
-// take. A cold Postgres (shared buffer miss, first query plan) has pushed this past 8 s, which
-// reads as a protocol failure and is nothing of the sort.
+// roomEventWindow bounds a broadcast that waits on a database round trip. A cold Postgres has
+// pushed this past 8 s, which reads as a protocol failure and is nothing of the sort.
 const roomEventWindow = 20 * time.Second
 
 // client is a minimal Socket.IO v4 client over a raw WebSocket: enough to connect with an
@@ -184,8 +179,7 @@ func (c *client) emitWithAck(event string, payload any) json.RawMessage {
 }
 
 // collect returns the payload of a received event, removing it from the queue so a later
-// collector sees the rest. Events are kept rather than streamed through a channel because
-// several broadcasts land while the test is waiting on something else.
+// collector sees the rest. Events are kept because several land while the test waits.
 func (c *client) collect(event string, timeout time.Duration) (json.RawMessage, bool) {
 	expiry := time.Now().Add(timeout)
 	for {
@@ -230,13 +224,8 @@ func itoa(v int) string { return strconv.Itoa(v) }
 
 func itoa64(v int64) string { return strconv.FormatInt(v, 10) }
 
-// isolatedDatabaseURL creates a database of its own for this test binary and returns a DSN
-// for it.
-//
-// Without this the two database-backed suites race each other: the repository suite
-// truncates every table to start clean, which deletes the rows this suite is mid-handshake
-// over. Separate databases, rather than a serialised test run, is what keeps a parallel
-// `go test ./...` honest.
+// isolatedDatabaseURL creates a database of its own for this test binary. Without it the two
+// database-backed suites race: the repository suite truncates tables this suite is using.
 func isolatedDatabaseURL(t *testing.T, dsn string) string {
 	t.Helper()
 
@@ -376,8 +365,7 @@ func (a testAuthenticator) Authenticate(ctx context.Context, token string) (*aut
 }
 
 // TestWatchPartyHandshakeAndGate drives the real protocol: create a room, have a second peer
-// join it, and assert that the join re-gates the room and that the gate announces the
-// canonical position to both peers.
+// join, and assert the join re-gates the room and announces the canonical position.
 func TestWatchPartyHandshakeAndGate(t *testing.T) {
 	fixture := newRoomFixture(t)
 	base := fixture.server.URL
@@ -594,8 +582,7 @@ func (c *client) emitRequest(event, waitFor string, timeout time.Duration) (json
 }
 
 // TestWatchPartyScheduledStart covers the protocol additions over two real sockets: client
-// tuning, the clock probe, the scheduled start, and broadcast seq — asserted through the wire,
-// because a state machine the shipped clients cannot parse is worth nothing.
+// tuning, the clock probe, the scheduled start and broadcast seq, all asserted through the wire.
 func TestWatchPartyScheduledStart(t *testing.T) {
 	fixture := newRoomFixture(t)
 	base := fixture.server.URL

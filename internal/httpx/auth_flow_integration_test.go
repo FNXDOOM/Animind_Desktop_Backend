@@ -23,10 +23,8 @@ import (
 	"animind-backend-go/internal/repository"
 )
 
-// These tests are the first ones in the repository that drive an authenticated request through the
-// real store, auth service and middleware chain. They need Postgres because the behaviour under test
-// is SQL plus session bookkeeping, and they skip when no disposable database is configured, exactly
-// like the repository integration suite.
+// These tests drive authenticated requests through the real store, auth service and middleware
+// chain. They need Postgres and skip when POSTGRES_TEST_DATABASE_URL is unset.
 
 const testAccountPassword = "correct-horse-battery"
 
@@ -100,8 +98,8 @@ type account struct {
 	token string
 }
 
-// signUpAccount creates a throwaway account through the service, so a test never depends on rows a
-// previous run left behind.
+// signUpAccount creates a throwaway account through the service, so a test never depends on rows
+// a previous run left behind.
 func signUpAccount(t *testing.T, service *auth.Service) account {
 	t.Helper()
 	email := fmt.Sprintf("m4-%d-%s@animind.test", time.Now().UnixNano(), strings.ToLower(t.Name()[:4]))
@@ -201,7 +199,7 @@ func TestUpdateProfileEmailRequiresTheCurrentPassword(t *testing.T) {
 	if res.Code != http.StatusBadRequest {
 		t.Fatalf("status = %d, want 400", res.Code)
 	}
-	// The message must name the missing field, otherwise today's "provide username or avatar_url"
+	// The message must name the missing field, or today's "provide username or avatar_url"
 	// rejection would make this test pass for the wrong reason.
 	if body := res.Body.String(); !strings.Contains(body, "current_password") {
 		t.Fatalf("body = %s, want it to name current_password", body)

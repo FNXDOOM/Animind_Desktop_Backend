@@ -105,9 +105,7 @@ func TestFromAniListMapsToLibraryShape(t *testing.T) {
 	if result.Source != "anilist" {
 		t.Errorf("Source = %q", result.Source)
 	}
-	// Romaji, the native title and every distinct synonym must land in AlternateTitles,
-	// deduplicated: the repeated "Frieren" synonym and the romaji that repeats a synonym
-	// each collapse to one entry.
+	// Every distinct synonym, romaji and native title lands in AlternateTitles, deduplicated.
 	wantAlternates := []string{"Frieren", "Mahoutsukai no Frieren", "Sousou no Frieren", "葬送のフリーレン"}
 	if !reflect.DeepEqual(result.AlternateTitles, wantAlternates) {
 		t.Errorf("AlternateTitles = %v, want %v", result.AlternateTitles, wantAlternates)
@@ -160,17 +158,15 @@ func TestFromMALFallsBackWithoutAniListID(t *testing.T) {
 	if result.EpisodeCount == nil || *result.EpisodeCount != 24 {
 		t.Errorf("EpisodeCount = %v", result.EpisodeCount)
 	}
-	// Synonyms plus the native title, deduplicated: the repeated "Frieren" synonym
-	// collapses to one entry.
+	// Synonyms plus the native title, deduplicated.
 	wantAlternates := []string{"Frieren", "Sousou no Frieren", "葬送のフリーレン"}
 	if !reflect.DeepEqual(result.AlternateTitles, wantAlternates) {
 		t.Errorf("AlternateTitles = %v, want %v", result.AlternateTitles, wantAlternates)
 	}
 }
 
-// TestMetadataCacheKeyIsUnchanged pins the cache identity (spec §7.9): alternate titles ride
-// inside the cached payload, but the key stays the normalized title, so entries written
-// before this change and after it address the same slot.
+// TestMetadataCacheKeyIsUnchanged pins the cache identity (spec §7.9): the key stays the
+// normalized title, so entries written before and after this change address the same slot.
 func TestMetadataCacheKeyIsUnchanged(t *testing.T) {
 	key := NormalizeTitleKey("Frieren: Beyond Journey's End")
 	if key != "frieren beyond journey s end" {
